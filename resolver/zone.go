@@ -407,17 +407,25 @@ func (z *Zone) Xfer(nextRecord func() (*dns.Record, error), ixfr bool) error {
 	}
 
 	var del, add *Cache
+	var records []*dns.Record
 	for {
 		rec, err := nextRecord()
 
 		if rec != nil {
 			if s, ok := rec.RecordData.(*dns.SOARecord); ok {
 				if del != nil && add != nil {
+					// done with increment section
+
+					add.Enter(time.Time{}, false, records)
+					records = nil
+
 					db.Patch(del, add)
 					del = nil
 					add = nil
 				}
+
 				if del == nil {
+					// start of next increment section or end of axfr
 					if s.Serial != soa.RecordData.(*dns.SOARecord).Serial {
 						return fmt.Errorf(
 							"%w: got serial %d, at serial %d",
@@ -426,23 +434,30 @@ func (z *Zone) Xfer(nextRecord func() (*dns.Record, error), ixfr bool) error {
 							soa.RecordData.(*dns.SOARecord).Serial,
 						)
 					}
+
+					// any records here are normal xfer
+					db.Enter(time.Time{}, false, records)
+					records = nil
+
 					del = NewCache(nil)
 					soa = rec
 				} else {
+					// start of add part of incremental section
+
+					del.Enter(time.Time{}, false, records)
+					records = nil
+
 					add = NewCache(nil)
 					soa = rec
 				}
 			} else {
-				var c *Cache
-				switch {
-				case add != nil:
-					c = add
-				case del != nil:
-					c = del
-				default:
-					c = db
+				records = append(records, rec)
+
+				if len(records) > 256 && del == nil && add == nil {
+					// flush out the normal xfer records
+					db.Enter(time.Time{}, false, records)
+					records = nil
 				}
-				c.Enter(time.Time{}, false, []*dns.Record{rec})
 			}
 		}
 
