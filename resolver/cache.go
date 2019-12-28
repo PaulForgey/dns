@@ -128,46 +128,50 @@ func (c *Cache) Enter(at time.Time, merge bool, records []*dns.Record) {
 	}
 
 	for nkey, rrmap := range entries {
-		if at.IsZero() {
-			c.cache[nkey] = rrmap
-		} else if crrmap, ok := c.cache[nkey]; ok {
-			for tkey, rrset := range rrmap {
-				if crrset, ok := crrmap[tkey]; ok {
-					if crrset.entered.IsZero() {
-						// do not overwrite permanent records with non permanent records
-						continue
-					}
-					var crecords []*dns.Record
-					expireSet(crrset, at, merge)
-					for _, cr := range crrset.records {
-						found := false
-						for _, rr := range rrset.records {
-							if reflect.DeepEqual(cr.RecordData, rr.RecordData) {
-								found = true
-								break
-							}
-						}
-						if !found {
-							if merge {
-								crecords = append(crecords, cr)
-							} else {
-								crecords = append(crecords, &dns.Record{
-									RecordHeader: dns.RecordHeader{
-										Name:        cr.RecordHeader.Name,
-										TTL:         time.Second,
-										Type:        cr.RecordHeader.Type,
-										Class:       cr.RecordHeader.Class,
-										OriginalTTL: cr.RecordHeader.OriginalTTL,
-									},
-									RecordData: cr.RecordData,
-								})
-							}
-						}
-					}
-					rrset.records = append(rrset.records, crecords...)
+		if crrmap, ok := c.cache[nkey]; ok {
+			if at.IsZero() {
+				for tkey, rrset := range rrmap {
+					crrmap[tkey] = rrset
 				}
+			} else {
+				for tkey, rrset := range rrmap {
+					if crrset, ok := crrmap[tkey]; ok {
+						if crrset.entered.IsZero() {
+							// do not overwrite permanent records with non permanent records
+							continue
+						}
+						var crecords []*dns.Record
+						expireSet(crrset, at, merge)
+						for _, cr := range crrset.records {
+							found := false
+							for _, rr := range rrset.records {
+								if reflect.DeepEqual(cr.RecordData, rr.RecordData) {
+									found = true
+									break
+								}
+							}
+							if !found {
+								if merge {
+									crecords = append(crecords, cr)
+								} else {
+									crecords = append(crecords, &dns.Record{
+										RecordHeader: dns.RecordHeader{
+											Name:        cr.RecordHeader.Name,
+											TTL:         time.Second,
+											Type:        cr.RecordHeader.Type,
+											Class:       cr.RecordHeader.Class,
+											OriginalTTL: cr.RecordHeader.OriginalTTL,
+										},
+										RecordData: cr.RecordData,
+									})
+								}
+							}
+						}
+						rrset.records = append(rrset.records, crecords...)
+					}
 
-				crrmap[tkey] = rrset
+					crrmap[tkey] = rrset
+				}
 			}
 		} else {
 			c.cache[nkey] = rrmap
@@ -315,7 +319,7 @@ func (c *Cache) Clone(exclude *Cache) *Cache {
 				to[nkey] = trrmap
 			}
 			for rrkey, frrset := range frrmap {
-				ftype, _ := TypeKey(rrkey).Types()
+				ftype, _ := rrkey.Types()
 				if ftype == dns.SOAType || !frrset.entered.IsZero() {
 					continue
 				}
@@ -417,6 +421,22 @@ func (c *Cache) Enumerate(f func(r *dns.Record)) {
 			for _, r := range rrset.records {
 				f(r)
 			}
+		}
+	}
+}
+
+// Clear clears all records.
+// If auth is true, only authoritative records are removed
+func (c *Cache) Clear(auth bool) {
+	for nkey, rrmap := range c.cache {
+		if auth {
+			for tkey, rrset := range rrmap {
+				if rrset.entered.IsZero() {
+					delete(rrmap, tkey)
+				}
+			}
+		} else {
+			delete(c.cache, nkey)
 		}
 	}
 }

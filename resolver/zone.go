@@ -12,6 +12,8 @@ import (
 
 var ErrMartian = errors.New("record does not have suffix of zone")
 var ErrSOA = errors.New("SOA records cannot be interface specific")
+var ErrIxfr = errors.New("SOA does not match for IXFR")
+var ErrAxfr = errors.New("Mismatched or unexpected SOA values")
 
 type snapshot struct {
 	soa         *dns.Record
@@ -121,7 +123,7 @@ func NewZone(name dns.Name) *Zone {
 // Load loads in a series of records. If an SOA is found, the later in the sequence is used to update serial.
 // next returns nil, io.EOF on last record
 // Load is usually performed on an off line zone.
-func (z *Zone) Load(key string, next func() (*dns.Record, error)) error {
+func (z *Zone) Load(key string, clear bool, next func() (*dns.Record, error)) error {
 	z.lk.Lock()
 	defer z.lk.Unlock()
 
@@ -131,8 +133,11 @@ func (z *Zone) Load(key string, next func() (*dns.Record, error)) error {
 		z.keys[key] = db
 	}
 
-	records := []*dns.Record{}
+	if clear {
+		db.Clear(true)
+	}
 
+	records := []*dns.Record{}
 	for {
 		rec, err := next()
 		if rec != nil {
@@ -164,8 +169,8 @@ func (z *Zone) Load(key string, next func() (*dns.Record, error)) error {
 }
 
 // Decode calls Load using a codec as a convenience
-func (z *Zone) Decode(key string, c dns.Codec) error {
-	return z.Load(key, func() (*dns.Record, error) {
+func (z *Zone) Decode(key string, clear bool, c dns.Codec) error {
+	return z.Load(key, clear, func() (*dns.Record, error) {
 		r := &dns.Record{}
 		if err := c.Decode(r); err != nil {
 			return nil, err
@@ -374,4 +379,96 @@ func (z *Zone) Dump(serial uint32, key string) []*dns.Record {
 	records = append(records, z.soa)
 	z.lk.Unlock()
 	return records
+}
+
+// Xfer parses a zone transfer.
+// Set ixfr to true or false to set axfr vs ixfr expectations
+// If ixfr is false, the zone is cleared.
+func (z *Zone) Xfer(nextRecord func() (*dns.Record, error), ixfr bool) error {
+	z.lk.Lock()
+	defer z.lk.Unlock()
+
+	var db *Cache
+	if ixfr {
+		db = z.db.Clone(nil)
+	} else {
+		db = NewCache(nil)
+	}
+	soa := z.soa
+
+	toSOA, err := nextRecord()
+	if err != nil {
+		return err
+	}
+
+	_, ok := toSOA.RecordData.(*dns.SOARecord)
+	if !ok {
+		return fmt.Errorf("%w: expected SOA, got %T", ErrAxfr, soa.RecordData)
+	}
+
+	var del, add *Cache
+	for {
+		rec, err := nextRecord()
+
+		if rec != nil {
+			if s, ok := rec.RecordData.(*dns.SOARecord); ok {
+				if del != nil && add != nil {
+					db.Patch(del, add)
+					del = nil
+					add = nil
+				}
+				if del == nil {
+					if s.Serial != soa.RecordData.(*dns.SOARecord).Serial {
+						return fmt.Errorf(
+							"%w: got serial %d, at serial %d",
+							ErrIxfr,
+							s.Serial,
+							soa.RecordData.(*dns.SOARecord).Serial,
+						)
+					}
+					del = NewCache(nil)
+					soa = rec
+				} else {
+					add = NewCache(nil)
+					soa = rec
+				}
+			} else {
+				var c *Cache
+				switch {
+				case add != nil:
+					c = add
+				case del != nil:
+					c = del
+				default:
+					c = db
+				}
+				c.Enter(time.Time{}, false, []*dns.Record{rec})
+			}
+		}
+
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return err
+		}
+	}
+
+	if soa.RecordData.(*dns.SOARecord).Serial != toSOA.RecordData.(*dns.SOARecord).Serial {
+		return fmt.Errorf(
+			"%w: final SOA response at serial %d, not %d",
+			ErrAxfr,
+			soa.RecordData.(*dns.SOARecord).Serial,
+			toSOA.RecordData.(*dns.SOARecord).Serial,
+		)
+	}
+
+	// done!
+	db.Enter(time.Time{}, false, []*dns.Record{soa})
+	z.soa = soa
+	z.db = db
+	z.keys[""] = db
+	delete(z.snapshots, "")
+
+	return nil
 }

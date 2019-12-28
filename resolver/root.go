@@ -54,7 +54,7 @@ func NewRootZone() *Zone {
 	zone.Hint = true
 
 	c := dns.NewTextReader(strings.NewReader(rootZone), nil)
-	err := zone.Decode("", c)
+	err := zone.Decode("", false, c)
 	if err != nil {
 		panic(err)
 	}

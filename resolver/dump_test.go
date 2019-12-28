@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -45,7 +46,7 @@ var steps = []*zoneDelta{
 	{
 		from:    1,
 		to:      2,
-		deleted: 0,
+		deleted: 1,
 		added:   2,
 	},
 	{
@@ -54,6 +55,64 @@ var steps = []*zoneDelta{
 		deleted: 1,
 		added:   1,
 	},
+}
+
+func compareZone(t *testing.T, z1, z2 *Zone) {
+	r1 := z1.Dump(0, "")
+
+	for _, r := range r1 {
+		r2, _ := z2.Lookup("", r.RecordHeader.Name, r.Type(), r.Class())
+		if len(r2) < 1 {
+			t.Fatalf("z2 did not contain %v %v %v", r.RecordHeader.Name, r.Type(), r.Class())
+		}
+		found := false
+		for _, rr := range r2 {
+			if reflect.DeepEqual(rr.RecordData, r.RecordData) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("did not find %v in z2", r)
+		}
+	}
+}
+
+func TestIXFR(t *testing.T) {
+	z := NewZone(newName(t, "jain.ad.jp"))
+	for _, r := range revisions {
+		err := z.Decode("", true, dns.NewTextReader(strings.NewReader(r), z.Name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		z.Dump(0, "") // lay down a revision at each
+	}
+
+	// secondary with initial revision
+	zz := NewZone(newName(t, "jain.ad.jp"))
+	err := zz.Decode("", true, dns.NewTextReader(strings.NewReader(revisions[0]), zz.Name))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// request ixfr from 1 -> current
+	ixfr := z.Dump(1, "")
+
+	n := 0
+	err = zz.Xfer(func() (*dns.Record, error) {
+		if n < len(ixfr) {
+			rec := ixfr[n]
+			n++
+			return rec, nil
+		}
+		return nil, io.EOF
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	compareZone(t, z, zz)
+	compareZone(t, zz, z)
 }
 
 func parseTransfer(t *testing.T, serial uint32, records []*dns.Record) []*zoneDelta {
@@ -113,7 +172,7 @@ func parseTransfer(t *testing.T, serial uint32, records []*dns.Record) []*zoneDe
 func TestZoneDump(t *testing.T) {
 	z := NewZone(newName(t, "jain.ad.jp"))
 	for n, r := range revisions {
-		err := z.Decode("", dns.NewTextReader(strings.NewReader(r), z.Name))
+		err := z.Decode("", true, dns.NewTextReader(strings.NewReader(r), z.Name))
 		if err != nil {
 			t.Fatal(err)
 		}
