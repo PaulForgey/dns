@@ -41,8 +41,6 @@ func (r *Resolver) init(conn *dnsconn.Connection, zone *Zone, network string) {
 	switch network {
 	case "udp4", "tcp4", "ip4":
 		r.hostType = dns.AType
-	case "udp6", "tcp6", "ip6":
-		r.hostType = dns.AAAAType
 	default:
 		r.hostType = dns.AnyType
 	}

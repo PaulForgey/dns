@@ -438,7 +438,7 @@ type NSRecordType interface {
 // A NameRecordType is any record with a single (or single important) Name. A record of this type in a result set would
 // indicate cooresponding IPRecordType records in the cache appear in the additional section.
 type NameRecordType interface {
-	Name() Name
+	RName() Name
 }
 
 type CNAMERecord struct {

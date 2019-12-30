@@ -12,8 +12,6 @@ import (
 
 // Serve runs a unicast server answering queries for the zone set until the context is canceled or an error occurs on the conn
 func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zones *Zones) error {
-	logger.Printf("listening on %v", conn)
-
 	for {
 		msg, from, err := conn.ReadFromIf(ctx, func(msg *dns.Message) bool {
 			return !msg.QR // only questions
@@ -45,18 +43,17 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 			continue
 		}
 
-		logger.Printf("%v: %v", from, q)
+		logger.Printf("%s: %v: %v", conn.Interface, from, q)
 
 		// XXX handle XFER, IXFR, etc.
 		//     Until we do, just dumbly treat these types as normal types which we will not find.
 
 		// XXX access control for queries
-
-		msg.RA = (zone.R != nil)
+		// XXX access control for recursive queries
+		msg.RA = zone.Hint && (zones.R != nil)
 		msg.AA = false
-		if msg.RD && zone.R != nil {
-			// XXX access control for recursive queries
-			msg.Answers, err = zone.R.Resolve(
+		if msg.RD && msg.RA {
+			msg.Answers, err = zones.R.Resolve(
 				ctx,
 				conn.Interface,
 				q.QName,

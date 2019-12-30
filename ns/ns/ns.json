@@ -1,15 +1,16 @@
 {
-	"Listener":{
-		"UDPNetwork":"udp",
-		"TCPNetwork":"tcp"
-	},
+	"Resolver": "udp",
 	"Zones":{
 		".": {
 			"Type": "cache"
 		},
 		"example.com": {
 			"Type": "primary",
-			"DbFile": "example.com.db"
+			"DbFile": "example.com.db",
+			"InterfaceDbFiles": {
+				"lo": "lo.example.com.db",
+				"eth0": "eth0.example.com.db"
+			}
 		},
 		"168.192.in-addr.arpa": {
 			"Type": "primary",

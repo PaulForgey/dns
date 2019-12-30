@@ -27,43 +27,48 @@ const (
 )
 
 type Zone struct {
-	Type        ZoneType
-	DbFile      string
-	Primary     string // secondary: primary server to transfer from
-	Incremental bool   // secondary: use IXFR
+	Type             ZoneType
+	DbFile           string
+	InterfaceDbFiles map[string]string // primary: interface specific records
+	Primary          string            // secondary: primary server to transfer from
+	Incremental      bool              // secondary: use IXFR
 	// XXX query, transfer, update ACL
-}
-
-type ListenerConfig struct {
-	UDPNetwork string // udp,udp4,udp6 or empty to not listen
-	TCPNetwork string // tcp,tcp4,tcp6 or empty to not listen
 }
 
 type Conf struct {
 	Zones    map[string]Zone // zones
-	Listener ListenerConfig  // external daemon and queries
+	Resolver string          // udp,udp4,udp6 empty for no recursive resolver
 	// XXX global server ACL
 	// XXX mdns zone
 }
 
 var logStderr bool
 var confFile string
-var udpListener *dnsconn.Connection
 var cache = resolver.NewRootZone()
 var logger *log.Logger
 
-func loadZone(zone *resolver.Zone, dbfile string) error {
-	c, err := dns.NewTextFileReader(dbfile, zone.Name)
+func loadZone(zone *resolver.Zone, conf *Zone) error {
+	c, err := dns.NewTextFileReader(conf.DbFile, zone.Name)
 	if err != nil {
-		return err
+		return fmt.Errorf("cannot open %s: %w", conf.DbFile, err)
 	}
-	// XXX we could somewhat easily support interface specific zone records
 	err = zone.Decode("", false, c)
 	if err != nil {
 		return err
 	}
+	for iface, dbfile := range conf.InterfaceDbFiles {
+		c, err := dns.NewTextFileReader(dbfile, zone.Name)
+		if err != nil {
+			return fmt.Errorf("cannot open %s for interface %s: %w", dbfile, iface, err)
+		}
+		err = zone.Decode(iface, false, c)
+		if err != nil {
+			return err
+		}
+		logger.Printf("loaded zone %s:%v from %s", iface, zone.Name, dbfile)
+	}
 
-	logger.Printf("loaded zone %v from %s", zone.Name, dbfile)
+	logger.Printf("loaded zone %v from %s", zone.Name, conf.DbFile)
 	return nil
 }
 
@@ -78,8 +83,8 @@ func createZone(name string, conf *Zone) (*ns.Zone, error) {
 	case PrimaryType, HintType:
 		zone = resolver.NewZone(n)
 		zone.Hint = (conf.Type == HintType)
-		if err := loadZone(zone, conf.DbFile); err != nil {
-			return nil, fmt.Errorf("cannot load zone %s from db file %s: %w", name, conf.DbFile, err)
+		if err := loadZone(zone, conf); err != nil {
+			return nil, fmt.Errorf("cannot load zone %s: %w", name, err)
 		}
 	case SecondaryType:
 		// XXX
@@ -89,6 +94,53 @@ func createZone(name string, conf *Zone) (*ns.Zone, error) {
 	}
 
 	return &ns.Zone{Zone: zone}, nil
+}
+
+func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net.IP, zones *ns.Zones) {
+	wg.Add(1)
+	go func() {
+		laddr := &net.UDPAddr{IP: ip, Port: 53}
+		c, err := net.ListenUDP("udp", laddr)
+		if err != nil {
+			logger.Printf("cannot create udp listener on %v: %v", ip, err)
+		} else {
+			logger.Printf("%s: listening udp %v", iface, laddr)
+			conn := dnsconn.NewConnection(c, "udp", dnsconn.MinMessageSize)
+			conn.Interface = iface
+			ns.Serve(ctx, logger, conn, zones)
+			conn.Close()
+		}
+		wg.Done()
+	}()
+
+	wg.Add(1)
+	go func() {
+		laddr := &net.TCPAddr{IP: ip, Port: 53}
+		c, err := net.ListenTCP("tcp", laddr)
+		if err != nil {
+			logger.Printf("cannot create tcp listener on %v: %v", ip, err)
+		} else {
+			logger.Printf("%s: listening tcp %v", iface, laddr)
+			for {
+				a, err := c.Accept()
+				if err != nil {
+					logger.Printf("tcp listener exiting: %v", err)
+					break
+				} else {
+					wg.Add(1)
+					go func() {
+						conn := dnsconn.NewConnection(a, "tcp", dnsconn.MaxMessageSize)
+						conn.Interface = iface
+						ns.Serve(ctx, logger, conn, zones)
+						conn.Close()
+						wg.Done()
+					}()
+				}
+			}
+		}
+		c.Close()
+		wg.Done()
+	}()
 }
 
 func main() {
@@ -121,63 +173,60 @@ func main() {
 		logger.Fatalf("unable to parse configuration file %s: %v", confFile, err)
 	}
 
-	ctx := context.Background() // XXX can make this cancelable for a clean shutdown
+	zones := ns.NewZones()
 
-	var rr *resolver.Resolver
-	if conf.Listener.UDPNetwork != "" {
-		network := conf.Listener.UDPNetwork
-		conn, err := net.ListenUDP(network, &net.UDPAddr{Port: 53})
+	if conf.Resolver != "" {
+		rc, err := net.ListenUDP(conf.Resolver, &net.UDPAddr{})
 		if err != nil {
-			logger.Fatalf("unable to create udp listener: %v", err)
+			logger.Fatalf("unable to create resolver socket: %v", err)
 		}
-		udpListener = dnsconn.NewConnection(conn, network, dnsconn.MinMessageSize)
-		rr = resolver.NewResolver(cache, udpListener, true)
+		zones.R = resolver.NewResolver(cache, dnsconn.NewConnection(rc, conf.Resolver, dnsconn.MinMessageSize), true)
 	}
 
-	zones := ns.NewZones()
 	for k, v := range conf.Zones {
 		zone, err := createZone(k, &v)
 		if err != nil {
 			logger.Fatalf("cannot load zone %s: %v", k, err)
 		}
-		if zone.Hint {
-			zone.R = rr
-		}
 		zones.Insert(zone)
 	}
 
+	ctx := context.Background() // XXX can make this cancelable for a clean shutdown
 	wg := &sync.WaitGroup{}
-	if conf.Listener.TCPNetwork != "" {
-		network := conf.Listener.TCPNetwork
-		conn, err := net.ListenTCP(network, &net.TCPAddr{Port: 53})
-		if err != nil {
-			logger.Fatalf("unable to create tcp listener: %v", err)
-		}
-		logger.Printf("answering TCP queries")
-		wg.Add(1)
-		go func() {
-			for {
-				a, err := conn.Accept()
-				if err != nil {
-					logger.Printf("TCP listener: %v", err)
-					break
-				}
-				wg.Add(1)
-				go func() {
-					tc := dnsconn.NewConnection(a, network, dnsconn.MaxMessageSize)
-					ns.Serve(ctx, logger, tc, zones)
-					tc.Close()
-					wg.Done()
-				}()
-			}
-			wg.Done()
-		}()
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		logger.Fatalf("cannot enumerate interfaces: %v", err)
 	}
 
-	if udpListener != nil {
-		logger.Printf("answering UDP queries")
-		err = ns.Serve(ctx, logger, udpListener, zones)
+	for _, ifi := range ifaces {
+		if (ifi.Flags & net.FlagUp) == 0 {
+			continue
+		}
+
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			logger.Printf("unable to enumerate addresses for interface %s: %v; skipping", ifi.Name, err)
+			continue
+		}
+
+		for _, addr := range addrs {
+			if addr.Network() != "ip+net" {
+				continue
+			}
+
+			ip, _, err := net.ParseCIDR(addr.String())
+			if err != nil {
+				logger.Printf("bad interface address %s: %v; skipping", addr.String(), err)
+				continue // this really should not happen
+			}
+
+			if ip.IsLoopback() || ip.IsGlobalUnicast() {
+				makeListeners(ctx, wg, ifi.Name, ip, zones)
+			}
+		}
 	}
+
 	wg.Wait()
 	logger.Printf("exiting: %v", err)
 }

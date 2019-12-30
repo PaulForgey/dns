@@ -178,8 +178,8 @@ func NameWithString(s string) (Name, error) {
 	return n, nil
 }
 
-// Name returns.. itself. This method exists to easily implement the NameRecordType interface by deriving from Name
-func (n Name) Name() Name { return n }
+// RName returns.. itself. This method exists to easily implement the NameRecordType interface by deriving from Name
+func (n Name) RName() Name { return n }
 
 // Copy returns a copy of a name (same labels are still referenced as lables are immutable)
 func (n Name) Copy() Name {
