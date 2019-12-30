@@ -15,7 +15,7 @@ func TestClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListenUDP: %v", err)
 	}
-	c := NewConnection(conn, 1024)
+	c := NewConnection(conn, "udp", 1024)
 
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
@@ -35,7 +35,7 @@ func TestClose(t *testing.T) {
 	t.Logf("expected error after close: %v\n", err)
 
 	// try again with a context instead of close
-	c = NewConnection(conn, 1024)
+	c = NewConnection(conn, "udp", 1024)
 	ctx, cancel := context.WithCancel(context.Background())
 	wg.Add(1)
 	go func() {

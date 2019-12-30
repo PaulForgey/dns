@@ -1,0 +1,3 @@
+$INCLUDE soa.db
+
+1 IN PTR localhost.

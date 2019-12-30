@@ -4,9 +4,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 
 	"tessier-ashpool.net/dns"
+	"tessier-ashpool.net/dns/dnsconn"
 	"tessier-ashpool.net/dns/resolver"
 )
 
@@ -45,14 +47,19 @@ func main() {
 		exitErrorF("cannot parse name '%s': %v", name, err)
 	}
 
-	zones := resolver.NewZones()
 	var r *resolver.Resolver
 	if host != "" {
-		zones.Insert(resolver.NewZone(nil))
-		r, err = resolver.NewResolverClient(zones, network, host, nil)
+		r, err = resolver.NewResolverClient(resolver.NewZone(nil), network, host, nil)
 	} else {
-		zones.Insert(resolver.NewRootZone())
-		r, err = resolver.NewResolver(zones, network, true)
+		conn, err := net.ListenUDP(network, nil)
+		if err != nil {
+			exitErrorF("cannot create resolver socket: %v", err)
+		}
+		r = resolver.NewResolver(
+			resolver.NewRootZone(),
+			dnsconn.NewConnection(conn, network, dnsconn.MinMessageSize),
+			true,
+		)
 	}
 	if err != nil {
 		exitErrorF("cannot create resolver: %v", err)

@@ -67,7 +67,10 @@ func TestCacheEnterAndGet(t *testing.T) {
 
 	c.Enter(time.Time{}, false, makeRecordSet(t, false))
 
-	records := c.Get(time.Now(), nameWithString(t, "tessier-ashpool.net"), dns.NSType, dns.INClass)
+	records, err := c.Get(time.Now(), nameWithString(t, "tessier-ashpool.net"), dns.NSType, dns.INClass)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, record := range records {
 		t.Log(record)
 	}
@@ -78,7 +81,10 @@ func TestCacheEnterAndGet(t *testing.T) {
 		t.Fatalf("should be authoritative")
 	}
 
-	records = c.Get(time.Now(), nameWithString(t, "ns1.tessier-ashpool.net"), dns.AnyType, dns.INClass)
+	records, err = c.Get(time.Now(), nameWithString(t, "ns1.tessier-ashpool.net"), dns.AnyType, dns.INClass)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, record := range records {
 		t.Log(record)
 	}
@@ -94,7 +100,10 @@ func TestCacheExpire(t *testing.T) {
 	c.Enter(now, false, makeRecordSet(t, false))
 
 	now = now.Add(5 * time.Second)
-	records := c.Get(now, nameWithString(t, "tessier-ashpool.net"), dns.AnyType, dns.INClass)
+	records, err := c.Get(now, nameWithString(t, "tessier-ashpool.net"), dns.AnyType, dns.INClass)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(records) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(records))
 	}
@@ -103,7 +112,7 @@ func TestCacheExpire(t *testing.T) {
 		t.Fatalf("TTL=%v, expected 5s", records[0].RecordHeader.TTL)
 	}
 
-	records = c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.NSType, dns.INClass)
+	records, _ = c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.NSType, dns.INClass)
 	if len(records) > 0 {
 		t.Fatalf("expected no records, got %d", len(records))
 	}
@@ -115,14 +124,20 @@ func TestCacheOverwrite(t *testing.T) {
 
 	c.Enter(time.Time{}, false, makeRecordSet(t, false))
 
-	records := c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.AType, dns.INClass)
+	records, err := c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.AType, dns.INClass)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(records) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(records))
 	}
 
 	c.Enter(now, false, makeRecordSet(t, true))
 
-	records = c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.AType, dns.INClass)
+	records, err = c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.AType, dns.INClass)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(records) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(records))
 	}
@@ -138,7 +153,10 @@ func TestCacheOverwrite(t *testing.T) {
 	}
 
 	c.Enter(time.Time{}, false, makeRecordSet(t, true))
-	records = c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.AType, dns.INClass)
+	records, err = c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.AType, dns.INClass)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(records) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(records))
 	}
@@ -171,7 +189,10 @@ func TestNegativeCache(t *testing.T) {
 
 	now = now.Add(5 * time.Second)
 
-	records := c.Get(now, nameWithString(t, "ns2.tessier-ashpool.net"), dns.AType, dns.INClass)
+	records, err := c.Get(now, nameWithString(t, "ns2.tessier-ashpool.net"), dns.AType, dns.INClass)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(records) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(records))
 	}
@@ -195,7 +216,10 @@ func TestMerge(t *testing.T) {
 	now = now.Add(3 * time.Second)
 	c.Enter(now, true, makeRecordSet(t, true))
 
-	records := c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.AType, dns.INClass)
+	records, err := c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.AType, dns.INClass)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// ns1.tessier-ashpool.net should have two A records; 2 A 127.0.0.1 and 5 A 127.0.0.2
 	if len(records) != 2 {
@@ -227,7 +251,10 @@ func TestMerge(t *testing.T) {
 	c.Enter(now, true, makeRecordSet(t, false))
 
 	// now both should have TTL 5
-	records = c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.AType, dns.INClass)
+	records, err = c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.AType, dns.INClass)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(records) != 2 {
 		t.Fatalf("expected 2 records, got %d", len(records))
 	}
@@ -246,7 +273,10 @@ func TestOverwrite(t *testing.T) {
 	c.Enter(now, false, makeRecordSet(t, true))
 
 	// should have two records, the original having a TTL of 1
-	records := c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.AType, dns.INClass)
+	records, err := c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.AType, dns.INClass)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(records) != 2 {
 		t.Fatalf("expected 2 recoreds, got %d", len(records))
 	}

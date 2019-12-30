@@ -21,7 +21,7 @@ const qtimeout = 3 * time.Second
 type Resolver struct {
 	lk       *sync.Mutex
 	conn     *dnsconn.Connection
-	zones    *Zones
+	zone     *Zone
 	queries  map[int]*Zone
 	answer   chan struct{}
 	servers  []net.Addr
@@ -31,11 +31,11 @@ type Resolver struct {
 	debug    dns.Codec
 }
 
-func (r *Resolver) init(conn net.Conn, zones *Zones, network string) {
+func (r *Resolver) init(conn *dnsconn.Connection, zone *Zone, network string) {
 	r.lk = &sync.Mutex{}
-	r.zones = zones
+	r.zone = zone
 	r.queries = make(map[int]*Zone)
-	r.conn = dnsconn.NewConnection(conn, 512) // TODO: edns
+	r.conn = conn
 
 	// which type of address records to ask for when resolving hosts
 	switch network {
@@ -52,9 +52,9 @@ func (r *Resolver) init(conn net.Conn, zones *Zones, network string) {
 // If the host parameter is not empty, the resolver will connect to the server as per net.Dial(network, host).
 // Otherwise, a UDP connetion is created using the specified network, and servers contains a list of possible servers to query.
 // servers is usually nil if host is specified as it would make no sense to send a message on a connected conn to a destination.
-// If zones is nil (not recommended), the resolver will not have a cache. A resolver client should at least have an empty
+// If zone is nil (not recommended), the resolver will not have a cache. A resolver client should at least have an empty
 // root zone to cache results in.
-func NewResolverClient(zones *Zones, network string, host string, servers []net.Addr) (*Resolver, error) {
+func NewResolverClient(zone *Zone, network string, host string, servers []net.Addr) (*Resolver, error) {
 	var conn net.Conn
 	var err error
 
@@ -72,7 +72,7 @@ func NewResolverClient(zones *Zones, network string, host string, servers []net.
 	}
 
 	r := &Resolver{}
-	r.init(conn, zones, network)
+	r.init(dnsconn.NewConnection(conn, network, dnsconn.MinMessageSize), zone, network)
 	r.rd = true
 	r.ra = true
 	if host != "" && len(servers) == 0 {
@@ -86,16 +86,11 @@ func NewResolverClient(zones *Zones, network string, host string, servers []net.
 
 // NewResolver a recursive/authoritative resolver.
 // If ra is false, recusion is disabled and only authoritative records will be returned
-func NewResolver(zones *Zones, network string, ra bool) (*Resolver, error) {
-	conn, err := net.ListenUDP(network, nil)
-	if err != nil {
-		return nil, err
-	}
-
+func NewResolver(zone *Zone, conn *dnsconn.Connection, ra bool) *Resolver {
 	r := &Resolver{}
-	r.init(conn, zones, network)
+	r.init(conn, zone, conn.Network)
 	r.ra = ra
-	return r, nil
+	return r
 }
 
 // Close closes the underlying connection
@@ -161,7 +156,7 @@ func (r *Resolver) waitAnswer(ctx context.Context, id uint16) (*dns.Message, err
 	cancel()
 
 	if msg != nil {
-		if msg.Rcode == dns.NoError {
+		if zone != nil && msg.RCode == dns.NoError {
 			zone.Enter(msg.Answers)
 			zone.Enter(msg.Authority)
 			zone.Enter(msg.Additional)
@@ -212,13 +207,12 @@ func (r *Resolver) query(
 ) (a []*dns.Record, ns []*dns.Record, ar []*dns.Record, aa bool, err error) {
 
 	// always go for the cache or our own authority first
-	zone := r.zones.Find(name)
-	if zone != nil {
-		if !r.ra && zone.Hint {
+	if name.HasSuffix(r.zone.Name) {
+		if !r.ra && r.zone.Hint {
 			err = ErrNoRecursion
 			return
 		}
-		a, ns = zone.Lookup(key, name, rrtype, rrclass)
+		a, ns, err = r.zone.Lookup(key, name, rrtype, rrclass)
 		if len(a) > 0 || len(servers) == 0 || !r.ra {
 			// cached answer, cache only, or delegation with recursion not allowed
 			return
@@ -229,7 +223,7 @@ func (r *Resolver) query(
 	var msg *dns.Message
 	for _, dest := range servers {
 		var id uint16
-		id, err = r.ask(dest, zone, name, rrtype, rrclass)
+		id, err = r.ask(dest, r.zone, name, rrtype, rrclass)
 		if err != nil {
 			continue
 		}
@@ -241,7 +235,7 @@ func (r *Resolver) query(
 		if err == nil && len(msg.Answers) == 0 && len(msg.Authority) == 0 && msg.TC {
 			if udpaddr, ok := dest.(*net.UDPAddr); ok {
 				var tcp *Resolver
-				tcp, err = NewResolverClient(r.zones, "tcp", udpaddr.String(), nil)
+				tcp, err = NewResolverClient(r.zone, "tcp", udpaddr.String(), nil)
 				tcp.Debug(r.debug)
 				if err != nil {
 					return
@@ -262,12 +256,12 @@ func (r *Resolver) query(
 		return
 	}
 	if msg != nil {
-		if msg.Rcode == dns.NoError {
+		if msg.RCode == dns.NoError {
 			// successful answer from server
 			a, ns, ar, aa = msg.Answers, msg.Authority, msg.Additional, msg.AA
 		} else {
 			// now propegate the server response as error
-			err = msg.Rcode
+			err = msg.RCode
 		}
 	} // else obviously cache only
 

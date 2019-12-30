@@ -1,0 +1,4 @@
+$INCLUDE soa.db
+
+	IN A 127.0.0.1
+	IN AAAA ::1

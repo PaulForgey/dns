@@ -761,7 +761,7 @@ func (c *TextCodec) putMessage(m *Message) error {
 	if m.RA {
 		flags += "RA "
 	}
-	if _, err := fmt.Fprintf(c.w, ";; flags: %s Rcode=%v\n", flags, m.Rcode); err != nil {
+	if _, err := fmt.Fprintf(c.w, ";; flags: %s RCode=%v\n", flags, m.RCode); err != nil {
 		return err
 	}
 

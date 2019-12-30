@@ -57,11 +57,19 @@ var steps = []*zoneDelta{
 	},
 }
 
+func newName(t *testing.T, n string) dns.Name {
+	name, err := dns.NameWithString(n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return name
+}
+
 func compareZone(t *testing.T, z1, z2 *Zone) {
 	r1 := z1.Dump(0, "")
 
 	for _, r := range r1 {
-		r2, _ := z2.Lookup("", r.RecordHeader.Name, r.Type(), r.Class())
+		r2, _, _ := z2.Lookup("", r.RecordHeader.Name, r.Type(), r.Class())
 		if len(r2) < 1 {
 			t.Fatalf("z2 did not contain %v %v %v", r.RecordHeader.Name, r.Type(), r.Class())
 		}

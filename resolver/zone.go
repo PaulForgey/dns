@@ -67,46 +67,6 @@ type Zone struct {
 	db, cache *Cache
 }
 
-// the Zones type holds all the zones we know of
-type Zones struct {
-	sync.RWMutex
-	zones map[string]*Zone
-}
-
-// NewZones creates an empty Zones
-func NewZones() *Zones {
-	return &Zones{
-		zones: make(map[string]*Zone),
-	}
-}
-
-// Insert adds or overwrites a zone
-func (s *Zones) Insert(z *Zone) {
-	s.Lock()
-	s.zones[z.Name.Key()] = z
-	s.Unlock()
-}
-
-// Finds a zone by name having the closest common suffix.
-// Find can return nil if the root zone is not present.
-func (s *Zones) Find(n dns.Name) *Zone {
-	var z *Zone
-	var ok bool
-
-	s.RLock()
-
-	for {
-		z, ok = s.zones[n.Key()]
-		if ok || len(n) == 0 {
-			break
-		}
-		n = n.Suffix()
-	}
-
-	s.RUnlock()
-	return z
-}
-
 // NewZone creates a new zone with a given name
 func NewZone(name dns.Name) *Zone {
 	zone := &Zone{
@@ -194,7 +154,12 @@ func (z *Zone) SOA() *dns.SOARecord {
 }
 
 // Lookup a name within a zone, or a delegation above it.
-func (z *Zone) Lookup(key string, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (a []*dns.Record, ns []*dns.Record) {
+func (z *Zone) Lookup(
+	key string,
+	name dns.Name,
+	rrtype dns.RRType,
+	rrclass dns.RRClass,
+) (a []*dns.Record, ns []*dns.Record, err error) {
 	now := time.Now()
 	z.lk.RLock()
 
@@ -204,14 +169,17 @@ func (z *Zone) Lookup(key string, name dns.Name, rrtype dns.RRType, rrclass dns.
 	}
 
 	for len(a) == 0 && len(ns) == 0 {
-		a = db.Get(now, name, rrtype, rrclass)
+		a, err = db.Get(now, name, rrtype, rrclass)
 		if len(a) == 0 {
 			for sname := name; sname.HasSuffix(z.Name); sname = sname.Suffix() {
 				if !z.Hint && len(sname) == len(z.Name) {
 					// we can stop here if we're authoritative
 					break
 				}
-				ns = db.Get(now, sname, dns.NSType, rrclass)
+				ns, _ = db.Get(now, sname, dns.NSType, rrclass)
+				if len(ns) > 0 {
+					err = nil
+				}
 				if len(ns) > 0 || len(sname) == 0 {
 					// either have delegation or have reached dot
 					break
@@ -407,17 +375,17 @@ func (z *Zone) Xfer(nextRecord func() (*dns.Record, error), ixfr bool) error {
 	}
 
 	var del, add *Cache
-	var records []*dns.Record
+	records := make([]*dns.Record, 0, 256)
 	for {
 		rec, err := nextRecord()
 
 		if rec != nil {
 			if s, ok := rec.RecordData.(*dns.SOARecord); ok {
 				if del != nil && add != nil {
-					// done with increment section
+					// done with incremental section
 
 					add.Enter(time.Time{}, false, records)
-					records = nil
+					records = records[:0]
 
 					db.Patch(del, add)
 					del = nil
@@ -425,7 +393,7 @@ func (z *Zone) Xfer(nextRecord func() (*dns.Record, error), ixfr bool) error {
 				}
 
 				if del == nil {
-					// start of next increment section or end of axfr
+					// start of next incremental section or end of axfr
 					if s.Serial != soa.RecordData.(*dns.SOARecord).Serial {
 						return fmt.Errorf(
 							"%w: got serial %d, at serial %d",
@@ -437,7 +405,7 @@ func (z *Zone) Xfer(nextRecord func() (*dns.Record, error), ixfr bool) error {
 
 					// any records here are normal xfer
 					db.Enter(time.Time{}, false, records)
-					records = nil
+					records = records[:0]
 
 					del = NewCache(nil)
 					soa = rec
@@ -445,7 +413,7 @@ func (z *Zone) Xfer(nextRecord func() (*dns.Record, error), ixfr bool) error {
 					// start of add part of incremental section
 
 					del.Enter(time.Time{}, false, records)
-					records = nil
+					records = records[:0]
 
 					add = NewCache(nil)
 					soa = rec
@@ -453,10 +421,10 @@ func (z *Zone) Xfer(nextRecord func() (*dns.Record, error), ixfr bool) error {
 			} else {
 				records = append(records, rec)
 
-				if len(records) > 256 && del == nil && add == nil {
+				if len(records) >= cap(records) && del == nil && add == nil {
 					// flush out the normal xfer records
 					db.Enter(time.Time{}, false, records)
-					records = nil
+					records = records[:0]
 				}
 			}
 		}

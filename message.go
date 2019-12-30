@@ -4,19 +4,19 @@ import (
 	"fmt"
 )
 
-// Rcode is the result code sent by the server is response to a question, and may also be used as an error value.
-type Rcode int
+// RCode is the result code sent by the server is response to a question, and may also be used as an error value.
+type RCode int
 
 const (
-	NoError        Rcode = 0
-	FormError      Rcode = 1
-	ServerFailure  Rcode = 2
-	NameError      Rcode = 3
-	NotImplemented Rcode = 4
-	Refused        Rcode = 5
+	NoError        RCode = 0
+	FormError      RCode = 1
+	ServerFailure  RCode = 2
+	NameError      RCode = 3
+	NotImplemented RCode = 4
+	Refused        RCode = 5
 )
 
-func (r Rcode) Error() string {
+func (r RCode) Error() string {
 	switch r {
 	case NoError:
 		return "no error"
@@ -64,7 +64,7 @@ type Message struct {
 	TC         bool // truncated
 	RD         bool // recursion desired
 	RA         bool // resursion available
-	Rcode      Rcode
+	RCode      RCode
 	Questions  []*Question
 	Answers    []*Record
 	Authority  []*Record
@@ -76,6 +76,16 @@ type Question struct {
 	QType  RRType
 	QClass RRClass
 	QU     bool // mdns
+}
+
+func (q *Question) String() string {
+	var s string
+	if q.QU {
+		s = "%v (QU) %v %v"
+	} else {
+		s = "%v %v %v"
+	}
+	return fmt.Sprintf(s, q.QName, q.QType, q.QClass)
 }
 
 func (q *Question) MarshalCodec(c Codec) error {

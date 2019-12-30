@@ -203,7 +203,7 @@ func (w *WireCodec) putMessage(m *Message) error {
 	if m.RA {
 		status |= 0x0080
 	}
-	status |= uint16(m.Rcode) & 0x7f
+	status |= uint16(m.RCode) & 0x7f
 
 	if err := EncodeSequence(
 		w,
@@ -459,7 +459,7 @@ func (w *WireCodec) getMessage(m *Message) error {
 		(status&0x0100) != 0,
 		(status&0x0080) != 0
 	m.Opcode = Opcode((status & 0x7800) >> 11)
-	m.Rcode = Rcode(status & 0x7f)
+	m.RCode = RCode(status & 0x7f)
 
 	m.Questions = make([]*Question, int(qdcount))
 	m.Answers = make([]*Record, int(ancount))

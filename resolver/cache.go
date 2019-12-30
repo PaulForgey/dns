@@ -69,7 +69,7 @@ func NewCache(parent *Cache) *Cache {
 	}
 }
 
-// Root returns the highest parent, suitable for caching records under an authoriative db. If there is not parent,
+// Root returns the highest parent, suitable for caching records under an authoriative db. If there is no parent,
 // the cache itself is returned.
 func (c *Cache) Root() *Cache {
 	for ; c.parent != nil; c = c.parent {
@@ -231,8 +231,10 @@ func expireSet(rrset *rrSet, now time.Time, adjust bool) {
 // dns.AnyType and dns.AnyClass will wildcard match.
 // Non permanent records will have their TTL values adjusted.
 // Expired records will be removed from the cache and not returned.
-func (c *Cache) Get(now time.Time, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) []*dns.Record {
+// If there are no entries for the name (regardless of type), dns.NameError is returned
+func (c *Cache) Get(now time.Time, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) ([]*dns.Record, error) {
 	var records []*dns.Record
+	var err error
 
 	if now.IsZero() {
 		panic("now cannot be zero")
@@ -241,7 +243,7 @@ func (c *Cache) Get(now time.Time, name dns.Name, rrtype dns.RRType, rrclass dns
 	nkey := name.Key()
 
 	rrmap, ok := c.cache[nkey]
-	if ok {
+	if ok && len(rrmap) > 0 {
 		var tkeys []TypeKey
 		if rrtype == dns.AnyType || rrclass == dns.AnyClass {
 			for k := range rrmap {
@@ -295,13 +297,16 @@ func (c *Cache) Get(now time.Time, name dns.Name, rrtype dns.RRType, rrclass dns
 				}
 			}
 		}
+	} else {
+		ok = false
+		err = dns.NameError
 	}
 
 	if !ok && c.parent != nil {
 		return c.parent.Get(now, name, rrtype, rrclass)
 	}
 
-	return records
+	return records, err
 }
 
 // Clone peels off a copy of the zone for checkpointing, zone transfers, etc.

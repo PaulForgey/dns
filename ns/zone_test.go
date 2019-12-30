@@ -1,9 +1,10 @@
-package resolver
+package ns
 
 import (
 	"testing"
 
 	"tessier-ashpool.net/dns"
+	"tessier-ashpool.net/dns/resolver"
 )
 
 func newName(t *testing.T, n string) dns.Name {
@@ -15,10 +16,10 @@ func newName(t *testing.T, n string) dns.Name {
 }
 
 func TestZoneSearch(t *testing.T) {
-	dot := NewZone(newName(t, "."))
-	zone1 := NewZone(newName(t, "tessier-ashpool.net"))
-	zone2 := NewZone(newName(t, "shoesinonehour.com"))
-	zone3 := NewZone(newName(t, "horses.shoesinonehour.com"))
+	dot := &Zone{Zone: resolver.NewZone(newName(t, "."))}
+	zone1 := &Zone{Zone: resolver.NewZone(newName(t, "tessier-ashpool.net"))}
+	zone2 := &Zone{Zone: resolver.NewZone(newName(t, "shoesinonehour.com"))}
+	zone3 := &Zone{Zone: resolver.NewZone(newName(t, "horses.shoesinonehour.com"))}
 
 	zones := NewZones()
 

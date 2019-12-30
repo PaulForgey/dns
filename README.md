@@ -25,6 +25,7 @@ feature is to support correct MDNS behavior where records may be unique per netw
 Planned next items
 ------------------
 
+* EDNS
 * MDNS server
 * Traditional DNS server
 * AXFR/IXFR support

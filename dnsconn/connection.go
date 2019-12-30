@@ -50,20 +50,22 @@ func (m *message) empty() bool {
 
 // The Connection type creates a wrapper around a net.Conn for sending and receiving *dns.Message.
 type Connection struct {
-	conn     net.Conn
-	msgSize  int
-	udp      bool
-	lk       *sync.Mutex
-	messages *message
-	msgChan  chan struct{}
-	xid      uint32
-	err      error
+	Network   string
+	Interface string
+	conn      net.Conn
+	msgSize   int
+	udp       bool
+	lk        *sync.Mutex
+	messages  *message
+	msgChan   chan struct{}
+	xid       uint32
+	err       error
 }
 
 // NewConnection creates a new Connection instance with a given conn.
 // msgSize is the maximum message size to fit an outgoing packet into. Messages are always received in to a buffer
 // of the largest possible size.
-func NewConnection(conn net.Conn, msgSize int) *Connection {
+func NewConnection(conn net.Conn, network string, msgSize int) *Connection {
 	if msgSize < MinMessageSize || msgSize > MaxMessageSize {
 		panic("rediculous msgSize")
 	}
@@ -75,6 +77,7 @@ func NewConnection(conn net.Conn, msgSize int) *Connection {
 	messages.prev = messages
 
 	c := &Connection{
+		Network:  network,
 		conn:     conn,
 		msgSize:  msgSize,
 		udp:      udp,
@@ -92,9 +95,11 @@ func NewConnection(conn net.Conn, msgSize int) *Connection {
 			msg, source, err = c.readFrom()
 
 			c.lk.Lock()
-			if err != nil {
-				c.err = err
-			} else {
+			// XXX ignore malformed message, although there should be a way for the server
+			//     to answer with FormError if it wants
+			if err != nil && msg == nil {
+				c.err = err // connection error
+			} else if err == nil {
 				c.messages.insertTail(&message{msg: msg, source: source})
 			}
 			c.lk.Unlock()
@@ -109,6 +114,11 @@ func NewConnection(conn net.Conn, msgSize int) *Connection {
 	}(c)
 
 	return c
+}
+
+// String provides a convenient string representation for logging and debug output
+func (c *Connection) String() string {
+	return c.conn.LocalAddr().String()
 }
 
 // NewMessageID allocates and returns the next message ID

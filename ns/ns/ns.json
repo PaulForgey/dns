@@ -1,0 +1,31 @@
+{
+	"Listener":{
+		"UDPNetwork":"udp",
+		"TCPNetwork":"tcp"
+	},
+	"Zones":{
+		".": {
+			"Type": "cache"
+		},
+		"example.com": {
+			"Type": "primary",
+			"DbFile": "example.com.db"
+		},
+		"168.192.in-addr.arpa": {
+			"Type": "primary",
+			"DbFile": "168.192.db"
+		},
+		"localhost": {
+			"Type": "primary",
+			"DbFile": "localhost.db"
+		},
+		"127.in-addr.apra": {
+			"Type": "primary",
+			"DbFile": "127.db"
+		},
+		"0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa": {
+			"Type": "primary",
+			"DbFile": "1.ip6.db"
+		}
+	}
+}
