@@ -1,9 +1,9 @@
-@ 24h 	IN SOA ns1 "hostmaster.domain.com" (
+@ 24h 	IN SOA ns1.example.com. "hostmaster.example.com." (
 	1 ; serial
 	3h ; refresh
 	3h ; retry
 	24h ; expire
 	10m ) ; minimum
 
-	IN NS ns1.domain.com
+	IN NS ns1.example.com.
 
