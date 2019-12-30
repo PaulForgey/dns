@@ -202,12 +202,13 @@ func (z *Zone) Lookup(
 // NSEC records matching their own name will be translated into the appropriate negative cache entries.
 func (z *Zone) SharedUpdate(now time.Time, key string, records []*dns.Record) {
 	z.lk.Lock()
+	defer z.lk.Unlock()
+
 	db, ok := z.keys[key]
 	if !ok {
 		db = NewCache(z.db)
 		z.keys[key] = db
 	}
-	z.lk.Unlock()
 
 	if now.IsZero() {
 		// easy case: these are our own records. Just put them in and we are done.
