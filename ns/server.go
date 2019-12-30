@@ -72,30 +72,19 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 			}
 		}
 
-		// fill in additionals
-		for _, r := range msg.Authority {
-			if nrec, ok := r.RecordData.(dns.NameRecordType); ok {
-				zones.Additional(msg, conn.Interface, q.QClass, nrec)
-			}
-		}
-		for _, r := range msg.Answers {
-			if nrec, ok := r.RecordData.(dns.NameRecordType); ok {
-				zones.Additional(msg, conn.Interface, q.QClass, nrec)
-			}
+		if err == nil {
+			// fill in additionals
+			zones.Additional(msg, conn.Interface, q.QClass)
 		}
 
 		var rcode dns.RCode
-		if errors.As(err, &rcode) {
-			answer(conn, rcode, msg, from)
-			continue
+		if !errors.As(err, &rcode) {
+			if err != nil {
+				logger.Printf("Error answering %v from %v: %v", q, from, err)
+				rcode = dns.ServerFailure
+			}
 		}
-		if err != nil {
-			logger.Printf("Error answering %v from %v: %v", q, from, err)
-			answer(conn, dns.ServerFailure, msg, from)
-			continue
-		}
-
-		answer(conn, dns.NoError, msg, from)
+		answer(conn, rcode, msg, from)
 	}
 
 	return nil // unreached

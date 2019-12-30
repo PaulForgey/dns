@@ -56,31 +56,65 @@ func (zs *Zones) Find(n dns.Name) *Zone {
 	return z
 }
 
-// Additional fills in the additional section given a NameRecordType if it can from either cache or authority
-func (zs *Zones) Additional(msg *dns.Message, key string, rrclass dns.RRClass, nrec dns.NameRecordType) {
-	name := nrec.RName()
+// Additional fills in the additional section if it can from either cache or authority
+func (zs *Zones) Additional(msg *dns.Message, key string, rrclass dns.RRClass) {
+	records := append(msg.Authority, msg.Answers...)
 
-	// make sure we haven't already put it in
-	for _, a := range msg.Additional {
-		if a.RecordHeader.Name.Equal(name) {
+	for i := 0; i < len(records); i++ {
+		rec := records[i]
+
+		var name dns.Name
+		var rrtype dns.RRType
+
+		switch rec.Type() {
+		case dns.AType:
+			rrtype = dns.AAAAType
+			name = rec.RecordHeader.Name
+
+		case dns.AAAAType:
+			rrtype = dns.AType
+			name = rec.RecordHeader.Name
+
+		default:
+			if n, ok := rec.RecordData.(dns.NameRecordType); ok {
+				name = n.RName()
+				rrtype = dns.AnyType
+			}
+		}
+
+		if name == nil {
+			continue
+		}
+
+		// make sure we haven't already put it in
+		found := false
+		for _, a := range append(msg.Additional, msg.Answers...) {
+			if a.RecordHeader.Name.Equal(name) && rrtype == a.Type() {
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+
+		zone := zs.Find(name)
+		if zone == nil {
+			continue
+		}
+
+		// find it from cache
+		answers, _, _ := zone.Lookup(key, name, rrtype, rrclass)
+		if len(answers) == 0 {
 			return
 		}
-	}
 
-	zone := zs.Find(name)
-	if zone == nil {
-		return
-	}
-
-	answers, _, _ := zone.Lookup(key, name, dns.AnyType, rrclass)
-	if len(answers) == 0 {
-		return
-	}
-
-	for _, a := range answers {
-		switch a.Type() {
-		case dns.AType, dns.AAAAType, dns.TXTType:
-			msg.Additional = append(msg.Additional, a)
+		for _, a := range answers {
+			switch a.Type() {
+			case dns.AType, dns.AAAAType, dns.TXTType, dns.PTRType, dns.SRVType:
+				msg.Additional = append(msg.Additional, a)
+				records = append(records, a)
+			}
 		}
 	}
 }

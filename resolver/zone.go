@@ -308,7 +308,7 @@ func (z *Zone) Dump(serial uint32, key string) []*dns.Record {
 				RecordHeader: z.soa.RecordHeader,
 				RecordData: &dns.SOARecord{
 					MName:   soa.MName.Copy(),
-					RName:   soa.RName.Copy(),
+					ReName:  soa.ReName.Copy(),
 					Serial:  soa.Serial,
 					Refresh: soa.Refresh,
 					Retry:   soa.Retry,

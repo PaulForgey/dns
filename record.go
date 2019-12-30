@@ -494,7 +494,7 @@ type PTRRecord struct {
 
 type SOARecord struct {
 	MName   Name
-	RName   Name
+	ReName  Name
 	Serial  uint32
 	Refresh time.Duration
 	Retry   time.Duration
@@ -633,14 +633,14 @@ func (rr *NSRecord) Type() RRType { return NSType }
 func (rr *PTRRecord) Type() RRType { return PTRType }
 
 func (rr *SOARecord) NS() Name     { return rr.MName }
-func (rr *SOARecord) Name() Name   { return rr.MName }
+func (rr *SOARecord) RName() Name  { return rr.MName }
 func (rr *SOARecord) Type() RRType { return SOAType }
 
 func (rr *SOARecord) UnmarshalCodec(c Codec) error {
 	return DecodeSequence(
 		c,
 		&rr.MName,
-		&rr.RName,
+		&rr.ReName,
 		&rr.Serial,
 		&rr.Refresh,
 		&rr.Retry,
@@ -653,7 +653,7 @@ func (rr *SOARecord) MarshalCodec(c Codec) error {
 	return EncodeSequence(
 		c,
 		rr.MName,
-		rr.RName,
+		rr.ReName,
 		rr.Serial,
 		rr.Refresh,
 		rr.Retry,
