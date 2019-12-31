@@ -99,11 +99,14 @@ func answer(conn *dnsconn.Connection, rcode dns.RCode, msg *dns.Message, to net.
 	// client's EDNS message
 	if msg.EDNS != nil {
 		msgSize = int(msg.EDNS.RecordHeader.MaxMessageSize)
+		if msgSize < dnsconn.MinMessageSize {
+			msgSize = dnsconn.MinMessageSize
+		}
 
 		// respond with our own
 		msg.EDNS = &dns.Record{
 			RecordHeader: dns.RecordHeader{
-				MaxMessageSize: dnsconn.MaxMessageSize,
+				MaxMessageSize: dnsconn.UDPMessageSize,
 				Version:        0,
 			},
 			RecordData: &dns.EDNSRecord{},

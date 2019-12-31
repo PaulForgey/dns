@@ -114,7 +114,7 @@ func (r *Resolver) ask(dest net.Addr, name dns.Name, rrtype dns.RRType, rrclass 
 		},
 		EDNS: &dns.Record{
 			RecordHeader: dns.RecordHeader{
-				MaxMessageSize: dnsconn.MaxMessageSize,
+				MaxMessageSize: dnsconn.UDPMessageSize,
 				Version:        0,
 			},
 			RecordData: &dns.EDNSRecord{},

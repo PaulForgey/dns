@@ -14,6 +14,7 @@ import (
 
 const (
 	MaxMessageSize = 65535 // 16 bit size field
+	UDPMessageSize = 8192  // peferred message size
 	MinMessageSize = 512   // bsd BUFSIZ used in ancient times
 )
 
