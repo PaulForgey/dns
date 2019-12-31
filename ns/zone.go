@@ -58,7 +58,9 @@ func (zs *Zones) Find(n dns.Name) *Zone {
 
 // Additional fills in the additional section if it can from either cache or authority
 func (zs *Zones) Additional(msg *dns.Message, key string, rrclass dns.RRClass) {
-	records := append(msg.Authority, msg.Answers...)
+	records := make([]*dns.Record, len(msg.Authority), len(msg.Authority)+len(msg.Answers))
+	copy(records, msg.Authority)
+	records = append(records, msg.Answers...)
 
 	for i := 0; i < len(records); i++ {
 		rec := records[i]
@@ -88,7 +90,16 @@ func (zs *Zones) Additional(msg *dns.Message, key string, rrclass dns.RRClass) {
 
 		// make sure we haven't already put it in
 		found := false
-		for _, a := range append(msg.Additional, msg.Answers...) {
+		for _, a := range msg.Additional {
+			if a.RecordHeader.Name.Equal(name) && rrtype == a.Type() {
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+		for _, a := range msg.Answers {
 			if a.RecordHeader.Name.Equal(name) && rrtype == a.Type() {
 				found = true
 				break

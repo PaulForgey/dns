@@ -16,13 +16,12 @@ var ErrNoRecords = errors.New("no matching records") // returned only by special
 var ErrLameDelegation = errors.New("lame delegation")
 var ErrNoRecursion = errors.New("recursion denied")
 
-const qtimeout = 3 * time.Second
+const qtimeout = 5 * time.Second
 
 type Resolver struct {
 	lk       *sync.Mutex
 	conn     *dnsconn.Connection
 	zone     *Zone
-	queries  map[int]*Zone
 	answer   chan struct{}
 	servers  []net.Addr
 	rd       bool
@@ -34,7 +33,6 @@ type Resolver struct {
 func (r *Resolver) init(conn *dnsconn.Connection, zone *Zone, network string) {
 	r.lk = &sync.Mutex{}
 	r.zone = zone
-	r.queries = make(map[int]*Zone)
 	r.conn = conn
 
 	// which type of address records to ask for when resolving hosts
@@ -101,7 +99,7 @@ func (r *Resolver) Debug(c dns.Codec) {
 	r.debug = c
 }
 
-func (r *Resolver) ask(dest net.Addr, zone *Zone, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (uint16, error) {
+func (r *Resolver) ask(dest net.Addr, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (uint16, error) {
 	id := r.conn.NewMessageID()
 	msg := &dns.Message{
 		ID:     id,
@@ -116,38 +114,15 @@ func (r *Resolver) ask(dest net.Addr, zone *Zone, name dns.Name, rrtype dns.RRTy
 		},
 	}
 
-	r.lk.Lock()
-	r.queries[int(id)] = zone
-	r.lk.Unlock()
-
 	err := r.conn.WriteTo(msg, dest)
-	if err != nil {
-		r.lk.Lock()
-		delete(r.queries, int(id))
-		r.lk.Unlock()
-	}
 	return id, err
 }
 
-func (r *Resolver) cancel(id uint16) {
-	r.lk.Lock()
-	delete(r.queries, int(id))
-	r.lk.Unlock()
-}
-
-func (r *Resolver) waitAnswer(ctx context.Context, id uint16) (*dns.Message, error) {
+func (r *Resolver) waitAnswer(ctx context.Context, id uint16, zone *Zone) (*dns.Message, error) {
 	var msg *dns.Message
 	var err error
 
-	r.lk.Lock()
-	zone, ok := r.queries[int(id)]
-	r.lk.Unlock()
-
-	if !ok {
-		return nil, context.Canceled
-	}
-
-	readCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	readCtx, cancel := context.WithTimeout(ctx, qtimeout)
 	msg, _, err = r.conn.ReadFromIf(readCtx, func(m *dns.Message) bool {
 		return m.QR && m.ID == id
 	})
@@ -165,7 +140,6 @@ func (r *Resolver) waitAnswer(ctx context.Context, id uint16) (*dns.Message, err
 		}
 	}
 
-	r.cancel(id)
 	return msg, err
 }
 
@@ -221,13 +195,13 @@ func (r *Resolver) query(
 	var msg *dns.Message
 	for _, dest := range servers {
 		var id uint16
-		id, err = r.ask(dest, r.zone, name, rrtype, rrclass)
+		id, err = r.ask(dest, name, rrtype, rrclass)
 		if err != nil {
 			continue
 		}
 		// An error at this point will be a transport error.
 		// Any server error is in the successfully received message.
-		msg, err = r.waitAnswer(ctx, id)
+		msg, err = r.waitAnswer(ctx, id, r.zone)
 
 		// see if we are being coerced into a TCP query
 		if err == nil && len(msg.Answers) == 0 && len(msg.Authority) == 0 && msg.TC {
@@ -433,7 +407,7 @@ func (r *Resolver) resolve(
 			var authority []dns.NSRecordType
 			var aname dns.Name
 
-			for _, record := range append(ns, a...) {
+			for _, record := range append(a, ns...) {
 				if auth, ok := record.RecordData.(dns.NSRecordType); ok {
 					if len(aname) == 0 {
 						aname = record.RecordHeader.Name
