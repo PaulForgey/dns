@@ -17,7 +17,7 @@ func TestRecord(t *testing.T) {
 	}
 	soa := &SOARecord{
 		MName:   mname,
-		RName:   rname,
+		ReName:  rname,
 		Serial:  1234,
 		Refresh: 10800 * time.Second,
 		Retry:   10800 * time.Second,

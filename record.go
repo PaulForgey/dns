@@ -89,7 +89,7 @@ const (
 	MGType      RRType = 8
 	MRType      RRType = 9
 	NULLType    RRType = 10
-	WKSType     RRType = 11
+	WKSType     RRType = 11 // pseudo
 	PTRType     RRType = 12
 	HINFOType   RRType = 13
 	MINFOType   RRType = 14
@@ -97,7 +97,8 @@ const (
 	TXTType     RRType = 16
 	AAAAType    RRType = 28
 	SRVType     RRType = 33
-	NSECType    RRType = 47
+	EDNSType    RRType = 41  // pseudo
+	NSECType    RRType = 47  // pseudo
 	AXFRType    RRType = 252 // query
 	MAILBType   RRType = 253 // query
 	MAILAType   RRType = 254 // query
@@ -142,6 +143,8 @@ func (r RRType) String() string {
 		return "AAAA"
 	case SRVType:
 		return "SRV"
+	case EDNSType:
+		return "EDNS"
 	case NSECType:
 		return "NSEC"
 	case AXFRType:
@@ -197,6 +200,8 @@ func (r *RRType) Set(str string) error {
 		*r = AAAAType
 	case "SRV":
 		*r = SRVType
+	case "EDNS":
+		*r = EDNSType
 	case "NSEC":
 		*r = NSECType
 	case "AXFR":
@@ -233,7 +238,7 @@ func (t RRType) Asks(n RRType) bool {
 
 // A RecordHeader contains the common fields in a Record.
 // When creating one to be marshalled, only Name and TTL need to be valid.
-// Type and Class are not expected to be valid unless it is either associated with an unknown record type, or if its
+// Type is not expected to be valid unless it is either associated with an unknown record type, or if its
 // coresponding data is nil (negative cache entries).
 type RecordHeader struct {
 	Name Name
@@ -247,6 +252,11 @@ type RecordHeader struct {
 
 	OriginalTTL   time.Duration // cache only
 	Authoritative bool          // cache only
+
+	MaxMessageSize uint16 // decode only, EDNS
+	ExtRCode       uint8  // decode only, EDNS
+	Version        uint8  // decode only, EDNS
+	Flags          uint16 // decode only, EDNS
 }
 
 // The RecordData type describes how to marshal and demarshal via the Encoder and Decoder types, as well as identify
@@ -302,6 +312,43 @@ func (rr *UnknownRecord) UnmarshalCodec(c Codec) error {
 }
 
 func (rr *UnknownRecord) Type() RRType { return rr.rrtype }
+
+type Options map[uint16][]byte
+
+func (o Options) MarshalCodec(c Codec) error {
+	for code, data := range o {
+		length := uint16(len(data))
+		if err := EncodeSequence(c, code, length); err != nil {
+			return err
+		}
+		if length > 0 {
+			if err := c.Encode(data); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (o *Options) UnmarshalCodec(c Codec) error {
+	*o = make(map[uint16][]byte)
+	for {
+		var code, length uint16
+		if err := DecodeSequence(c, &code, &length); err != nil {
+			if errors.Is(err, io.ErrUnexpectedEOF) {
+				return nil // expected end
+			}
+		}
+		data := make([]byte, int(length))
+		if len(data) > 0 {
+			if err := c.Decode(&data); err != nil {
+				return err
+			}
+		}
+		(*o)[code] = data
+	}
+	return nil
+}
 
 type Bitmap [][]byte
 
@@ -523,6 +570,10 @@ type SRVRecord struct {
 	Name
 }
 
+type EDNSRecord struct {
+	Options
+}
+
 type NSECRecord struct {
 	Next  Name
 	Types Bitmap
@@ -572,6 +623,8 @@ func RecordFromType(rrtype RRType) RecordData {
 		return &AAAARecord{}
 	case SRVType:
 		return &SRVRecord{}
+	case EDNSType:
+		return &EDNSRecord{}
 	case NSECType:
 		return &NSECRecord{}
 	}
@@ -717,6 +770,16 @@ func (rr *SRVRecord) UnmarshalCodec(c Codec) error {
 
 func (rr *SRVRecord) MarshalCodec(c Codec) error {
 	return EncodeSequence(c, rr.Priority, rr.Weight, rr.Port, rr.Name)
+}
+
+func (rr *EDNSRecord) Type() RRType { return EDNSType }
+
+func (rr *EDNSRecord) UnmarshalCodec(c Codec) error {
+	return c.Decode(&rr.Options)
+}
+
+func (rr *EDNSRecord) MarshalCodec(c Codec) error {
+	return c.Encode(rr.Options)
 }
 
 func (rr *NSECRecord) Type() RRType { return NSECType }

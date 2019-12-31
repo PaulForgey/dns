@@ -53,7 +53,6 @@ type Connection struct {
 	Network   string
 	Interface string
 	conn      net.Conn
-	msgSize   int
 	udp       bool
 	lk        *sync.Mutex
 	messages  *message
@@ -63,12 +62,7 @@ type Connection struct {
 }
 
 // NewConnection creates a new Connection instance with a given conn.
-// msgSize is the maximum message size to fit an outgoing packet into. Messages are always received in to a buffer
-// of the largest possible size.
-func NewConnection(conn net.Conn, network string, msgSize int) *Connection {
-	if msgSize < MinMessageSize || msgSize > MaxMessageSize {
-		panic("rediculous msgSize")
-	}
+func NewConnection(conn net.Conn, network string) *Connection {
 	_, udp := conn.(net.PacketConn)
 
 	// sentinal node
@@ -79,7 +73,6 @@ func NewConnection(conn net.Conn, network string, msgSize int) *Connection {
 	c := &Connection{
 		Network:  network,
 		conn:     conn,
-		msgSize:  msgSize,
 		udp:      udp,
 		lk:       &sync.Mutex{},
 		messages: messages,
@@ -128,17 +121,22 @@ func (c *Connection) NewMessageID() uint16 {
 
 // WriteTo sends a *dns.Message. If the message could not fit but could stil be validly sent with reduced extra records,
 // Write returns nil but will update msg with what it actually sent.
+// msgSize is the maximum message size to fit the message.
 // Use a nil addr for connected conns.
-func (c *Connection) WriteTo(msg *dns.Message, addr net.Addr) error {
+func (c *Connection) WriteTo(msg *dns.Message, addr net.Addr, msgSize int) error {
 	var msgBuf []byte
+
+	if msgSize < MinMessageSize || msgSize > MaxMessageSize {
+		panic("rediculous msgSize")
+	}
 
 	buffer := bufferPool.Get().([]byte)
 	defer bufferPool.Put(buffer)
 
 	if c.udp {
-		msgBuf = buffer[:c.msgSize]
+		msgBuf = buffer[:msgSize]
 	} else {
-		msgBuf = buffer[2 : 2+c.msgSize]
+		msgBuf = buffer[2 : 2+msgSize]
 	}
 
 	if !msg.QR && msg.ID == 0 {

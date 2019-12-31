@@ -91,6 +91,8 @@ func createZone(name string, conf *Zone) (*ns.Zone, error) {
 		return nil, fmt.Errorf("%s type not yet supported", conf.Type)
 	case CacheType: // this is builtin and name is '.' regardless of what the configuration says
 		zone = cache
+	default:
+		return nil, fmt.Errorf("no such type %s", conf.Type)
 	}
 
 	return &ns.Zone{Zone: zone}, nil
@@ -105,7 +107,7 @@ func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net
 			logger.Printf("cannot create udp listener on %v: %v", ip, err)
 		} else {
 			logger.Printf("%s: listening udp %v", iface, laddr)
-			conn := dnsconn.NewConnection(c, "udp", dnsconn.MinMessageSize)
+			conn := dnsconn.NewConnection(c, "udp")
 			conn.Interface = iface
 			ns.Serve(ctx, logger, conn, zones)
 			conn.Close()
@@ -129,7 +131,7 @@ func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net
 				} else {
 					wg.Add(1)
 					go func() {
-						conn := dnsconn.NewConnection(a, "tcp", dnsconn.MaxMessageSize)
+						conn := dnsconn.NewConnection(a, "tcp")
 						conn.Interface = iface
 						ns.Serve(ctx, logger, conn, zones)
 						conn.Close()
@@ -153,7 +155,7 @@ func main() {
 	flag.Parse()
 
 	if logStderr {
-		logger = log.New(os.Stderr, "ns", log.LstdFlags)
+		logger = log.New(os.Stderr, "ns:", log.LstdFlags)
 	} else {
 		logger, err = syslog.NewLogger(syslog.LOG_NOTICE|syslog.LOG_DAEMON, log.LstdFlags)
 		if err != nil {
@@ -180,15 +182,17 @@ func main() {
 		if err != nil {
 			logger.Fatalf("unable to create resolver socket: %v", err)
 		}
-		zones.R = resolver.NewResolver(cache, dnsconn.NewConnection(rc, conf.Resolver, dnsconn.MinMessageSize), true)
+		zones.R = resolver.NewResolver(cache, dnsconn.NewConnection(rc, conf.Resolver), true)
 	}
 
 	for k, v := range conf.Zones {
-		zone, err := createZone(k, &v)
-		if err != nil {
-			logger.Fatalf("cannot load zone %s: %v", k, err)
-		}
-		zones.Insert(zone)
+		go func(name string, c Zone) {
+			zone, err := createZone(name, &c)
+			if err != nil {
+				logger.Fatalf("cannot load zone %s: %v", name, err)
+			}
+			zones.Insert(zone)
+		}(k, v)
 	}
 
 	ctx := context.Background() // XXX can make this cancelable for a clean shutdown

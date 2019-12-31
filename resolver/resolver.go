@@ -68,7 +68,7 @@ func NewResolverClient(zone *Zone, network string, host string, servers []net.Ad
 	}
 
 	r := &Resolver{}
-	r.init(dnsconn.NewConnection(conn, network, dnsconn.MinMessageSize), zone, network)
+	r.init(dnsconn.NewConnection(conn, network), zone, network)
 	r.rd = true
 	r.ra = true
 	if host != "" && len(servers) == 0 {
@@ -112,9 +112,16 @@ func (r *Resolver) ask(dest net.Addr, name dns.Name, rrtype dns.RRType, rrclass 
 				QClass: rrclass,
 			},
 		},
+		EDNS: &dns.Record{
+			RecordHeader: dns.RecordHeader{
+				MaxMessageSize: dnsconn.MaxMessageSize,
+				Version:        0,
+			},
+			RecordData: &dns.EDNSRecord{},
+		},
 	}
 
-	err := r.conn.WriteTo(msg, dest)
+	err := r.conn.WriteTo(msg, dest, dnsconn.MinMessageSize)
 	return id, err
 }
 

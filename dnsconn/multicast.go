@@ -10,7 +10,8 @@ import (
 // The Multicast type is a specialization of a Connection type handling multicast mdns messages
 type Multicast struct {
 	*Connection
-	gaddr *net.UDPAddr
+	gaddr   *net.UDPAddr
+	msgSize int
 }
 
 // Attempt to create a listener on an unknown or ambiguous network
@@ -38,17 +39,21 @@ func NewMulticast(network string, ifi *net.Interface) (*Multicast, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Multicast{NewConnection(conn, network, msgSize), gaddr}, nil
+	return &Multicast{
+		Connection: NewConnection(conn, network),
+		gaddr:      gaddr,
+		msgSize:    msgSize,
+	}, nil
 }
 
-func (m *Multicast) WriteTo(msg *dns.Message, addr net.Addr) error {
+func (m *Multicast) WriteTo(msg *dns.Message, addr net.Addr, _ int) error {
 	if addr == nil {
 		addr = m.gaddr
 	}
 	for {
 		answers := msg.Answers
 
-		if err := m.Connection.WriteTo(msg, addr); err != nil {
+		if err := m.Connection.WriteTo(msg, addr, m.msgSize); err != nil {
 			return err
 		}
 

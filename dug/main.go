@@ -57,7 +57,7 @@ func main() {
 		}
 		r = resolver.NewResolver(
 			resolver.NewRootZone(),
-			dnsconn.NewConnection(conn, network, dnsconn.MinMessageSize),
+			dnsconn.NewConnection(conn, network),
 			true,
 		)
 	}

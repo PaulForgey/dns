@@ -14,6 +14,7 @@ const (
 	NameError      RCode = 3
 	NotImplemented RCode = 4
 	Refused        RCode = 5
+	BadVersion     RCode = 16
 )
 
 func (r RCode) Error() string {
@@ -30,6 +31,8 @@ func (r RCode) Error() string {
 		return "not implemented"
 	case Refused:
 		return "refused"
+	case BadVersion:
+		return "bad EDNS version"
 	}
 	return fmt.Sprintf("unknown rcode 0x%x", int(r))
 }
@@ -69,6 +72,7 @@ type Message struct {
 	Answers    []*Record
 	Authority  []*Record
 	Additional []*Record
+	EDNS       *Record
 }
 
 type Question struct {

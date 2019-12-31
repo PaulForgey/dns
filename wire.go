@@ -9,6 +9,7 @@ import (
 )
 
 var ErrStringTooLong = errors.New("string longer than 255 octets")
+var ErrBadRCode = errors.New("extended RCode with non-EDNS message")
 
 // a Compressor type maps packet offsets at which a complete Name appears
 type Compressor map[int]Name
@@ -108,7 +109,6 @@ func (w *WireCodec) buffer(n int) ([]byte, error) {
 	return buf, nil
 }
 
-// nul = true to consume only up to a \0, if we find one
 func (w *WireCodec) variable() []byte {
 	end := len(w.data)
 	data := w.data[:end]
@@ -155,13 +155,20 @@ func (w *WireCodec) putName(n Name) error {
 }
 
 func (w *WireCodec) putRecord(r *Record) error {
-	if err := EncodeSequence(
-		w,
-		r.RecordHeader.Name,
-		uint16(r.Type()),
-		uint16(r.Class()),
-		r.RecordHeader.TTL,
-	); err != nil {
+	var rrclass uint16
+	var ttl uint32
+
+	if r.Type() == EDNSType {
+		rrclass = r.RecordHeader.MaxMessageSize
+		ttl = uint32(r.RecordHeader.ExtRCode)<<24 |
+			uint32(r.RecordHeader.Version)<<16 |
+			uint32(r.RecordHeader.Flags)
+	} else {
+		rrclass = uint16(r.Class())
+		ttl = uint32(r.RecordHeader.TTL / time.Second)
+	}
+
+	if err := EncodeSequence(w, r.RecordHeader.Name, uint16(r.Type()), rrclass, ttl); err != nil {
 		return err
 	}
 
@@ -205,6 +212,16 @@ func (w *WireCodec) putMessage(m *Message) error {
 	}
 	status |= uint16(m.RCode) & 0x7f
 
+	if m.RCode > 15 && m.EDNS == nil {
+		return ErrBadRCode
+	}
+
+	adLen := uint16(len(m.Additional))
+	if m.EDNS != nil {
+		m.EDNS.RecordHeader.ExtRCode = uint8((m.RCode & 0xff0) >> 4)
+		adLen++
+	}
+
 	if err := EncodeSequence(
 		w,
 		m.ID,
@@ -212,7 +229,7 @@ func (w *WireCodec) putMessage(m *Message) error {
 		uint16(len(m.Questions)),
 		uint16(len(m.Answers)),
 		uint16(len(m.Authority)),
-		uint16(len(m.Additional)),
+		adLen,
 	); err != nil {
 		return err
 	}
@@ -238,6 +255,11 @@ func (w *WireCodec) putMessage(m *Message) error {
 			if errors.Is(err, io.ErrUnexpectedEOF) {
 				return &Truncated{err: err, At: i, Total: len(m.Authority), Section: 2}
 			}
+			return err
+		}
+	}
+	if m.EDNS != nil {
+		if err := w.Encode(m.EDNS); err != nil {
 			return err
 		}
 	}
@@ -408,24 +430,34 @@ func (w *WireCodec) getName() (Name, error) {
 }
 
 func (w *WireCodec) getRecord(r *Record) error {
-	var rrclass RRClass
+	var rrclass uint16
+	var ttl uint32
 	if err := DecodeSequence(
 		w,
 		&r.RecordHeader.Name,
 		(*uint16)(&r.RecordHeader.Type),
-		(*uint16)(&rrclass),
-		&r.RecordHeader.TTL,
+		&rrclass,
+		&ttl,
 		&r.RecordHeader.Length,
 	); err != nil {
 		return err
 	}
 
-	if (rrclass & 0x8000) != 0 {
-		r.RecordHeader.Class = rrclass & 0x7fff
-		r.RecordHeader.CacheFlush = true
+	// special case pseduo opt
+	if r.RecordHeader.Type == EDNSType {
+		r.RecordHeader.MaxMessageSize = rrclass
+		r.RecordHeader.ExtRCode = uint8((ttl & 0xff000000) >> 24)
+		r.RecordHeader.Version = uint8((ttl & 0x00ff0000) >> 16)
+		r.RecordHeader.Flags = uint16(ttl & 0xffff)
 	} else {
-		r.RecordHeader.Class = rrclass
-		r.RecordHeader.CacheFlush = false
+		r.RecordHeader.TTL = time.Duration(ttl) * time.Second
+		if (rrclass & 0x8000) != 0 {
+			r.RecordHeader.Class = RRClass(rrclass) & 0x7fff
+			r.RecordHeader.CacheFlush = true
+		} else {
+			r.RecordHeader.Class = RRClass(rrclass)
+			r.RecordHeader.CacheFlush = false
+		}
 	}
 
 	dc, err := w.Split(int(r.RecordHeader.Length))
@@ -464,7 +496,7 @@ func (w *WireCodec) getMessage(m *Message) error {
 	m.Questions = make([]*Question, int(qdcount))
 	m.Answers = make([]*Record, int(ancount))
 	m.Authority = make([]*Record, int(nscount))
-	m.Additional = make([]*Record, int(arcount))
+	m.Additional = make([]*Record, 0, int(arcount))
 
 	for i := range m.Questions {
 		q := &Question{}
@@ -487,12 +519,29 @@ func (w *WireCodec) getMessage(m *Message) error {
 		}
 		m.Authority[i] = r
 	}
-	for i := range m.Additional {
+	for i := uint16(0); i < arcount; i++ {
 		r := &Record{}
 		if err := w.Decode(r); err != nil {
 			return err
 		}
-		m.Additional[i] = r
+
+		if r.Type() == EDNSType {
+			// special case this one.
+			// It is not appropriate to let it deserialize as its own pseudo record type like others
+			if m.EDNS != nil {
+				return fmt.Errorf("%w: multiple EDNS records", FormError)
+			}
+			m.EDNS = r
+		} else {
+			m.Additional = append(m.Additional, r)
+		}
+	}
+
+	if m.EDNS != nil {
+		if m.EDNS.Version > 0 {
+			return fmt.Errorf("%w: highest supported version is 0", BadVersion)
+		}
+		m.RCode |= RCode(m.EDNS.ExtRCode) << 4
 	}
 
 	return nil
@@ -556,9 +605,20 @@ func (w *WireCodec) Decode(i interface{}) error {
 		copy((*t)[:], buf)
 
 	case *[]byte:
-		data := w.variable()
-		*t = make([]byte, len(data))
-		copy(*t, data)
+		var buf []byte
+		if len(*t) == 0 {
+			buf = w.variable()
+		} else {
+			var err error
+			buf, err = w.buffer(len(*t))
+			if err != nil {
+				return err
+			}
+		}
+		if len(*t) == 0 {
+			*t = make([]byte, len(buf))
+		}
+		copy(*t, buf)
 
 	case *[]string:
 		var strings []string

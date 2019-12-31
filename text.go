@@ -765,6 +765,18 @@ func (c *TextCodec) putMessage(m *Message) error {
 		return err
 	}
 
+	if m.EDNS != nil {
+		if _, err := fmt.Fprintf(
+			c.w,
+			";; EDNS: version=%d, msgSize=%d, flags=%04x\n",
+			m.EDNS.RecordHeader.Version,
+			m.EDNS.RecordHeader.MaxMessageSize,
+			m.EDNS.RecordHeader.Flags,
+		); err != nil {
+			return err
+		}
+	}
+
 	if _, err := fmt.Fprintf(c.w, ";; questions:\n"); err != nil {
 		return err
 	}

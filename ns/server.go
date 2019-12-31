@@ -43,7 +43,7 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 			continue
 		}
 
-		logger.Printf("%s: %v: %v", conn.Interface, from, q)
+		logger.Printf("%s:%v:%v: %v", conn.Interface, from, zone.Name, q)
 
 		// XXX handle XFER, IXFR, etc.
 		//     Until we do, just dumbly treat these types as normal types which we will not find.
@@ -93,5 +93,22 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 func answer(conn *dnsconn.Connection, rcode dns.RCode, msg *dns.Message, to net.Addr) error {
 	msg.QR = true
 	msg.RCode = rcode
-	return conn.WriteTo(msg, to)
+
+	msgSize := dnsconn.MinMessageSize
+
+	// client's EDNS message
+	if msg.EDNS != nil {
+		msgSize = int(msg.EDNS.RecordHeader.MaxMessageSize)
+
+		// respond with our own
+		msg.EDNS = &dns.Record{
+			RecordHeader: dns.RecordHeader{
+				MaxMessageSize: dnsconn.MaxMessageSize,
+				Version:        0,
+			},
+			RecordData: &dns.EDNSRecord{},
+		}
+	}
+
+	return conn.WriteTo(msg, to, msgSize)
 }
