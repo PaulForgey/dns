@@ -464,11 +464,11 @@ func (r *Resolver) resolve(
 				if auth.NS().HasSuffix(aname) {
 					// avoid an endless cycle if the glue record is missing
 					if ips, err = r.resolveIP(ctx, nsaddrs, key, auth.NS(), rrclass); err != nil {
-						return nil, err
+						continue
 					}
 				} else {
 					if ips, err = r.ResolveIP(ctx, key, auth.NS(), rrclass); err != nil {
-						return nil, err
+						continue
 					}
 				}
 				break

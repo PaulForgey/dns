@@ -210,9 +210,9 @@ func (w *WireCodec) putMessage(m *Message) error {
 	if m.RA {
 		status |= 0x0080
 	}
-	status |= uint16(m.RCode) & 0x7f
+	status |= uint16(m.RCode) & 0xf
 
-	if m.RCode > 15 && m.EDNS == nil {
+	if m.RCode > 0xf && m.EDNS == nil {
 		return ErrBadRCode
 	}
 
@@ -491,7 +491,7 @@ func (w *WireCodec) getMessage(m *Message) error {
 		(status&0x0100) != 0,
 		(status&0x0080) != 0
 	m.Opcode = Opcode((status & 0x7800) >> 11)
-	m.RCode = RCode(status & 0x7f)
+	m.RCode = RCode(status & 0xf)
 
 	m.Questions = make([]*Question, int(qdcount))
 	m.Answers = make([]*Record, int(ancount))

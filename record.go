@@ -99,6 +99,7 @@ const (
 	SRVType     RRType = 33
 	EDNSType    RRType = 41  // pseudo
 	NSECType    RRType = 47  // pseudo
+	IXFRType    RRType = 251 // query
 	AXFRType    RRType = 252 // query
 	MAILBType   RRType = 253 // query
 	MAILAType   RRType = 254 // query
@@ -147,6 +148,8 @@ func (r RRType) String() string {
 		return "EDNS"
 	case NSECType:
 		return "NSEC"
+	case IXFRType:
+		return "IXFR"
 	case AXFRType:
 		return "AXFR"
 	case MAILBType:
@@ -204,6 +207,8 @@ func (r *RRType) Set(str string) error {
 		*r = EDNSType
 	case "NSEC":
 		*r = NSECType
+	case "IXFR":
+		*r = IXFRType
 	case "AXFR":
 		*r = AXFRType
 	case "MAILB":

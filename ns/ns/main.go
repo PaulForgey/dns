@@ -99,15 +99,22 @@ func createZone(name string, conf *Zone) (*ns.Zone, error) {
 }
 
 func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net.IP, zones *ns.Zones) {
+	ip4 := (ip.To4() != nil)
+
 	wg.Add(1)
 	go func() {
+		network := "udp"
+		if ip4 {
+			network = "udp4"
+		}
+
 		laddr := &net.UDPAddr{IP: ip, Port: 53}
-		c, err := net.ListenUDP("udp", laddr)
+		c, err := net.ListenUDP(network, laddr)
 		if err != nil {
 			logger.Printf("cannot create udp listener on %v: %v", ip, err)
 		} else {
-			logger.Printf("%s: listening udp %v", iface, laddr)
-			conn := dnsconn.NewConnection(c, "udp")
+			logger.Printf("%s: listening %s %v", iface, network, laddr)
+			conn := dnsconn.NewConnection(c, network)
 			conn.Interface = iface
 			ns.Serve(ctx, logger, conn, zones)
 			conn.Close()
@@ -117,12 +124,17 @@ func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net
 
 	wg.Add(1)
 	go func() {
+		network := "tcp"
+		if ip4 {
+			network = "tcp4"
+		}
+
 		laddr := &net.TCPAddr{IP: ip, Port: 53}
-		c, err := net.ListenTCP("tcp", laddr)
+		c, err := net.ListenTCP(network, laddr)
 		if err != nil {
 			logger.Printf("cannot create tcp listener on %v: %v", ip, err)
 		} else {
-			logger.Printf("%s: listening tcp %v", iface, laddr)
+			logger.Printf("%s: listening %s %v", iface, network, laddr)
 			for {
 				a, err := c.Accept()
 				if err != nil {
@@ -131,7 +143,7 @@ func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net
 				} else {
 					wg.Add(1)
 					go func() {
-						conn := dnsconn.NewConnection(a, "tcp")
+						conn := dnsconn.NewConnection(a, network)
 						conn.Interface = iface
 						ns.Serve(ctx, logger, conn, zones)
 						conn.Close()

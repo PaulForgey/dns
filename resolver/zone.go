@@ -21,6 +21,10 @@ type snapshot struct {
 	prior       *snapshot
 }
 
+func (s *snapshot) serial() uint32 {
+	return s.soa.RecordData.(*dns.SOARecord).Serial
+}
+
 func (s *snapshot) collapse() *Cache {
 	if s.prior == nil {
 		if s.remove != nil {
@@ -34,23 +38,27 @@ func (s *snapshot) collapse() *Cache {
 	return base
 }
 
-func (s *snapshot) xfer(from *snapshot) []*dns.Record {
-	var records []*dns.Record
-
+func (s *snapshot) xfer(from *snapshot, next func(*dns.Record) error) error {
 	if s.prior != from {
-		records = append(records, s.prior.xfer(from)...)
+		if err := s.prior.xfer(from, next); err != nil {
+			return err
+		}
 	}
 
-	records = append(records, s.prior.soa)
-	s.remove.Enumerate(func(r *dns.Record) {
-		records = append(records, r)
-	})
-	records = append(records, s.soa)
-	s.add.Enumerate(func(r *dns.Record) {
-		records = append(records, r)
-	})
+	if err := next(s.prior.soa); err != nil {
+		return err
+	}
+	if err := s.remove.Enumerate(next); err != nil {
+		return err
+	}
+	if err := next(s.soa); err != nil {
+		return err
+	}
+	if err := s.add.Enumerate(next); err != nil {
+		return err
+	}
 
-	return records
+	return nil
 }
 
 // the Zone type holds authoritative records for a given DNS zone.
@@ -60,6 +68,7 @@ type Zone struct {
 	Hint bool     // zone is only a hint for caching and is not authoritative
 
 	lk        sync.RWMutex
+	snaplk    sync.Mutex // overlaps with lk; lock lk first!
 	updated   bool
 	soa       *dns.Record
 	keys      map[string]*Cache
@@ -140,17 +149,39 @@ func (z *Zone) Decode(key string, clear bool, c dns.Codec) error {
 }
 
 // Retrieve SOA data.
-func (z *Zone) SOA() *dns.SOARecord {
-	var soa *dns.SOARecord
+func (z *Zone) soa_locked() *dns.Record {
+	r := z.soa
 
-	z.lk.Lock()
-	soa = z.soa.RecordData.(*dns.SOARecord)
 	if z.updated {
-		z.updated = false
+		soa := r.RecordData.(*dns.SOARecord)
+		nsoa := dns.SOARecord(*soa)
+		soa = &nsoa
+		r = &dns.Record{
+			RecordHeader: r.RecordHeader,
+			RecordData:   soa,
+		}
 		soa.Serial++
+
+		z.updated = false
+		z.soa = r
 	}
-	z.lk.Unlock()
-	return soa
+
+	return r
+}
+func (z *Zone) SOA() *dns.Record {
+	var r *dns.Record
+
+	z.lk.RLock()
+	r = z.soa
+	if z.updated {
+		z.lk.RUnlock()
+		z.lk.Lock()
+		r = z.soa_locked()
+		z.lk.Unlock()
+	} else {
+		z.lk.RUnlock()
+	}
+	return r
 }
 
 // Lookup a name within a zone, or a delegation above it.
@@ -255,6 +286,7 @@ func (z *Zone) SharedUpdate(now time.Time, key string, records []*dns.Record) {
 
 // Enter calls the cache's Enter method for the cache layer under this zone. As this is not an mdns operation, there
 // is no shared option and the current time is used.
+// XXX do not cache pseduo records
 func (z *Zone) Enter(records []*dns.Record) {
 	z.lk.Lock()
 	z.cache.Enter(time.Now(), false, records)
@@ -263,21 +295,18 @@ func (z *Zone) Enter(records []*dns.Record) {
 
 // Dump returns all records for a zone, optionally since a given soa.
 // If serial is 0 or the zone does not have history for serial, a full result set is returned, otherwise an incremental result.
-// The current serial will be snapshotted for future history.
-func (z *Zone) Dump(serial uint32, key string) []*dns.Record {
+// The current serial will be snapshotted for future history if it was not already.
+func (z *Zone) Dump(serial uint32, key string, next func(*dns.Record) error) error {
 	z.lk.Lock()
-	soa := z.soa.RecordData.(*dns.SOARecord)
-	if z.updated || soa.Serial == 0 {
-		soa.Serial++
-		z.updated = false
-	}
+	soa := z.soa_locked()
 	db, ok := z.keys[key]
 	if !ok {
 		key = ""
 		db = z.db
 	}
+	z.snaplk.Lock()
 	snap, ok := z.snapshots[key]
-	if !ok || snap.soa.RecordData.(*dns.SOARecord).Serial != soa.Serial {
+	if !ok || snap.serial() != soa.RecordData.(*dns.SOARecord).Serial {
 		prior := snap
 
 		var remove, add *Cache
@@ -304,18 +333,7 @@ func (z *Zone) Dump(serial uint32, key string) []*dns.Record {
 		}
 
 		snap = &snapshot{
-			soa: &dns.Record{
-				RecordHeader: z.soa.RecordHeader,
-				RecordData: &dns.SOARecord{
-					MName:   soa.MName.Copy(),
-					ReName:  soa.ReName.Copy(),
-					Serial:  soa.Serial,
-					Refresh: soa.Refresh,
-					Retry:   soa.Retry,
-					Expire:  soa.Expire,
-					Minimum: soa.Minimum,
-				},
-			},
+			soa:    soa,
 			remove: remove,
 			add:    add,
 			prior:  prior,
@@ -324,30 +342,45 @@ func (z *Zone) Dump(serial uint32, key string) []*dns.Record {
 	}
 
 	var from *snapshot
+	var data *Cache
+
 	if serial != 0 {
 		from = snap
-		for from != nil && from.soa.RecordData.(*dns.SOARecord).Serial != serial {
+		for from != nil && from.serial() != serial {
 			from = from.prior
 		}
 		if from == snap {
 			from = nil
+		} else if from == nil {
+			data = db.Clone(nil)
+		}
+	} else {
+		data = db.Clone(nil)
+	}
+	z.lk.Unlock() // done holding on to the zone data; can now answer queries while transferring
+	defer z.snaplk.Unlock()
+
+	if err := next(soa); err != nil {
+		return err
+	}
+
+	if from != nil {
+		if err := snap.xfer(from, next); err != nil {
+			return err
+		}
+		if err := next(soa); err != nil {
+			return err
+		}
+	} else if data != nil {
+		if err := data.Enumerate(next); err != nil {
+			return err
+		}
+		if err := next(soa); err != nil {
+			return err
 		}
 	}
 
-	records := []*dns.Record{z.soa}
-
-	if from != nil {
-		records = append(records, snap.xfer(from)...)
-	} else {
-		data := db.Clone(nil)
-		data.Enumerate(func(r *dns.Record) {
-			records = append(records, r)
-		})
-	}
-
-	records = append(records, z.soa)
-	z.lk.Unlock()
-	return records
+	return nil
 }
 
 // Xfer parses a zone transfer.

@@ -66,7 +66,11 @@ func newName(t *testing.T, n string) dns.Name {
 }
 
 func compareZone(t *testing.T, z1, z2 *Zone) {
-	r1 := z1.Dump(0, "")
+	var r1 []*dns.Record
+	z1.Dump(0, "", func(r *dns.Record) error {
+		r1 = append(r1, r)
+		return nil
+	})
 
 	for _, r := range r1 {
 		r2, _, _ := z2.Lookup("", r.RecordHeader.Name, r.Type(), r.Class())
@@ -93,7 +97,9 @@ func TestIXFR(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		z.Dump(0, "") // lay down a revision at each
+		z.Dump(0, "", func(_ *dns.Record) error {
+			return nil
+		}) // lay down a revision at each
 	}
 
 	// secondary with initial revision
@@ -104,7 +110,11 @@ func TestIXFR(t *testing.T) {
 	}
 
 	// request ixfr from 1 -> current
-	ixfr := z.Dump(1, "")
+	var ixfr []*dns.Record
+	z.Dump(1, "", func(r *dns.Record) error {
+		ixfr = append(ixfr, r)
+		return nil
+	})
 
 	n := 0
 	err = zz.Xfer(func() (*dns.Record, error) {
@@ -124,7 +134,7 @@ func TestIXFR(t *testing.T) {
 }
 
 func parseTransfer(t *testing.T, serial uint32, records []*dns.Record) []*zoneDelta {
-	if len(records) < 2 {
+	if len(records) < 1 {
 		t.Fatal("no records present")
 	}
 	soa, ok := records[0].RecordData.(*dns.SOARecord)
@@ -134,6 +144,10 @@ func parseTransfer(t *testing.T, serial uint32, records []*dns.Record) []*zoneDe
 	if soa.Serial != serial {
 		t.Fatalf("zone transfer should be for serial %d, got %d", serial, soa.Serial)
 	}
+	if len(records) == 1 {
+		return nil
+	}
+
 	last := records[len(records)-1]
 	soa, ok = last.RecordData.(*dns.SOARecord)
 	if !ok {
@@ -187,7 +201,11 @@ func TestZoneDump(t *testing.T) {
 
 		t.Logf("from %d to %d", n, n+1)
 
-		records := z.Dump(uint32(n), "")
+		var records []*dns.Record
+		z.Dump(uint32(n), "", func(r *dns.Record) error {
+			records = append(records, r)
+			return nil
+		})
 		transfer := parseTransfer(t, uint32(n+1), records)
 		if n == 0 {
 			if len(transfer) > 0 {
@@ -195,13 +213,13 @@ func TestZoneDump(t *testing.T) {
 			}
 		} else {
 			if len(transfer) != 1 {
-				t.Fatalf("should be 1 delta, got %d", len(transfer))
+				t.Fatalf("%d: should be 1 delta, got %d", n, len(transfer))
 			}
 			if !reflect.DeepEqual(transfer[0], steps[n-1]) {
-				t.Fatalf("got %+v, expected %+v", *transfer[0], *steps[n-1])
+				t.Fatalf("%d: got %+v, expected %+v", n, *transfer[0], *steps[n-1])
 			}
 
-			t.Logf("%+v", *transfer[0])
+			t.Logf("%d: %+v", n, *transfer[0])
 		}
 	}
 
@@ -209,7 +227,11 @@ func TestZoneDump(t *testing.T) {
 	for n := range revisions {
 		t.Logf("from %d to %d", n, max)
 
-		records := z.Dump(uint32(n), "")
+		var records []*dns.Record
+		z.Dump(uint32(n), "", func(r *dns.Record) error {
+			records = append(records, r)
+			return nil
+		})
 		transfer := parseTransfer(t, uint32(max), records)
 
 		parts := max - n

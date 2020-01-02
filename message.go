@@ -14,6 +14,7 @@ const (
 	NameError      RCode = 3
 	NotImplemented RCode = 4
 	Refused        RCode = 5
+	NotAuth        RCode = 7
 	BadVersion     RCode = 16
 )
 
@@ -31,6 +32,8 @@ func (r RCode) Error() string {
 		return "not implemented"
 	case Refused:
 		return "refused"
+	case NotAuth:
+		return "not authoritative"
 	case BadVersion:
 		return "bad EDNS version"
 	}
@@ -73,6 +76,7 @@ type Message struct {
 	Authority  []*Record
 	Additional []*Record
 	EDNS       *Record
+	NoTC       bool // internal: do not try to recover from truncation
 }
 
 type Question struct {

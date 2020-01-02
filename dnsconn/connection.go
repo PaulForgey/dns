@@ -53,8 +53,8 @@ func (m *message) empty() bool {
 type Connection struct {
 	Network   string
 	Interface string
+	UDP       bool
 	conn      net.Conn
-	udp       bool
 	lk        *sync.Mutex
 	messages  *message
 	msgChan   chan struct{}
@@ -73,8 +73,8 @@ func NewConnection(conn net.Conn, network string) *Connection {
 
 	c := &Connection{
 		Network:  network,
+		UDP:      udp,
 		conn:     conn,
-		udp:      udp,
 		lk:       &sync.Mutex{},
 		messages: messages,
 		msgChan:  make(chan struct{}, 1),
@@ -134,7 +134,7 @@ func (c *Connection) WriteTo(msg *dns.Message, addr net.Addr, msgSize int) error
 	buffer := bufferPool.Get().([]byte)
 	defer bufferPool.Put(buffer)
 
-	if c.udp {
+	if c.UDP {
 		msgBuf = buffer[:msgSize]
 	} else {
 		msgBuf = buffer[2 : 2+msgSize]
@@ -147,7 +147,7 @@ func (c *Connection) WriteTo(msg *dns.Message, addr net.Addr, msgSize int) error
 	writer := dns.NewWireCodec(msgBuf)
 	err := writer.Encode(msg)
 	var truncated *dns.Truncated
-	if errors.As(err, &truncated) {
+	if c.UDP && !msg.NoTC && errors.As(err, &truncated) {
 		switch truncated.Section {
 		case 0:
 			return err // can't fit the question!
@@ -168,13 +168,14 @@ func (c *Connection) WriteTo(msg *dns.Message, addr net.Addr, msgSize int) error
 			msg.Additional = msg.Additional[:truncated.At]
 		}
 		writer.Reset(msgBuf)
-		if err := writer.Encode(msg); err != nil {
-			return err
-		}
+		err = writer.Encode(msg)
+	}
+	if err != nil {
+		return err
 	}
 
 	msgBuf = msgBuf[:writer.Offset()]
-	if c.udp {
+	if c.UDP {
 		if addr != nil {
 			_, err = c.conn.(net.PacketConn).WriteTo(msgBuf, addr)
 		} else {
@@ -235,7 +236,7 @@ func (c *Connection) readFrom() (*dns.Message, net.Addr, error) {
 	buffer := bufferPool.Get().([]byte)
 	defer bufferPool.Put(buffer)
 
-	if c.udp {
+	if c.UDP {
 		var r int
 		r, from, err = c.conn.(net.PacketConn).ReadFrom(buffer)
 		if err != nil {
@@ -255,6 +256,7 @@ func (c *Connection) readFrom() (*dns.Message, net.Addr, error) {
 		if _, err = io.ReadFull(c.conn, msgBuf); err != nil {
 			return nil, nil, err
 		}
+		from = c.conn.RemoteAddr()
 	}
 
 	reader := dns.NewWireCodec(msgBuf)

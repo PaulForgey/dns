@@ -22,6 +22,7 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 		}
 
 		// we only do standard queries
+		// XXX update
 		if msg.Opcode != dns.StandardQuery {
 			logger.Printf("tossing query with opcode %d from %v", msg.Opcode, from)
 			continue
@@ -45,11 +46,19 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 
 		logger.Printf("%s:%v:%v: %v", conn.Interface, from, zone.Name, q)
 
-		// XXX handle XFER, IXFR, etc.
-		//     Until we do, just dumbly treat these types as normal types which we will not find.
+		// XXX access control for zone transfers
+		switch q.QType {
+		case dns.AXFRType:
+			axfr(ctx, logger, conn, msg, from, zone)
+			continue
+		case dns.IXFRType:
+			ixfr(ctx, logger, conn, msg, from, zone)
+			continue
+		}
 
 		// XXX access control for queries
 		// XXX access control for recursive queries
+
 		msg.RA = zone.Hint && (zones.R != nil)
 		msg.AA = false
 		if msg.RD && msg.RA {
@@ -72,13 +81,12 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 			}
 		}
 
+		var rcode dns.RCode
+
 		if err == nil {
 			// fill in additionals
 			zones.Additional(msg, conn.Interface, q.QClass)
-		}
-
-		var rcode dns.RCode
-		if !errors.As(err, &rcode) {
+		} else if !errors.As(err, &rcode) {
 			if err != nil {
 				logger.Printf("Error answering %v from %v: %v", q, from, err)
 				rcode = dns.ServerFailure

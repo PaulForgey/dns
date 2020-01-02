@@ -416,7 +416,7 @@ func (c *Cache) Patch(remove, add *Cache) {
 }
 
 // Enumerate calls f for every record, excluding SOA
-func (c *Cache) Enumerate(f func(r *dns.Record)) {
+func (c *Cache) Enumerate(f func(r *dns.Record) error) error {
 	for _, rrmap := range c.cache {
 		for tkey, rrset := range rrmap {
 			t, _ := tkey.Types()
@@ -424,10 +424,13 @@ func (c *Cache) Enumerate(f func(r *dns.Record)) {
 				continue
 			}
 			for _, r := range rrset.records {
-				f(r)
+				if err := f(r); err != nil {
+					return err
+				}
 			}
 		}
 	}
+	return nil
 }
 
 // Clear clears all records.

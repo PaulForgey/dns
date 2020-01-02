@@ -1,5 +1,5 @@
 @ 24h 	IN SOA ns1.example.com. "hostmaster.example.com." (
-	1 ; serial
+	2 ; serial
 	3h ; refresh
 	3h ; retry
 	24h ; expire
