@@ -26,7 +26,8 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 		network = "tcp"
 	}
 
-	c, err := net.Dial(network, conf.Primary)
+	dialer := &net.Dialer{}
+	c, err := dialer.DialContext(ctx, network, conf.Primary)
 	if err != nil {
 		return err
 	}
@@ -229,7 +230,7 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 		live = true
 	} else {
 		logger.Printf(
-			"%v: %v. Will be available once transferred from primary @ %v",
+			"%v: offline: %v: will transfer from primary @ %v",
 			zone.Name,
 			err,
 			conf.Primary,
@@ -239,11 +240,12 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 	success := time.Now()
 	expire := time.Hour * 1000
 
-	for {
+	err = nil
+	for err == nil {
 		now := time.Now()
 		if now.Sub(success) > expire {
 			logger.Printf(
-				"%v: last successful refresh beyond expire time of %v. Taking zone offline",
+				"%v: offline: successful refresh beyond expire time of %v",
 				zone.Name,
 				expire,
 			)
@@ -266,8 +268,16 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 			}
 		}
 
-		// XXX INOTIFY channel in zone
 		success = time.Now()
-		time.Sleep(refresh)
+		rt := time.NewTimer(refresh)
+		// XXX INOTIFY channel in zone
+		select {
+		case <-rt.C:
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+		rt.Stop()
 	}
+
+	logger.Printf("%v: zone routine exiting: %v", zone.Name, err)
 }

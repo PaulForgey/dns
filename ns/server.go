@@ -13,12 +13,15 @@ import (
 // Serve runs a unicast server answering queries for the zone set until the context is canceled or an error occurs on the conn
 func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zones *Zones) error {
 	for {
-		msg, from, err := conn.ReadFromIf(ctx, func(msg *dns.Message) bool {
-			return !msg.QR // only questions
+		msg, from, err := conn.ReadFromIf(ctx, func(*dns.Message) bool {
+			return true // we are the only consumer
 		})
 		if err != nil {
 			logger.Printf("listener %v exiting: %v", conn, err)
 			return err
+		}
+		if msg.QR {
+			continue // only questions
 		}
 
 		// we only do standard queries

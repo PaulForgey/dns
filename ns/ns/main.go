@@ -9,6 +9,7 @@ import (
 	"log/syslog"
 	"net"
 	"os"
+	"os/signal"
 	"sync"
 
 	"tessier-ashpool.net/dns"
@@ -144,10 +145,15 @@ func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net
 			logger.Println(err)
 		} else {
 			logger.Printf("%s: listening %s %v", iface, network, laddr)
+			go func() {
+				<-ctx.Done()
+				c.Close()
+			}()
 			for {
 				a, err := c.Accept()
 				if err != nil {
-					logger.Printf("tcp listener exiting: %v", err)
+					logger.Println(err)
+					c.Close()
 					break
 				} else {
 					wg.Add(1)
@@ -161,7 +167,6 @@ func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net
 				}
 			}
 		}
-		c.Close()
 		wg.Done()
 	}()
 }
@@ -206,12 +211,12 @@ func main() {
 		zones.R = resolver.NewResolver(cache, dnsconn.NewConnection(rc, conf.Resolver), true)
 	}
 
-	ctx := context.Background() // XXX can make this cancelable for a clean shutdown
+	ctx, cancel := context.WithCancel(context.Background())
 	wg := &sync.WaitGroup{}
 
 	for k, v := range conf.Zones {
 		wg.Add(1)
-		go func(ctx context.Context, name string, c Zone) {
+		go func(name string, c Zone) {
 			zone, err := createZone(name, &c)
 			if err != nil {
 				logger.Fatalf("%s: cannot load zone: %v", name, err)
@@ -222,7 +227,7 @@ func main() {
 				zones.Insert(zone)
 			}
 			wg.Done()
-		}(ctx, k, v)
+		}(k, v)
 	}
 
 	ifaces, err := net.Interfaces()
@@ -257,6 +262,12 @@ func main() {
 			}
 		}
 	}
+
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt)
+	sig := <-sigc
+	cancel()
+	logger.Printf("shutting down on %v", sig)
 
 	wg.Wait()
 	logger.Printf("exiting: %v", err)
