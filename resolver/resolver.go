@@ -54,6 +54,9 @@ func NewResolverClient(zone *Zone, network string, host string, servers []net.Ad
 	var conn net.Conn
 	var err error
 
+	if network == "" {
+		network = "udp"
+	}
 	if host != "" {
 		if conn, err = net.Dial(network, host); err != nil {
 			return nil, err
@@ -186,7 +189,7 @@ func (r *Resolver) query(
 ) (a []*dns.Record, ns []*dns.Record, ar []*dns.Record, aa bool, err error) {
 
 	// always go for the cache or our own authority first
-	if name.HasSuffix(r.zone.Name) {
+	if r.zone != nil && name.HasSuffix(r.zone.Name) {
 		if !r.ra && r.zone.Hint {
 			err = ErrNoRecursion
 			return

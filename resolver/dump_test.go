@@ -117,14 +117,14 @@ func TestIXFR(t *testing.T) {
 	})
 
 	n := 0
-	err = zz.Xfer(func() (*dns.Record, error) {
+	err = zz.Xfer(true, func() (*dns.Record, error) {
 		if n < len(ixfr) {
 			rec := ixfr[n]
 			n++
 			return rec, nil
 		}
 		return nil, io.EOF
-	}, true)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

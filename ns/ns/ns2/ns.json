@@ -1,0 +1,15 @@
+{
+	"Resolver":"udp",
+	"Zones":{
+		".": {
+			"Type":"cache"
+		},
+		"example.com": {
+			"Type":"secondary",
+			"DbFile":"secondary.example.com.db",
+			"Primary":"192.168.0.10:53",
+			"Class":"IN",
+			"Incremental":true
+		}
+	}
+}

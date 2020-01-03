@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -65,6 +66,15 @@ func (c *RRClass) Set(str string) error {
 		}
 	}
 	return nil
+}
+
+// JSON for reading configuration files
+func (c *RRClass) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	return c.Set(s)
 }
 
 // Match returns true if either c or n are AnyClass or equal to each other
@@ -229,6 +239,15 @@ func (r *RRType) Set(str string) error {
 		}
 	}
 	return nil
+}
+
+// JSON for reading configuration files
+func (t *RRType) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	return t.Set(s)
 }
 
 // Match returns true if either t or n are AnyType or equal to each other.

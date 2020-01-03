@@ -19,7 +19,8 @@ type Zones struct {
 // the Zone type is a specialization of the resolver Zone with additional information needed by the server
 type Zone struct {
 	*resolver.Zone
-	// XXX primary, secondary, access control, etc
+
+	// XXX access control
 }
 
 // NewZones creates an empty Zones
@@ -33,6 +34,13 @@ func NewZones() *Zones {
 func (zs *Zones) Insert(z *Zone) {
 	zs.Lock()
 	zs.zones[z.Name.Key()] = z
+	zs.Unlock()
+}
+
+// Remove removes a zone (takes it offline)
+func (zs *Zones) Remove(z *Zone) {
+	zs.Lock()
+	delete(zs.zones, z.Name.Key())
 	zs.Unlock()
 }
 

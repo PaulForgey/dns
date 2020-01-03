@@ -31,7 +31,9 @@ type Zone struct {
 	DbFile           string
 	InterfaceDbFiles map[string]string // primary: interface specific records
 	Primary          string            // secondary: primary server to transfer from
+	PrimaryNetwork   string            // secondary: udp/udp4/udp6,tcp/tcp4/tcp6 (defaults to udp)
 	Incremental      bool              // secondary: use IXFR
+	Class            dns.RRClass       // seconary: zone class
 	// XXX query, transfer, update ACL
 }
 
@@ -50,52 +52,59 @@ var logger *log.Logger
 func loadZone(zone *resolver.Zone, conf *Zone) error {
 	c, err := dns.NewTextFileReader(conf.DbFile, zone.Name)
 	if err != nil {
-		return fmt.Errorf("cannot open %s: %w", conf.DbFile, err)
+		return err
 	}
+
 	err = zone.Decode("", false, c)
 	if err != nil {
 		return err
 	}
-	for iface, dbfile := range conf.InterfaceDbFiles {
-		c, err := dns.NewTextFileReader(dbfile, zone.Name)
-		if err != nil {
-			return fmt.Errorf("cannot open %s for interface %s: %w", dbfile, iface, err)
+
+	if conf.Type == PrimaryType {
+		for iface, dbfile := range conf.InterfaceDbFiles {
+			c, err := dns.NewTextFileReader(dbfile, zone.Name)
+			if err != nil {
+				return fmt.Errorf("interface %s: %w", iface, err)
+			}
+			err = zone.Decode(iface, false, c)
+			if err != nil {
+				return err
+			}
+			logger.Printf("%s:%v: loaded from %s", iface, zone.Name, dbfile)
 		}
-		err = zone.Decode(iface, false, c)
-		if err != nil {
-			return err
-		}
-		logger.Printf("loaded zone %s:%v from %s", iface, zone.Name, dbfile)
 	}
 
-	logger.Printf("loaded zone %v from %s", zone.Name, conf.DbFile)
+	logger.Printf("%v: loaded from %s", zone.Name, conf.DbFile)
 	return nil
 }
 
 func createZone(name string, conf *Zone) (*ns.Zone, error) {
-	var zone *resolver.Zone
 	n, err := dns.NameWithString(name)
 	if err != nil {
 		return nil, err
 	}
 
+	zone := &ns.Zone{}
+
 	switch conf.Type {
 	case PrimaryType, HintType:
-		zone = resolver.NewZone(n)
+		zone.Zone = resolver.NewZone(n)
 		zone.Hint = (conf.Type == HintType)
-		if err := loadZone(zone, conf); err != nil {
-			return nil, fmt.Errorf("cannot load zone %s: %w", name, err)
+		if err := loadZone(zone.Zone, conf); err != nil {
+			return nil, err
 		}
+
 	case SecondaryType:
-		// XXX
-		return nil, fmt.Errorf("%s type not yet supported", conf.Type)
+		zone.Zone = resolver.NewZone(n)
+
 	case CacheType: // this is builtin and name is '.' regardless of what the configuration says
-		zone = cache
+		zone.Zone = cache
+
 	default:
 		return nil, fmt.Errorf("no such type %s", conf.Type)
 	}
 
-	return &ns.Zone{Zone: zone}, nil
+	return zone, nil
 }
 
 func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net.IP, zones *ns.Zones) {
@@ -178,7 +187,7 @@ func main() {
 
 	c, err := os.Open(confFile)
 	if err != nil {
-		logger.Fatalf("unable to open configuration file %s: %v", confFile, err)
+		logger.Fatalf("unable to open configuration file: %v", err)
 	}
 
 	err = json.NewDecoder(c).Decode(&conf)
@@ -197,18 +206,24 @@ func main() {
 		zones.R = resolver.NewResolver(cache, dnsconn.NewConnection(rc, conf.Resolver), true)
 	}
 
-	for k, v := range conf.Zones {
-		go func(name string, c Zone) {
-			zone, err := createZone(name, &c)
-			if err != nil {
-				logger.Fatalf("cannot load zone %s: %v", name, err)
-			}
-			zones.Insert(zone)
-		}(k, v)
-	}
-
 	ctx := context.Background() // XXX can make this cancelable for a clean shutdown
 	wg := &sync.WaitGroup{}
+
+	for k, v := range conf.Zones {
+		wg.Add(1)
+		go func(ctx context.Context, name string, c Zone) {
+			zone, err := createZone(name, &c)
+			if err != nil {
+				logger.Fatalf("%s: cannot load zone: %v", name, err)
+			}
+			if c.Type == SecondaryType {
+				secondaryZone(ctx, zones, &c, zone)
+			} else {
+				zones.Insert(zone)
+			}
+			wg.Done()
+		}(ctx, k, v)
+	}
 
 	ifaces, err := net.Interfaces()
 	if err != nil {

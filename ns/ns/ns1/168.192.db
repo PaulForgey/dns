@@ -2,3 +2,6 @@ $INCLUDE soa.db
 
 1.0 	IN PTR host1.example.com.
 2.0	IN PTR host2.example.com.
+
+10.0	IN PTR ns1.example.com.
+11.0	IN PTR ns2.example.com.

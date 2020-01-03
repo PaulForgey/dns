@@ -152,7 +152,7 @@ func (z *Zone) Decode(key string, clear bool, c dns.Codec) error {
 func (z *Zone) soa_locked() *dns.Record {
 	r := z.soa
 
-	if z.updated {
+	if z != nil && z.updated {
 		soa := r.RecordData.(*dns.SOARecord)
 		nsoa := dns.SOARecord(*soa)
 		soa = &nsoa
@@ -173,7 +173,7 @@ func (z *Zone) SOA() *dns.Record {
 
 	z.lk.RLock()
 	r = z.soa
-	if z.updated {
+	if z != nil && z.updated {
 		z.lk.RUnlock()
 		z.lk.Lock()
 		r = z.soa_locked()
@@ -304,7 +304,10 @@ func (z *Zone) Dump(serial uint32, key string, next func(*dns.Record) error) err
 		key = ""
 		db = z.db
 	}
+
 	z.snaplk.Lock()
+	defer z.snaplk.Unlock()
+
 	snap, ok := z.snapshots[key]
 	if !ok || snap.serial() != soa.RecordData.(*dns.SOARecord).Serial {
 		prior := snap
@@ -357,8 +360,7 @@ func (z *Zone) Dump(serial uint32, key string, next func(*dns.Record) error) err
 	} else {
 		data = db.Clone(nil)
 	}
-	z.lk.Unlock() // done holding on to the zone data; can now answer queries while transferring
-	defer z.snaplk.Unlock()
+	z.lk.Unlock() // done holding on to the zone data; can now answer queries while transferring. snapshots still locked
 
 	if err := next(soa); err != nil {
 		return err
@@ -386,9 +388,8 @@ func (z *Zone) Dump(serial uint32, key string, next func(*dns.Record) error) err
 // Xfer parses a zone transfer.
 // Set ixfr to true or false to set axfr vs ixfr expectations
 // If ixfr is false, the zone is cleared.
-func (z *Zone) Xfer(nextRecord func() (*dns.Record, error), ixfr bool) error {
-	z.lk.Lock()
-	defer z.lk.Unlock()
+func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
+	z.lk.RLock()
 
 	var db *Cache
 	if ixfr {
@@ -398,6 +399,8 @@ func (z *Zone) Xfer(nextRecord func() (*dns.Record, error), ixfr bool) error {
 	}
 	soa := z.soa
 
+	z.lk.RUnlock()
+
 	toSOA, err := nextRecord()
 	if err != nil {
 		return err
@@ -406,6 +409,10 @@ func (z *Zone) Xfer(nextRecord func() (*dns.Record, error), ixfr bool) error {
 	_, ok := toSOA.RecordData.(*dns.SOARecord)
 	if !ok {
 		return fmt.Errorf("%w: expected SOA, got %T", ErrAxfr, soa.RecordData)
+	}
+	if soa == nil {
+		// we have no existing data to know better
+		soa = toSOA
 	}
 
 	var del, add *Cache
@@ -427,6 +434,16 @@ func (z *Zone) Xfer(nextRecord func() (*dns.Record, error), ixfr bool) error {
 				}
 
 				if del == nil {
+					// any records here are normal xfer
+					db.Enter(time.Time{}, false, records)
+					records = records[:0]
+
+					// if this soa is toSOA, we're done
+					if s.Serial == toSOA.RecordData.(*dns.SOARecord).Serial {
+						soa = rec
+						break
+					}
+
 					// start of next incremental section or end of axfr
 					if s.Serial != soa.RecordData.(*dns.SOARecord).Serial {
 						return fmt.Errorf(
@@ -437,12 +454,8 @@ func (z *Zone) Xfer(nextRecord func() (*dns.Record, error), ixfr bool) error {
 						)
 					}
 
-					// any records here are normal xfer
-					db.Enter(time.Time{}, false, records)
-					records = records[:0]
-
-					del = NewCache(nil)
 					soa = rec
+					del = NewCache(nil)
 				} else {
 					// start of add part of incremental section
 
@@ -482,10 +495,16 @@ func (z *Zone) Xfer(nextRecord func() (*dns.Record, error), ixfr bool) error {
 
 	// done!
 	db.Enter(time.Time{}, false, []*dns.Record{soa})
+
+	z.lk.Lock()
 	z.soa = soa
 	z.db = db
 	z.keys[""] = db
+
+	z.snaplk.Lock()
 	delete(z.snapshots, "")
 
+	z.snaplk.Unlock()
+	z.lk.Unlock()
 	return nil
 }
