@@ -78,6 +78,10 @@ func ixfr(
 ) error {
 	q := msg.Questions[0]
 
+	if zone.Hint || !zone.Name.Equal(q.QName) {
+		// this is not us
+		return answer(conn, dns.NotAuth, msg, to)
+	}
 	if len(msg.Authority) != 1 {
 		return answer(conn, dns.FormError, msg, to)
 	}
