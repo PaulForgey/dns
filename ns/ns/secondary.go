@@ -140,14 +140,84 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 	return nil
 }
 
+func pollSecondary(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.Resolver) (bool, time.Duration) {
+	var refresh, retry time.Duration
+	var serial uint32
+	var rsoa *dns.Record
+
+	rrclass := conf.Class
+	if rrclass == 0 {
+		rrclass = dns.INClass
+	}
+
+	soa := zone.SOA()
+	if soa == nil {
+		// defaults until we can query SOA
+		refresh = time.Hour * 24
+		retry = time.Hour * 2
+	} else {
+		rr := soa.RecordData.(*dns.SOARecord)
+		refresh = rr.Refresh
+		retry = rr.Retry
+		serial = rr.Serial
+	}
+
+	a, _, _, aa, err := r.Query(ctx, "", zone.Name, dns.SOAType, rrclass)
+	if err != nil {
+		logger.Printf(
+			"%v: error connecting to %s: %v. Will retry in %v",
+			zone.Name,
+			conf.Primary,
+			err,
+			retry,
+		)
+		return false, retry
+	}
+	if !aa {
+		logger.Printf(
+			"%v: answer from %s is not authoritative. Will retry in %v",
+			zone.Name,
+			conf.Primary,
+			retry,
+		)
+		return false, retry
+	}
+	for _, r := range a {
+		var ok bool
+		if _, ok = r.RecordData.(*dns.SOARecord); ok {
+			rsoa = r
+			break
+		}
+	}
+	if rsoa == nil {
+		logger.Printf(
+			"%v: answer from %s did not return SOA? Will retry in %v",
+			zone.Name,
+			conf.Primary,
+			retry,
+		)
+		return false, retry
+	}
+	if serial != rsoa.RecordData.(*dns.SOARecord).Serial {
+		err := transfer(ctx, conf, zone, soa, rrclass)
+		if err != nil {
+			logger.Printf(
+				"%v: error transferring from %s: %v. Will retry in %v",
+				zone.Name,
+				conf.Primary,
+				err,
+				retry,
+			)
+			return false, retry
+		}
+	}
+	return true, refresh
+}
+
 func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zone) {
 	r, err := resolver.NewResolverClient(nil, conf.PrimaryNetwork, conf.Primary, nil)
 	if err != nil {
 		logger.Fatalf("%v: cannot create resolver against %s: %v", zone.Name, conf.Primary, err)
-	}
-	rrclass := conf.Class
-	if rrclass == 0 {
-		rrclass = dns.INClass
 	}
 
 	live := false
@@ -166,11 +236,8 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 		)
 	}
 
-	var refresh, retry, expire time.Duration
-	var serial uint32
-
 	success := time.Now()
-	expire = time.Hour * 1000
+	expire := time.Hour * 1000
 
 	for {
 		now := time.Now()
@@ -186,80 +253,17 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 			}
 		}
 
-		var rsoa *dns.Record
-		soa := zone.SOA()
-
-		if soa == nil {
-			// defaults until we can query SOA
-			refresh = time.Hour * 24
-			retry = time.Hour * 2
-			expire = time.Hour * 1000
-		} else {
-			rr := soa.RecordData.(*dns.SOARecord)
-			refresh = rr.Refresh
-			retry = rr.Retry
-			expire = rr.Expire
-			serial = rr.Serial
-		}
-
-		a, _, _, aa, err := r.Query(ctx, "", zone.Name, dns.SOAType, rrclass)
-		if err != nil {
-			logger.Printf(
-				"%v: error connecting to %s: %v. Will retry in %v",
-				zone.Name,
-				conf.Primary,
-				err,
-				retry,
-			)
-			time.Sleep(retry)
-			continue
-		}
-		if !aa {
-			logger.Printf(
-				"%v: answer from %s is not authoritative. Will retry in %v",
-				zone.Name,
-				conf.Primary,
-				retry,
-			)
-			time.Sleep(retry)
-			continue
-		}
-		for _, r := range a {
-			var ok bool
-			if _, ok = r.RecordData.(*dns.SOARecord); ok {
-				rsoa = r
-				break
+		ok, refresh := pollSecondary(ctx, conf, zone, r)
+		if ok {
+			if soa := zone.SOA(); soa != nil {
+				expire = soa.RecordData.(*dns.SOARecord).Expire
 			}
-		}
-		if rsoa == nil {
-			logger.Printf(
-				"%v: answer from %s did not return SOA? Will retry in %v",
-				zone.Name,
-				conf.Primary,
-				retry,
-			)
-			time.Sleep(retry)
-			continue
-		}
-		if serial != rsoa.RecordData.(*dns.SOARecord).Serial {
-			err := transfer(ctx, conf, zone, soa, rrclass)
-			if err != nil {
-				logger.Printf(
-					"%v: error transferring from %s: %v. Will retry in %v",
-					zone.Name,
-					conf.Primary,
-					err,
-					retry,
-				)
-				time.Sleep(retry)
-				continue
+			// fat and happy
+			if !live {
+				logger.Printf("%v: online", zone.Name)
+				zones.Insert(zone)
+				live = true
 			}
-		}
-
-		// fat and happy
-		if !live {
-			zones.Insert(zone)
-			live = true
 		}
 
 		// XXX INOTIFY channel in zone

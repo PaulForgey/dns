@@ -120,7 +120,7 @@ func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net
 		laddr := &net.UDPAddr{IP: ip, Port: 53}
 		c, err := net.ListenUDP(network, laddr)
 		if err != nil {
-			logger.Printf("cannot create udp listener on %v: %v", ip, err)
+			logger.Println(err)
 		} else {
 			logger.Printf("%s: listening %s %v", iface, network, laddr)
 			conn := dnsconn.NewConnection(c, network)
@@ -141,7 +141,7 @@ func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net
 		laddr := &net.TCPAddr{IP: ip, Port: 53}
 		c, err := net.ListenTCP(network, laddr)
 		if err != nil {
-			logger.Printf("cannot create tcp listener on %v: %v", ip, err)
+			logger.Println(err)
 		} else {
 			logger.Printf("%s: listening %s %v", iface, network, laddr)
 			for {
