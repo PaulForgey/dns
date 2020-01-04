@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"os"
 	"time"
@@ -261,6 +262,7 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 				expire = soa.RecordData.(*dns.SOARecord).Expire
 			}
 			// fat and happy
+			success = time.Now()
 			if !live {
 				logger.Printf("%v: online", zone.Name)
 				zones.Insert(zone)
@@ -268,15 +270,32 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 			}
 		}
 
-		success = time.Now()
 		rt := time.NewTimer(refresh)
-		// XXX INOTIFY channel in zone
-		select {
-		case <-rt.C:
-		case <-ctx.Done():
-			err = ctx.Err()
+		var reload *time.Timer
+		var reloadC <-chan time.Time
+		trigger := false
+
+		for !trigger && err == nil {
+			select {
+			case <-zone.C:
+				if reload != nil {
+					reload.Stop()
+				}
+				reload = time.NewTimer(time.Duration(rand.Int()%5+5) * time.Second)
+				reloadC = reload.C
+				continue
+			case <-rt.C:
+				trigger = true
+			case <-reloadC:
+				trigger = true
+			case <-ctx.Done():
+				err = ctx.Err()
+			}
 		}
 		rt.Stop()
+		if reload != nil {
+			reload.Stop()
+		}
 	}
 
 	logger.Printf("%v: zone routine exiting: %v", zone.Name, err)

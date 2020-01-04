@@ -85,27 +85,42 @@ func createZone(name string, conf *Zone) (*ns.Zone, error) {
 		return nil, err
 	}
 
-	zone := &ns.Zone{}
+	var zone *ns.Zone
 
 	switch conf.Type {
 	case PrimaryType, HintType:
-		zone.Zone = resolver.NewZone(n)
+		zone = ns.NewZone(resolver.NewZone(n))
 		zone.Hint = (conf.Type == HintType)
 		if err := loadZone(zone.Zone, conf); err != nil {
 			return nil, err
 		}
 
 	case SecondaryType:
-		zone.Zone = resolver.NewZone(n)
+		zone = ns.NewZone(resolver.NewZone(n))
 
 	case CacheType: // this is builtin and name is '.' regardless of what the configuration says
-		zone.Zone = cache
+		zone = ns.NewZone(cache)
 
 	default:
 		return nil, fmt.Errorf("no such type %s", conf.Type)
 	}
 
 	return zone, nil
+}
+
+func primaryZone(ctx context.Context, conf *Zone, zone *ns.Zone) {
+	var err error
+
+	for err == nil {
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+		case <-zone.C:
+			err = loadZone(zone.Zone, conf)
+		}
+	}
+
+	logger.Printf("%v: zone routine exiting: %v", zone.Name, err)
 }
 
 func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net.IP, zones *ns.Zones) {
@@ -221,9 +236,15 @@ func main() {
 			if err != nil {
 				logger.Fatalf("%s: cannot load zone: %v", name, err)
 			}
-			if c.Type == SecondaryType {
+			switch c.Type {
+			case PrimaryType:
+				zones.Insert(zone)
+				primaryZone(ctx, &c, zone)
+
+			case SecondaryType:
 				secondaryZone(ctx, zones, &c, zone)
-			} else {
+
+			default:
 				zones.Insert(zone)
 			}
 			wg.Done()

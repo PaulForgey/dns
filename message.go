@@ -47,6 +47,7 @@ const (
 	StandardQuery Opcode = 0
 	InverseQuery         = 1
 	StatusRequest        = 2
+	Notify               = 4
 )
 
 func (o Opcode) String() string {
@@ -57,6 +58,8 @@ func (o Opcode) String() string {
 		return "IQUERY"
 	case StatusRequest:
 		return "STATUS"
+	case Notify:
+		return "NOTIFY"
 	}
 	return fmt.Sprintf("%d", o)
 }

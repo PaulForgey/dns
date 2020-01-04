@@ -19,8 +19,23 @@ type Zones struct {
 // the Zone type is a specialization of the resolver Zone with additional information needed by the server
 type Zone struct {
 	*resolver.Zone
+	C chan bool // reload
 
 	// XXX access control
+}
+
+func NewZone(z *resolver.Zone) *Zone {
+	return &Zone{
+		Zone: z,
+		C:    make(chan bool, 1),
+	}
+}
+
+func (z *Zone) Reload() {
+	select {
+	case z.C <- true:
+		// don't block
+	}
 }
 
 // NewZones creates an empty Zones

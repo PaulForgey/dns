@@ -24,37 +24,44 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 			continue // only questions
 		}
 
-		// we only do standard queries
-		// XXX update
-		if msg.Opcode != dns.StandardQuery {
-			logger.Printf("tossing query with opcode %d from %v", msg.Opcode, from)
+		var q *dns.Question
+		if len(msg.Questions) > 0 {
+			q = msg.Questions[0]
+		} else {
+			// XXX this needs to change if we ever support an op with no Q section
+			answer(conn, dns.FormError, msg, from)
 			continue
 		}
 
-		// should be 1 question
-		if len(msg.Questions) < 1 {
-			logger.Printf("tossing query with no question from %v", from)
-			continue
-		}
-
-		q := msg.Questions[0]
+		// find zone for the question
 		zone := zones.Find(q.QName)
-
-		// zone can be nil if we are not running with a hint zone at .
 		if zone == nil {
-			// this also makes recursive queries impossible, so refuse the query regardless.
+			// zone can be nil if we are not running with a hint zone at .
+			// nothing else we can do without one
 			answer(conn, dns.Refused, msg, from)
 			continue
 		}
 
-		logger.Printf("%s:%v:%v: %v", conn.Interface, from, zone.Name, q)
+		logger.Printf("%s:%v:%v: %v %v", conn.Interface, from, zone.Name, msg.Opcode, q)
+
+		// XXX update
+		switch msg.Opcode {
+		case dns.Notify:
+			// XXX notify access control
+			notify(ctx, logger, conn, msg, from, zone)
+			continue
+		case dns.StandardQuery:
+			// handled below
+		default:
+			answer(conn, dns.NotImplemented, msg, from)
+			continue
+		}
+
+		//standard query
 
 		// XXX access control for zone transfers
 		switch q.QType {
-		case dns.AXFRType:
-			axfr(ctx, logger, conn, msg, from, zone)
-			continue
-		case dns.IXFRType:
+		case dns.AXFRType, dns.IXFRType:
 			ixfr(ctx, logger, conn, msg, from, zone)
 			continue
 		}
@@ -82,6 +89,12 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 			if len(msg.Authority) == 0 && !zone.Hint {
 				msg.AA = true
 			}
+			if errors.Is(err, dns.NameError) {
+				soa := zone.SOA()
+				if soa != nil {
+					msg.Authority = []*dns.Record{soa}
+				}
+			}
 		}
 
 		var rcode dns.RCode
@@ -108,20 +121,24 @@ func answer(conn *dnsconn.Connection, rcode dns.RCode, msg *dns.Message, to net.
 	msgSize := dnsconn.MinMessageSize
 
 	// client's EDNS message
-	if msg.EDNS != nil {
-		msgSize = int(msg.EDNS.RecordHeader.MaxMessageSize)
-		if msgSize < dnsconn.MinMessageSize {
-			msgSize = dnsconn.MinMessageSize
-		}
+	if conn.UDP {
+		if msg.EDNS != nil {
+			msgSize = int(msg.EDNS.RecordHeader.MaxMessageSize)
+			if msgSize < dnsconn.MinMessageSize {
+				msgSize = dnsconn.MinMessageSize
+			}
 
-		// respond with our own
-		msg.EDNS = &dns.Record{
-			RecordHeader: dns.RecordHeader{
-				MaxMessageSize: dnsconn.UDPMessageSize,
-				Version:        0,
-			},
-			RecordData: &dns.EDNSRecord{},
+			// respond with our own
+			msg.EDNS = &dns.Record{
+				RecordHeader: dns.RecordHeader{
+					MaxMessageSize: dnsconn.UDPMessageSize,
+					Version:        0,
+				},
+				RecordData: &dns.EDNSRecord{},
+			}
 		}
+	} else {
+		msgSize = dnsconn.MaxMessageSize
 	}
 
 	return conn.WriteTo(msg, to, msgSize)
