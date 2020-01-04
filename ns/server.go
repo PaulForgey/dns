@@ -81,14 +81,18 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 		)
 
 		if err == nil && len(msg.Answers) == 0 && msg.RD && msg.RA {
-			msg.AA = false
-			msg.Answers, err = zones.R.Resolve(
-				ctx,
-				conn.Interface,
-				q.QName,
-				q.QType,
-				q.QClass,
-			)
+			// go ahead and recurse if this is a hint zone or we have a delegation
+			if zone.Hint() || len(msg.Authority) > 0 {
+				msg.AA = false
+				msg.Authority = nil
+				msg.Answers, err = zones.R.Resolve(
+					ctx,
+					conn.Interface,
+					q.QName,
+					q.QType,
+					q.QClass,
+				)
+			}
 		}
 
 		if msg.AA && len(msg.Authority) == 0 && errors.Is(err, dns.NameError) {
