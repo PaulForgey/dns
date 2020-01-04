@@ -50,8 +50,7 @@ l.root-servers.net.	518400	IN	AAAA	2001:500:9f::42
 
 // Root is the set of glue records for the zone '.'
 func NewRootZone() *Zone {
-	zone := NewZone(nil)
-	zone.Hint = true
+	zone := NewZone(nil, true)
 
 	c := dns.NewTextReader(strings.NewReader(rootZone), nil)
 	err := zone.Decode("", false, c)
@@ -61,3 +60,14 @@ func NewRootZone() *Zone {
 
 	return zone
 }
+
+// RootCache is a global Authority containing only . suitable for caching
+type rootCache struct {
+	root *Zone
+}
+
+func (r rootCache) Find(_ dns.Name) ZoneAuthority {
+	return r.root
+}
+
+var RootCache rootCache = rootCache{NewRootZone()}

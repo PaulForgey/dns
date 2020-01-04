@@ -48,20 +48,20 @@ func NewZones() *Zones {
 // Insert adds or overwrites a zone
 func (zs *Zones) Insert(z *Zone) {
 	zs.Lock()
-	zs.zones[z.Name.Key()] = z
+	zs.zones[z.Name().Key()] = z
 	zs.Unlock()
 }
 
 // Remove removes a zone (takes it offline)
 func (zs *Zones) Remove(z *Zone) {
 	zs.Lock()
-	delete(zs.zones, z.Name.Key())
+	delete(zs.zones, z.Name().Key())
 	zs.Unlock()
 }
 
 // Finds a zone by name having the closest common suffix.
 // Find can return nil if the root zone is not present.
-func (zs *Zones) Find(n dns.Name) *Zone {
+func (zs *Zones) Find(n dns.Name) resolver.ZoneAuthority {
 	var z *Zone
 	var ok bool
 

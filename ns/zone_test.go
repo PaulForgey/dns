@@ -16,10 +16,10 @@ func newName(t *testing.T, n string) dns.Name {
 }
 
 func TestZoneSearch(t *testing.T) {
-	dot := &Zone{Zone: resolver.NewZone(newName(t, "."))}
-	zone1 := &Zone{Zone: resolver.NewZone(newName(t, "tessier-ashpool.net"))}
-	zone2 := &Zone{Zone: resolver.NewZone(newName(t, "shoesinonehour.com"))}
-	zone3 := &Zone{Zone: resolver.NewZone(newName(t, "horses.shoesinonehour.com"))}
+	dot := &Zone{Zone: resolver.NewZone(newName(t, "."), true)}
+	zone1 := &Zone{Zone: resolver.NewZone(newName(t, "tessier-ashpool.net"), false)}
+	zone2 := &Zone{Zone: resolver.NewZone(newName(t, "shoesinonehour.com"), false)}
+	zone3 := &Zone{Zone: resolver.NewZone(newName(t, "horses.shoesinonehour.com"), false)}
 
 	zones := NewZones()
 
@@ -46,10 +46,10 @@ func TestZoneSearch(t *testing.T) {
 		if zone != test.zone {
 			var name dns.Name
 			if zone != nil {
-				name = zone.Name
+				name = zone.Name()
 			}
 			t.Fatalf("expected to find %v in %p, found in %p (%v)", test.name, test.zone, zone, name)
 		}
-		t.Logf("found %v in %v", test.name, zone.Name)
+		t.Logf("found %v in %v", test.name, zone.Name())
 	}
 }

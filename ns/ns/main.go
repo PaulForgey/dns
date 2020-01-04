@@ -51,7 +51,7 @@ var cache = resolver.NewRootZone()
 var logger *log.Logger
 
 func loadZone(zone *resolver.Zone, conf *Zone) error {
-	c, err := dns.NewTextFileReader(conf.DbFile, zone.Name)
+	c, err := dns.NewTextFileReader(conf.DbFile, zone.Name())
 	if err != nil {
 		return err
 	}
@@ -63,7 +63,7 @@ func loadZone(zone *resolver.Zone, conf *Zone) error {
 
 	if conf.Type == PrimaryType {
 		for iface, dbfile := range conf.InterfaceDbFiles {
-			c, err := dns.NewTextFileReader(dbfile, zone.Name)
+			c, err := dns.NewTextFileReader(dbfile, zone.Name())
 			if err != nil {
 				return fmt.Errorf("interface %s: %w", iface, err)
 			}
@@ -89,14 +89,13 @@ func createZone(name string, conf *Zone) (*ns.Zone, error) {
 
 	switch conf.Type {
 	case PrimaryType, HintType:
-		zone = ns.NewZone(resolver.NewZone(n))
-		zone.Hint = (conf.Type == HintType)
+		zone = ns.NewZone(resolver.NewZone(n, conf.Type == HintType))
 		if err := loadZone(zone.Zone, conf); err != nil {
 			return nil, err
 		}
 
 	case SecondaryType:
-		zone = ns.NewZone(resolver.NewZone(n))
+		zone = ns.NewZone(resolver.NewZone(n, false))
 
 	case CacheType: // this is builtin and name is '.' regardless of what the configuration says
 		zone = ns.NewZone(cache)
@@ -223,7 +222,7 @@ func main() {
 		if err != nil {
 			logger.Fatalf("unable to create resolver socket: %v", err)
 		}
-		zones.R = resolver.NewResolver(cache, dnsconn.NewConnection(rc, conf.Resolver), true)
+		zones.R = resolver.NewResolver(zones, dnsconn.NewConnection(rc, conf.Resolver), true)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

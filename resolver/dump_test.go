@@ -91,9 +91,9 @@ func compareZone(t *testing.T, z1, z2 *Zone) {
 }
 
 func TestIXFR(t *testing.T) {
-	z := NewZone(newName(t, "jain.ad.jp"))
+	z := NewZone(newName(t, "jain.ad.jp"), false)
 	for _, r := range revisions {
-		err := z.Decode("", true, dns.NewTextReader(strings.NewReader(r), z.Name))
+		err := z.Decode("", true, dns.NewTextReader(strings.NewReader(r), z.Name()))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -103,8 +103,8 @@ func TestIXFR(t *testing.T) {
 	}
 
 	// secondary with initial revision
-	zz := NewZone(newName(t, "jain.ad.jp"))
-	err := zz.Decode("", true, dns.NewTextReader(strings.NewReader(revisions[0]), zz.Name))
+	zz := NewZone(newName(t, "jain.ad.jp"), false)
+	err := zz.Decode("", true, dns.NewTextReader(strings.NewReader(revisions[0]), zz.Name()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,9 +192,9 @@ func parseTransfer(t *testing.T, serial uint32, records []*dns.Record) []*zoneDe
 }
 
 func TestZoneDump(t *testing.T) {
-	z := NewZone(newName(t, "jain.ad.jp"))
+	z := NewZone(newName(t, "jain.ad.jp"), false)
 	for n, r := range revisions {
-		err := z.Decode("", true, dns.NewTextReader(strings.NewReader(r), z.Name))
+		err := z.Decode("", true, dns.NewTextReader(strings.NewReader(r), z.Name()))
 		if err != nil {
 			t.Fatal(err)
 		}

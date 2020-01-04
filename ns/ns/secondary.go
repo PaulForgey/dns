@@ -50,7 +50,7 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 	if conf.Incremental && soa != nil {
 		msg.Questions = []*dns.Question{
 			&dns.Question{
-				QName:  zone.Name,
+				QName:  zone.Name(),
 				QType:  dns.IXFRType,
 				QClass: rrclass,
 			},
@@ -59,7 +59,7 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 	} else {
 		msg.Questions = []*dns.Question{
 			&dns.Question{
-				QName:  zone.Name,
+				QName:  zone.Name(),
 				QType:  dns.AXFRType,
 				QClass: rrclass,
 			},
@@ -164,7 +164,7 @@ func pollSecondary(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.R
 		serial = rr.Serial
 	}
 
-	a, _, _, aa, err := r.Query(ctx, "", zone.Name, dns.SOAType, rrclass)
+	a, _, _, aa, err := r.Query(ctx, "", zone.Name(), dns.SOAType, rrclass)
 	if err != nil {
 		logger.Printf(
 			"%v: error connecting to %s: %v. Will retry in %v",

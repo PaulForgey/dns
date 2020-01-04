@@ -15,6 +15,25 @@ var ErrSOA = errors.New("SOA records cannot be interface specific")
 var ErrIxfr = errors.New("SOA does not match for IXFR")
 var ErrAxfr = errors.New("Mismatched or unexpected SOA values")
 
+// the ZoneAuthority interface tells a resolver how to look up authoritative records or delegations
+type ZoneAuthority interface {
+	// Lookup retrieves authoritative records for the zone, or cached entries if they were entered
+	Lookup(key string, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (a []*dns.Record, ns []*dns.Record, err error)
+	// Hint returns true if this is a hint zone
+	Hint() bool
+	// Name returns the name of the zone
+	Name() dns.Name
+	// SOA returns the zone's SOA record, may return nil
+	SOA() *dns.Record
+	// Enter enters recors into the cache (usually only makes sense with hint zones)
+	Enter(records []*dns.Record)
+}
+
+// the Authority interface defines a container finding closest a matching ZoneAuthority for a given Name
+type Authority interface {
+	Find(name dns.Name) ZoneAuthority
+}
+
 type snapshot struct {
 	soa         *dns.Record
 	remove, add *Cache // all in 'add' if not differential
@@ -64,9 +83,8 @@ func (s *snapshot) xfer(from *snapshot, next func(*dns.Record) error) error {
 // the Zone type holds authoritative records for a given DNS zone.
 // Records in a zone may further be keyed by interface name.
 type Zone struct {
-	Name dns.Name // domain name of the zone
-	Hint bool     // zone is only a hint for caching and is not authoritative
-
+	name      dns.Name
+	hint      bool
 	lk        sync.RWMutex
 	snaplk    sync.Mutex // overlaps with lk; lock lk first!
 	updated   bool
@@ -77,9 +95,10 @@ type Zone struct {
 }
 
 // NewZone creates a new zone with a given name
-func NewZone(name dns.Name) *Zone {
+func NewZone(name dns.Name, hint bool) *Zone {
 	zone := &Zone{
-		Name:      name,
+		name:      name,
+		hint:      hint,
 		keys:      make(map[string]*Cache),
 		snapshots: make(map[string]*snapshot),
 	}
@@ -87,6 +106,14 @@ func NewZone(name dns.Name) *Zone {
 	zone.cache = zone.db.Root()
 	zone.keys[""] = zone.db
 	return zone
+}
+
+func (z *Zone) Hint() bool {
+	return z.hint
+}
+
+func (z *Zone) Name() dns.Name {
+	return z.name
 }
 
 // Load loads in a series of records. If an SOA is found, the later in the sequence is used to update serial.
@@ -110,8 +137,8 @@ func (z *Zone) Load(key string, clear bool, next func() (*dns.Record, error)) er
 	for {
 		rec, err := next()
 		if rec != nil {
-			if !rec.RecordHeader.Name.HasSuffix(z.Name) {
-				return fmt.Errorf("%w: name=%v, suffix=%v", ErrMartian, rec.RecordHeader.Name, z.Name)
+			if !rec.RecordHeader.Name.HasSuffix(z.name) {
+				return fmt.Errorf("%w: name=%v, suffix=%v", ErrMartian, rec.RecordHeader.Name, z.name)
 			}
 			if rec.Type() == dns.SOAType {
 				if key != "" {
@@ -199,28 +226,22 @@ func (z *Zone) Lookup(
 		db = z.db
 	}
 
-	for len(a) == 0 && len(ns) == 0 {
-		a, err = db.Get(now, name, rrtype, rrclass)
-		if len(a) == 0 {
-			for sname := name; sname.HasSuffix(z.Name); sname = sname.Suffix() {
-				if !z.Hint && len(sname) == len(z.Name) {
-					// we can stop here if we're authoritative
-					break
-				}
-				ns, _ = db.Get(now, sname, dns.NSType, rrclass)
-				if len(ns) > 0 {
-					err = nil
-				}
-				if len(ns) > 0 || len(sname) == 0 {
-					// either have delegation or have reached dot
-					break
-				}
+	a, err = db.Get(now, name, rrtype, rrclass)
+	if len(a) == 0 {
+		for sname := name; sname.HasSuffix(z.name); sname = sname.Suffix() {
+			if !z.hint && len(sname) == len(z.name) {
+				// we can stop here if we're authoritative
+				break
+			}
+			ns, _ = db.Get(now, sname, dns.NSType, rrclass)
+			if len(ns) > 0 {
+				err = nil
+			}
+			if len(ns) > 0 || len(sname) == 0 {
+				// either have delegation or have reached dot
+				break
 			}
 		}
-		if db == z.db {
-			break
-		}
-		db = z.db // this was keyed, now look unkeyed
 	}
 
 	z.lk.RUnlock()

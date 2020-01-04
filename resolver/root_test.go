@@ -7,7 +7,7 @@ import (
 )
 
 func TestRoot(t *testing.T) {
-	root := NewRootZone()
+	root := RootCache.Find(nil)
 	a, _, err := root.Lookup("", newName(t, "a.root-servers.net"), dns.AnyType, dns.INClass)
 	if err != nil {
 		t.Fatal(err)

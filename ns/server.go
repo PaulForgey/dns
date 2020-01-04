@@ -42,13 +42,13 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 			continue
 		}
 
-		logger.Printf("%s:%v:%v: %v %v", conn.Interface, from, zone.Name, msg.Opcode, q)
+		logger.Printf("%s:%v:%v: %v %v", conn.Interface, from, zone.Name(), msg.Opcode, q)
 
 		// XXX update
 		switch msg.Opcode {
 		case dns.Notify:
 			// XXX notify access control
-			notify(ctx, logger, conn, msg, from, zone)
+			notify(ctx, logger, conn, msg, from, zone.(*Zone))
 			continue
 		case dns.StandardQuery:
 			// handled below
@@ -62,16 +62,26 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 		// XXX access control for zone transfers
 		switch q.QType {
 		case dns.AXFRType, dns.IXFRType:
-			ixfr(ctx, logger, conn, msg, from, zone)
+			ixfr(ctx, logger, conn, msg, from, zone.(*Zone))
 			continue
 		}
 
 		// XXX access control for queries
 		// XXX access control for recursive queries
 
-		msg.RA = zone.Hint && (zones.R != nil)
-		msg.AA = false
-		if msg.RD && msg.RA {
+		msg.RA = (zones.R != nil)
+		msg.AA = !zone.Hint()
+
+		// try our own authority first
+		msg.Answers, msg.Authority, err = zone.Lookup(
+			conn.Interface,
+			q.QName,
+			q.QType,
+			q.QClass,
+		)
+
+		if err == nil && len(msg.Answers) == 0 && msg.RD && msg.RA {
+			msg.AA = false
 			msg.Answers, err = zones.R.Resolve(
 				ctx,
 				conn.Interface,
@@ -79,26 +89,16 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 				q.QType,
 				q.QClass,
 			)
-		} else {
-			msg.Answers, msg.Authority, err = zone.Lookup(
-				conn.Interface,
-				q.QName,
-				q.QType,
-				q.QClass,
-			)
-			if len(msg.Authority) == 0 && !zone.Hint {
-				msg.AA = true
-			}
-			if errors.Is(err, dns.NameError) {
-				soa := zone.SOA()
-				if soa != nil {
-					msg.Authority = []*dns.Record{soa}
-				}
+		}
+
+		if msg.AA && len(msg.Authority) == 0 && errors.Is(err, dns.NameError) {
+			soa := zone.SOA()
+			if soa != nil {
+				msg.Authority = []*dns.Record{soa}
 			}
 		}
 
 		var rcode dns.RCode
-
 		if err == nil {
 			// fill in additionals
 			zones.Additional(msg, conn.Interface, q.QClass)

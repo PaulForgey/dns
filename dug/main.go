@@ -49,14 +49,14 @@ func main() {
 
 	var r *resolver.Resolver
 	if host != "" {
-		r, err = resolver.NewResolverClient(resolver.NewZone(nil), network, host, nil)
+		r, err = resolver.NewResolverClient(resolver.RootCache, network, host, nil)
 	} else {
 		conn, err := net.ListenUDP(network, nil)
 		if err != nil {
 			exitErrorF("cannot create resolver socket: %v", err)
 		}
 		r = resolver.NewResolver(
-			resolver.NewRootZone(),
+			resolver.RootCache,
 			dnsconn.NewConnection(conn, network),
 			true,
 		)

@@ -35,7 +35,7 @@ func ixfr(
 ) error {
 	q := msg.Questions[0]
 
-	if zone.Hint || !zone.Name.Equal(q.QName) {
+	if zone.Hint() || !zone.Name().Equal(q.QName) {
 		// this is not us
 		return answer(conn, dns.NotAuth, msg, to)
 	}
@@ -53,7 +53,7 @@ func ixfr(
 		serial = soa.Serial
 	}
 
-	logger.Printf("%v: %v @%d to %v", zone.Name, q.QType, serial, to)
+	logger.Printf("%v: %v @%d to %v", zone.Name(), q.QType, serial, to)
 
 	msg.Authority = nil
 	msg.NoTC = true
@@ -80,10 +80,10 @@ func ixfr(
 	var truncated *dns.Truncated
 	if conn.UDP && errors.As(err, &truncated) {
 		msg.Answers = []*dns.Record{zone.SOA()}
-		logger.Printf("%v: sending @%d to %v: retry TCP", zone.Name, serial, to)
+		logger.Printf("%v: sending @%d to %v: retry TCP", zone.Name(), serial, to)
 		return answer(conn, dns.NoError, msg, to)
 	} else if err != nil {
-		logger.Printf("%v: failed sending %v @%d to %v: %v", zone.Name, serial, to, err)
+		logger.Printf("%v: failed sending @%d to %v: %v", zone.Name(), serial, to, err)
 		return answer(conn, dns.ServerFailure, msg, to)
 	}
 	return nil
@@ -98,11 +98,10 @@ func notify(
 	zone *Zone,
 ) error {
 	q := msg.Questions[0]
-	msg.EDNS = nil
 	msg.Authority = nil
 	msg.Additional = nil
 
-	if !zone.Name.Equal(q.QName) {
+	if !zone.Name().Equal(q.QName) {
 		msg.Answers = nil
 		return answer(conn, dns.Refused, msg, to)
 	}
