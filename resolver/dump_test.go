@@ -67,7 +67,7 @@ func newName(t *testing.T, n string) dns.Name {
 
 func compareZone(t *testing.T, z1, z2 *Zone) {
 	var r1 []*dns.Record
-	z1.Dump(0, "", func(r *dns.Record) error {
+	z1.Dump(0, "", dns.AnyClass, func(r *dns.Record) error {
 		r1 = append(r1, r)
 		return nil
 	})
@@ -97,7 +97,7 @@ func TestIXFR(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		z.Dump(0, "", func(_ *dns.Record) error {
+		z.Dump(0, "", dns.AnyClass, func(_ *dns.Record) error {
 			return nil
 		}) // lay down a revision at each
 	}
@@ -111,7 +111,7 @@ func TestIXFR(t *testing.T) {
 
 	// request ixfr from 1 -> current
 	var ixfr []*dns.Record
-	z.Dump(1, "", func(r *dns.Record) error {
+	z.Dump(1, "", dns.AnyClass, func(r *dns.Record) error {
 		ixfr = append(ixfr, r)
 		return nil
 	})
@@ -202,7 +202,7 @@ func TestZoneDump(t *testing.T) {
 		t.Logf("from %d to %d", n, n+1)
 
 		var records []*dns.Record
-		z.Dump(uint32(n), "", func(r *dns.Record) error {
+		z.Dump(uint32(n), "", dns.AnyClass, func(r *dns.Record) error {
 			records = append(records, r)
 			return nil
 		})
@@ -228,7 +228,7 @@ func TestZoneDump(t *testing.T) {
 		t.Logf("from %d to %d", n, max)
 
 		var records []*dns.Record
-		z.Dump(uint32(n), "", func(r *dns.Record) error {
+		z.Dump(uint32(n), "", dns.AnyClass, func(r *dns.Record) error {
 			records = append(records, r)
 			return nil
 		})

@@ -53,14 +53,14 @@ func ixfr(
 		serial = soa.Serial
 	}
 
-	logger.Printf("%v: %v @%d to %v", zone.Name(), q.QType, serial, to)
+	logger.Printf("%v: %v %v @%d to %v", zone.Name(), q.QType, q.QClass, serial, to)
 
 	msg.Authority = nil
 	msg.NoTC = true
 	msg.AA = true
 
 	batch := make([]*dns.Record, 0, 64)
-	err := zone.Dump(serial, conn.Interface, func(r *dns.Record) error {
+	err := zone.Dump(serial, conn.Interface, q.QClass, func(r *dns.Record) error {
 		var err error
 		batch = append(batch, r)
 		if len(batch) == cap(batch) {
@@ -110,10 +110,29 @@ func notify(
 		return answer(conn, dns.NotImplemented, msg, to)
 	}
 
-	// XXX we have no cheap or easy way (yet) to compare rdata, so ignore the A section hint
+	var found bool
+	for _, r := range msg.Answers {
+		a, _, err := zone.Lookup(conn.Interface, r.RecordHeader.Name, r.Type(), r.Class())
+		if err != nil {
+			break
+		}
+
+		found = false
+		for _, rr := range a {
+			if rr.RecordData.Equal(r.RecordData) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			break
+		}
+	}
+
+	if !found {
+		zone.Reload()
+	}
+
 	msg.Answers = nil
-
-	zone.Reload()
-
 	return answer(conn, dns.NoError, msg, to)
 }

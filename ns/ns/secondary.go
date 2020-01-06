@@ -115,7 +115,7 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 	bw := bufio.NewWriter(out)
 	w := dns.NewTextWriter(bw)
 
-	err = zone.Dump(0, "", func(r *dns.Record) error {
+	err = zone.Dump(0, "", dns.AnyClass, func(r *dns.Record) error {
 		return w.Encode(r)
 	})
 	if err != nil {

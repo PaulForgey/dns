@@ -57,9 +57,9 @@ func (s *snapshot) collapse() *Cache {
 	return base
 }
 
-func (s *snapshot) xfer(from *snapshot, next func(*dns.Record) error) error {
+func (s *snapshot) xfer(from *snapshot, rrclass dns.RRClass, next func(*dns.Record) error) error {
 	if s.prior != from {
-		if err := s.prior.xfer(from, next); err != nil {
+		if err := s.prior.xfer(from, rrclass, next); err != nil {
 			return err
 		}
 	}
@@ -67,13 +67,13 @@ func (s *snapshot) xfer(from *snapshot, next func(*dns.Record) error) error {
 	if err := next(s.prior.soa); err != nil {
 		return err
 	}
-	if err := s.remove.Enumerate(next); err != nil {
+	if err := s.remove.Enumerate(rrclass, next); err != nil {
 		return err
 	}
 	if err := next(s.soa); err != nil {
 		return err
 	}
-	if err := s.add.Enumerate(next); err != nil {
+	if err := s.add.Enumerate(rrclass, next); err != nil {
 		return err
 	}
 
@@ -317,7 +317,7 @@ func (z *Zone) Enter(records []*dns.Record) {
 // Dump returns all records for a zone, optionally since a given soa.
 // If serial is 0 or the zone does not have history for serial, a full result set is returned, otherwise an incremental result.
 // The current serial will be snapshotted for future history if it was not already.
-func (z *Zone) Dump(serial uint32, key string, next func(*dns.Record) error) error {
+func (z *Zone) Dump(serial uint32, key string, rrclass dns.RRClass, next func(*dns.Record) error) error {
 	z.lk.Lock()
 	soa := z.soa_locked()
 	db, ok := z.keys[key]
@@ -388,14 +388,14 @@ func (z *Zone) Dump(serial uint32, key string, next func(*dns.Record) error) err
 	}
 
 	if from != nil {
-		if err := snap.xfer(from, next); err != nil {
+		if err := snap.xfer(from, rrclass, next); err != nil {
 			return err
 		}
 		if err := next(soa); err != nil {
 			return err
 		}
 	} else if data != nil {
-		if err := data.Enumerate(next); err != nil {
+		if err := data.Enumerate(rrclass, next); err != nil {
 			return err
 		}
 		if err := next(soa); err != nil {
