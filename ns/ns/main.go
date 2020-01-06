@@ -71,11 +71,11 @@ func loadZone(zone *resolver.Zone, conf *Zone) error {
 			if err != nil {
 				return err
 			}
-			logger.Printf("%s:%v: loaded from %s", iface, zone.Name, dbfile)
+			logger.Printf("%s:%v: loaded from %s", iface, zone.Name(), dbfile)
 		}
 	}
 
-	logger.Printf("%v: loaded from %s", zone.Name, conf.DbFile)
+	logger.Printf("%v: loaded from %s", zone.Name(), conf.DbFile)
 	return nil
 }
 
@@ -119,7 +119,7 @@ func primaryZone(ctx context.Context, conf *Zone, zone *ns.Zone) {
 		}
 	}
 
-	logger.Printf("%v: zone routine exiting: %v", zone.Name, err)
+	logger.Printf("%v: zone routine exiting: %v", zone.Name(), err)
 }
 
 func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net.IP, zones *ns.Zones) {

@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -283,12 +284,14 @@ type RecordHeader struct {
 	Flags          uint16 // decode only, EDNS
 }
 
-// The RecordData type describes how to marshal and demarshal via the Encoder and Decoder types, as well as identify
-// their type and class.
+// The RecordData type describes how to marshal and demarshal via the Encoder and Decoder types
 type RecordData interface {
 	Encoder
 	Decoder
 	Type() RRType
+	// Less and Equal will panic if given different RecordData type
+	Less(RecordData) bool  // MDNS rules comparing binary data (with uncompressed names, of course)
+	Equal(RecordData) bool // faster than !(m.Less(n) || n.Less(m))
 }
 
 // The Record type fully describes a full resource record.
@@ -336,6 +339,14 @@ func (rr *UnknownRecord) UnmarshalCodec(c Codec) error {
 }
 
 func (rr *UnknownRecord) Type() RRType { return rr.rrtype }
+
+func (m *UnknownRecord) Equal(nn RecordData) bool {
+	return bytes.Compare(m.Data, nn.(*UnknownRecord).Data) == 0
+}
+
+func (m *UnknownRecord) Less(nn RecordData) bool {
+	return bytes.Compare(m.Data, nn.(*UnknownRecord).Data) < 0
+}
 
 type Options map[uint16][]byte
 
@@ -512,101 +523,6 @@ type NameRecordType interface {
 	RName() Name
 }
 
-type CNAMERecord struct {
-	Name
-}
-
-type HINFORecord struct {
-	CPU string
-	OS  string
-}
-
-type MBRecord struct {
-	Name
-}
-
-type MDRecord struct {
-	Name
-}
-
-type MFRecord struct {
-	Name
-}
-
-type MGRecord struct {
-	Name
-}
-
-type MINFORecord struct {
-	RMailbox Name
-	EMailbox Name
-}
-
-type MRRecord struct {
-	Name
-}
-
-type MXRecord struct {
-	Preference uint16
-	Name
-}
-
-type NULLRecord struct {
-	Data []byte
-}
-
-type NSRecord struct {
-	Name
-}
-
-type PTRRecord struct {
-	Name
-}
-
-type SOARecord struct {
-	MName   Name
-	ReName  Name
-	Serial  uint32
-	Refresh time.Duration
-	Retry   time.Duration
-	Expire  time.Duration
-	Minimum time.Duration
-}
-
-type TXTRecord struct {
-	Text []string
-}
-
-type ARecord struct {
-	Address [4]byte
-}
-
-type WKSRecord struct {
-	Address  [4]byte
-	Protocol byte
-	Bitmap   []byte
-}
-
-type SRVRecord struct {
-	Priority uint16
-	Weight   uint16
-	Port     uint16
-	Name
-}
-
-type EDNSRecord struct {
-	Options
-}
-
-type NSECRecord struct {
-	Next  Name
-	Types Bitmap
-}
-
-type AAAARecord struct {
-	Address [16]byte
-}
-
 // RecordFromType instantiates a pointer to a zero value concrete instance of a specific resource record for any known
 // class and type. Returns *UnknownRecord if the class and type are not known.
 func RecordFromType(rrtype RRType) RecordData {
@@ -655,7 +571,28 @@ func RecordFromType(rrtype RRType) RecordData {
 	return NewUnknownRecord(rrtype)
 }
 
+// ==========
+// CNAME
+type CNAMERecord struct {
+	Name
+}
+
 func (rr *CNAMERecord) Type() RRType { return CNAMEType }
+
+func (m *CNAMERecord) Less(nn RecordData) bool {
+	return m.Name.Less(nn.(*CNAMERecord).Name)
+}
+
+func (m *CNAMERecord) Equal(nn RecordData) bool {
+	return m.Name.Equal(nn.(*CNAMERecord).Name)
+}
+
+// ==========
+// HINFO
+type HINFORecord struct {
+	CPU string
+	OS  string
+}
 
 func (rr *HINFORecord) Type() RRType { return HINFOType }
 
@@ -667,10 +604,86 @@ func (rr *HINFORecord) MarshalCodec(c Codec) error {
 	return EncodeSequence(c, rr.CPU, rr.OS)
 }
 
+func (m *HINFORecord) Equal(nn RecordData) bool {
+	n := nn.(*HINFORecord)
+	return m.CPU == n.CPU && m.OS == n.OS
+}
+
+func (m *HINFORecord) Less(nn RecordData) bool {
+	n := nn.(*HINFORecord)
+	return m.CPU < n.CPU || m.OS < n.OS
+}
+
+// ==========
+// MB
+type MBRecord struct {
+	Name
+}
+
 func (rr *MBRecord) Type() RRType { return MBType }
+
+func (m *MBRecord) Less(nn RecordData) bool {
+	return m.Name.Less(nn.(*MBRecord).Name)
+}
+
+func (m *MBRecord) Equal(nn RecordData) bool {
+	return m.Name.Equal(nn.(*MBRecord).Name)
+}
+
+// ==========
+// MD
+type MDRecord struct {
+	Name
+}
+
 func (rr *MDRecord) Type() RRType { return MDType }
+
+func (m *MDRecord) Less(nn RecordData) bool {
+	return m.Name.Less(nn.(*MDRecord).Name)
+}
+
+func (m *MDRecord) Equal(nn RecordData) bool {
+	return m.Name.Equal(nn.(*MDRecord).Name)
+}
+
+// ==========
+// MF
+type MFRecord struct {
+	Name
+}
+
 func (rr *MFRecord) Type() RRType { return MFType }
+
+func (m *MFRecord) Less(nn RecordData) bool {
+	return m.Name.Less(nn.(*MFRecord).Name)
+}
+
+func (m *MFRecord) Equal(nn RecordData) bool {
+	return m.Name.Equal(nn.(*MFRecord).Name)
+}
+
+// ==========
+// MG
+type MGRecord struct {
+	Name
+}
+
 func (rr *MGRecord) Type() RRType { return MGType }
+
+func (m *MGRecord) Less(nn RecordData) bool {
+	return m.Name.Less(nn.(*MGRecord).Name)
+}
+
+func (m *MGRecord) Equal(nn RecordData) bool {
+	return m.Name.Equal(nn.(*MGRecord).Name)
+}
+
+// ==========
+// MINFO
+type MINFORecord struct {
+	RMailbox Name
+	EMailbox Name
+}
 
 func (rr *MINFORecord) Type() RRType { return MINFOType }
 
@@ -682,7 +695,38 @@ func (rr *MINFORecord) MarshalCodec(c Codec) error {
 	return EncodeSequence(c, rr.RMailbox, rr.EMailbox)
 }
 
+func (m *MINFORecord) Equal(nn RecordData) bool {
+	n := nn.(*MINFORecord)
+	return m.RMailbox.Equal(n.RMailbox) && m.EMailbox.Equal(n.EMailbox)
+}
+
+func (m *MINFORecord) Less(nn RecordData) bool {
+	n := nn.(*MINFORecord)
+	return m.RMailbox.Less(n.RMailbox) || m.EMailbox.Less(n.EMailbox)
+}
+
+// ==========
+// MR
+type MRRecord struct {
+	Name
+}
+
 func (rr *MRRecord) Type() RRType { return MRType }
+
+func (m *MRRecord) Less(nn RecordData) bool {
+	return m.Name.Less(nn.(*MRRecord).Name)
+}
+
+func (m *MRRecord) Equal(nn RecordData) bool {
+	return m.Name.Equal(nn.(*MRRecord).Name)
+}
+
+// ==========
+// MX
+type MXRecord struct {
+	Preference uint16
+	Name
+}
 
 func (rr *MXRecord) Type() RRType { return MXType }
 
@@ -692,6 +736,22 @@ func (rr *MXRecord) UnmarshalCodec(c Codec) error {
 
 func (rr *MXRecord) MarshalCodec(c Codec) error {
 	return EncodeSequence(c, rr.Preference, rr.Name)
+}
+
+func (m *MXRecord) Equal(nn RecordData) bool {
+	n := nn.(*MXRecord)
+	return m.Preference == n.Preference && m.Name.Equal(n.Name)
+}
+
+func (m *MXRecord) Less(nn RecordData) bool {
+	n := nn.(*MXRecord)
+	return m.Preference < n.Preference || m.Name.Less(n.Name)
+}
+
+// ==========
+// NULL
+type NULLRecord struct {
+	Data []byte
 }
 
 func (rr *NULLRecord) Type() RRType { return NULLType }
@@ -704,10 +764,60 @@ func (rr *NULLRecord) MarshalCodec(c Codec) error {
 	return c.Encode(rr.Data)
 }
 
+func (m *NULLRecord) Equal(nn RecordData) bool {
+	n := nn.(*NULLRecord)
+	return bytes.Compare(m.Data, n.Data) == 0
+}
+
+func (m *NULLRecord) Less(nn RecordData) bool {
+	n := nn.(*NULLRecord)
+	return bytes.Compare(m.Data, n.Data) < 0
+}
+
+// ==========
+// NS
+type NSRecord struct {
+	Name
+}
+
 func (rr *NSRecord) NS() Name     { return rr.Name }
 func (rr *NSRecord) Type() RRType { return NSType }
 
+func (m *NSRecord) Less(nn RecordData) bool {
+	return m.Name.Less(nn.(*NSRecord).Name)
+}
+
+func (m *NSRecord) Equal(nn RecordData) bool {
+	return m.Name.Equal(nn.(*NSRecord).Name)
+}
+
+// ==========
+// PTR
+type PTRRecord struct {
+	Name
+}
+
 func (rr *PTRRecord) Type() RRType { return PTRType }
+
+func (m *PTRRecord) Less(nn RecordData) bool {
+	return m.Name.Less(nn.(*PTRRecord).Name)
+}
+
+func (m *PTRRecord) Equal(nn RecordData) bool {
+	return m.Name.Equal(nn.(*PTRRecord).Name)
+}
+
+// ==========
+// SOA
+type SOARecord struct {
+	MName   Name
+	ReName  Name
+	Serial  uint32
+	Refresh time.Duration
+	Retry   time.Duration
+	Expire  time.Duration
+	Minimum time.Duration
+}
 
 func (rr *SOARecord) NS() Name     { return rr.MName }
 func (rr *SOARecord) RName() Name  { return rr.MName }
@@ -739,6 +849,34 @@ func (rr *SOARecord) MarshalCodec(c Codec) error {
 	)
 }
 
+func (m *SOARecord) Equal(nn RecordData) bool {
+	n := nn.(*SOARecord)
+	return m.MName.Equal(n.MName) &&
+		m.ReName.Equal(n.ReName) &&
+		m.Serial == n.Serial &&
+		m.Refresh == n.Refresh &&
+		m.Retry == n.Retry &&
+		m.Expire == n.Expire &&
+		m.Minimum == n.Minimum
+}
+
+func (m *SOARecord) Less(nn RecordData) bool {
+	n := nn.(*SOARecord)
+	return m.MName.Less(n.MName) ||
+		m.ReName.Less(n.ReName) ||
+		m.Serial < n.Serial ||
+		m.Refresh < n.Refresh ||
+		m.Retry < n.Retry ||
+		m.Expire < n.Expire ||
+		m.Minimum < n.Minimum
+}
+
+// ==========
+// TXT
+type TXTRecord struct {
+	Text []string
+}
+
 func (rr *TXTRecord) Type() RRType { return TXTType }
 
 func (rr *TXTRecord) UnmarshalCodec(c Codec) error {
@@ -747,6 +885,45 @@ func (rr *TXTRecord) UnmarshalCodec(c Codec) error {
 
 func (rr *TXTRecord) MarshalCodec(c Codec) error {
 	return c.Encode(rr.Text)
+}
+
+func (m *TXTRecord) Equal(nn RecordData) bool {
+	n := nn.(*TXTRecord)
+	if len(m.Text) != len(n.Text) {
+		return false
+	}
+	for i := range m.Text {
+		if m.Text[i] != n.Text[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *TXTRecord) Less(nn RecordData) bool {
+	n := nn.(*TXTRecord)
+	c := len(m.Text) - len(n.Text)
+	var j int
+	if c < 0 {
+		j = len(m.Text)
+	} else {
+		j = len(n.Text)
+	}
+	for i := 0; i < j; i++ {
+		if m.Text[i] < n.Text[i] {
+			return true
+		}
+		if m.Text[i] > n.Text[i] {
+			return false
+		}
+	}
+	return c < 0
+}
+
+// ==========
+// A
+type ARecord struct {
+	Address [4]byte
 }
 
 func (rr *ARecord) Type() RRType { return AType }
@@ -762,6 +939,24 @@ func (rr *ARecord) IP() net.IP {
 	return net.IP(rr.Address[:])
 }
 
+func (m *ARecord) Less(nn RecordData) bool {
+	n := nn.(*ARecord)
+	return bytes.Compare(m.Address[:], n.Address[:]) < 0
+}
+
+func (m *ARecord) Equal(nn RecordData) bool {
+	n := nn.(*ARecord)
+	return bytes.Compare(m.Address[:], n.Address[:]) == 0
+}
+
+// ==========
+// WKS
+type WKSRecord struct {
+	Address  [4]byte
+	Protocol byte
+	Bitmap   []byte
+}
+
 func (rr *WKSRecord) Type() RRType { return WKSType }
 
 func (rr *WKSRecord) UnmarshalCodec(c Codec) error {
@@ -770,6 +965,26 @@ func (rr *WKSRecord) UnmarshalCodec(c Codec) error {
 
 func (rr *WKSRecord) MarshalCodec(c Codec) error {
 	return EncodeSequence(c, rr.Address, rr.Protocol, rr.Bitmap)
+}
+
+func (m *WKSRecord) Less(nn RecordData) bool {
+	n := nn.(*WKSRecord)
+	return bytes.Compare(m.Address[:], n.Address[:]) < 0 ||
+		m.Protocol < n.Protocol ||
+		bytes.Compare(m.Bitmap, n.Bitmap) < 0
+}
+
+func (m *WKSRecord) Equal(nn RecordData) bool {
+	n := nn.(*WKSRecord)
+	return bytes.Compare(m.Address[:], n.Address[:]) == 0 &&
+		m.Protocol == n.Protocol &&
+		bytes.Compare(m.Bitmap, n.Bitmap) == 0
+}
+
+// ==========
+// AAAA
+type AAAARecord struct {
+	Address [16]byte
 }
 
 func (rr *AAAARecord) Type() RRType { return AAAAType }
@@ -786,6 +1001,25 @@ func (rr *AAAARecord) IP() net.IP {
 	return net.IP(rr.Address[:])
 }
 
+func (m *AAAARecord) Less(nn RecordData) bool {
+	n := nn.(*AAAARecord)
+	return bytes.Compare(m.Address[:], n.Address[:]) < 0
+}
+
+func (m *AAAARecord) Equal(nn RecordData) bool {
+	n := nn.(*AAAARecord)
+	return bytes.Compare(m.Address[:], n.Address[:]) == 0
+}
+
+// ==========
+// SRV
+type SRVRecord struct {
+	Priority uint16
+	Weight   uint16
+	Port     uint16
+	Name
+}
+
 func (rr *SRVRecord) Type() RRType { return SRVType }
 
 func (rr *SRVRecord) UnmarshalCodec(c Codec) error {
@@ -794,6 +1028,28 @@ func (rr *SRVRecord) UnmarshalCodec(c Codec) error {
 
 func (rr *SRVRecord) MarshalCodec(c Codec) error {
 	return EncodeSequence(c, rr.Priority, rr.Weight, rr.Port, rr.Name)
+}
+
+func (m *SRVRecord) Less(nn RecordData) bool {
+	n := nn.(*SRVRecord)
+	return m.Priority < n.Priority ||
+		m.Weight < n.Weight ||
+		m.Port < n.Port ||
+		m.Name.Less(n.Name)
+}
+
+func (m *SRVRecord) Equal(nn RecordData) bool {
+	n := nn.(*SRVRecord)
+	return m.Priority == n.Priority &&
+		m.Weight == n.Weight &&
+		m.Port == n.Port &&
+		m.Name.Equal(n.Name)
+}
+
+// ==========
+// EDNS
+type EDNSRecord struct {
+	Options
 }
 
 func (rr *EDNSRecord) Type() RRType { return EDNSType }
@@ -806,6 +1062,22 @@ func (rr *EDNSRecord) MarshalCodec(c Codec) error {
 	return c.Encode(rr.Options)
 }
 
+// XXX pseudo record
+func (m *EDNSRecord) Less(n RecordData) bool {
+	return false
+}
+
+func (m *EDNSRecord) Equal(n RecordData) bool {
+	return false
+}
+
+// ==========
+// NSEC
+type NSECRecord struct {
+	Next  Name
+	Types Bitmap
+}
+
 func (rr *NSECRecord) Type() RRType { return NSECType }
 
 func (rr *NSECRecord) UnmarshalCodec(c Codec) error {
@@ -814,4 +1086,13 @@ func (rr *NSECRecord) UnmarshalCodec(c Codec) error {
 
 func (rr *NSECRecord) MarshalCodec(c Codec) error {
 	return EncodeSequence(c, rr.Next, rr.Types)
+}
+
+// XXX pseudo record
+func (m *NSECRecord) Less(n RecordData) bool {
+	return false
+}
+
+func (m *NSECRecord) Equal(n RecordData) bool {
+	return false
 }

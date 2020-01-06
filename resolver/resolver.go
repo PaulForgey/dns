@@ -19,15 +19,16 @@ var ErrNoRecursion = errors.New("recursion denied")
 const qtimeout = 5 * time.Second
 
 type Resolver struct {
-	lk       *sync.Mutex
-	conn     *dnsconn.Connection
-	auth     Authority
-	answer   chan struct{}
-	servers  []net.Addr
-	rd       bool
-	ra       bool
-	hostType dns.RRType
-	debug    dns.Codec
+	lk        *sync.Mutex
+	conn      *dnsconn.Connection
+	auth      Authority
+	answer    chan struct{}
+	servers   []net.Addr
+	recursive bool
+	rd        bool
+	ra        bool
+	hostType  dns.RRType
+	debug     dns.Codec
 }
 
 func (r *Resolver) init(conn *dnsconn.Connection, auth Authority, network string) {
@@ -50,7 +51,8 @@ func (r *Resolver) init(conn *dnsconn.Connection, auth Authority, network string
 // servers is usually nil if host is specified as it would make no sense to send a message on a connected conn to a destination.
 // If auth is nil (not recommended), the resolver will not have a cache. A resolver client should at least have an empty
 // root zone to cache results in.
-func NewResolverClient(auth Authority, network string, host string, servers []net.Addr) (*Resolver, error) {
+// if rd is false, the client will ask questions without the RD flag. This flag is normally set.
+func NewResolverClient(auth Authority, network string, host string, servers []net.Addr, rd bool) (*Resolver, error) {
 	var conn net.Conn
 	var err error
 
@@ -72,7 +74,8 @@ func NewResolverClient(auth Authority, network string, host string, servers []ne
 
 	r := &Resolver{}
 	r.init(dnsconn.NewConnection(conn, network), auth, network)
-	r.rd = true
+	r.rd = rd
+	r.recursive = false
 	r.ra = true
 	if host != "" && len(servers) == 0 {
 		r.servers = []net.Addr{nil} // hack to indicate connected conn as we send to the nil address
@@ -88,6 +91,7 @@ func NewResolverClient(auth Authority, network string, host string, servers []ne
 func NewResolver(auth Authority, conn *dnsconn.Connection, ra bool) *Resolver {
 	r := &Resolver{}
 	r.init(conn, auth, conn.Network)
+	r.recursive = true
 	r.ra = ra
 	return r
 }
@@ -223,7 +227,7 @@ func (r *Resolver) query(
 		if err == nil && len(msg.Answers) == 0 && len(msg.Authority) == 0 && msg.TC {
 			if udpaddr, ok := dest.(*net.UDPAddr); ok {
 				var tcp *Resolver
-				tcp, err = NewResolverClient(r.auth, "tcp", udpaddr.String(), nil)
+				tcp, err = NewResolverClient(r.auth, "tcp", udpaddr.String(), nil, r.rd)
 				tcp.Debug(r.debug)
 				if err != nil {
 					return
@@ -381,7 +385,7 @@ func (r *Resolver) resolve(
 	var err error
 	var aa bool
 
-	if r.rd {
+	if !r.recursive {
 		// query external recursive server
 		a, ns, _, aa, err = r.Query(ctx, key, name, rrtype, rrclass)
 		if err != nil {

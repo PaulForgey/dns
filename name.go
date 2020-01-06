@@ -67,22 +67,22 @@ func (n Name) Equal(r Name) bool {
 
 // Less returns true if n < r.
 func (n Name) Less(r Name) bool {
-	ni := len(n) - 1
-	ri := len(r) - 1
-	for ni >= 0 && ri >= 0 {
-		if n[ni].Less(r[ri]) {
+	c := len(n) - len(r)
+	var j int
+	if c < 0 {
+		j = len(n)
+	} else {
+		j = len(r)
+	}
+	for i := 0; i < j; i++ {
+		if n[i].Less(r[i]) {
 			return true
 		}
-		if !n[ni].Equal(r[ri]) {
+		if !n[i].Equal(r[i]) {
 			return false
 		}
-		ni--
-		ri--
 	}
-	if ni < 0 && ri >= 0 {
-		return true
-	}
-	return false
+	return c < 0
 }
 
 // HasSuffix returns true if n ends with r (or if they are equal). HasSuffix will always return true if r is an empty name.

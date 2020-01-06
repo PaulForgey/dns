@@ -98,14 +98,14 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 		return err
 	}
 
-	logger.Printf("%v: successfully transferred zone from %s", zone.Name, conf.Primary)
+	logger.Printf("%v: successfully transferred zone from %s", zone.Name(), conf.Primary)
 
 	tmpfile := fmt.Sprintf("%s-%d", conf.DbFile, os.Getpid())
 	out, err := os.Create(tmpfile)
 	if err != nil {
 		logger.Printf(
 			"%v: failed to create output db file %s: %v",
-			zone.Name,
+			zone.Name(),
 			tmpfile,
 			err,
 		)
@@ -131,7 +131,7 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 	if err != nil {
 		logger.Printf(
 			"%v: failed to rename %s->%s: %v",
-			zone.Name,
+			zone.Name(),
 			tmpfile,
 			conf.DbFile,
 			err,
@@ -168,7 +168,7 @@ func pollSecondary(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.R
 	if err != nil {
 		logger.Printf(
 			"%v: error connecting to %s: %v. Will retry in %v",
-			zone.Name,
+			zone.Name(),
 			conf.Primary,
 			err,
 			retry,
@@ -178,7 +178,7 @@ func pollSecondary(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.R
 	if !aa {
 		logger.Printf(
 			"%v: answer from %s is not authoritative. Will retry in %v",
-			zone.Name,
+			zone.Name(),
 			conf.Primary,
 			retry,
 		)
@@ -194,7 +194,7 @@ func pollSecondary(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.R
 	if rsoa == nil {
 		logger.Printf(
 			"%v: answer from %s did not return SOA? Will retry in %v",
-			zone.Name,
+			zone.Name(),
 			conf.Primary,
 			retry,
 		)
@@ -205,7 +205,7 @@ func pollSecondary(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.R
 		if err != nil {
 			logger.Printf(
 				"%v: error transferring from %s: %v. Will retry in %v",
-				zone.Name,
+				zone.Name(),
 				conf.Primary,
 				err,
 				retry,
@@ -217,9 +217,9 @@ func pollSecondary(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.R
 }
 
 func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zone) {
-	r, err := resolver.NewResolverClient(nil, conf.PrimaryNetwork, conf.Primary, nil)
+	r, err := resolver.NewResolverClient(nil, conf.PrimaryNetwork, conf.Primary, nil, false)
 	if err != nil {
-		logger.Fatalf("%v: cannot create resolver against %s: %v", zone.Name, conf.Primary, err)
+		logger.Fatalf("%v: cannot create resolver against %s: %v", zone.Name(), conf.Primary, err)
 	}
 
 	live := false
@@ -232,7 +232,7 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 	} else {
 		logger.Printf(
 			"%v: offline: %v: will transfer from primary @ %v",
-			zone.Name,
+			zone.Name(),
 			err,
 			conf.Primary,
 		)
@@ -247,7 +247,7 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 		if now.Sub(success) > expire {
 			logger.Printf(
 				"%v: offline: successful refresh beyond expire time of %v",
-				zone.Name,
+				zone.Name(),
 				expire,
 			)
 			if live {
@@ -264,7 +264,7 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 			// fat and happy
 			success = time.Now()
 			if !live {
-				logger.Printf("%v: online", zone.Name)
+				logger.Printf("%v: online", zone.Name())
 				zones.Insert(zone)
 				live = true
 			}
@@ -298,5 +298,5 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 		}
 	}
 
-	logger.Printf("%v: zone routine exiting: %v", zone.Name, err)
+	logger.Printf("%v: zone routine exiting: %v", zone.Name(), err)
 }

@@ -17,6 +17,7 @@ var network string
 var host string
 var rrtype = dns.AnyType
 var rrclass = dns.INClass
+var rd = true
 
 func exitError(msg interface{}) {
 	fmt.Fprintf(os.Stderr, "%s: %v\n", os.Args[0], msg)
@@ -33,6 +34,7 @@ func main() {
 	flag.StringVar(&host, "host", "", "specify host of connection (omit to be rescursive root)")
 	flag.Var(&rrtype, "type", "type")
 	flag.Var(&rrclass, "class", "class")
+	flag.BoolVar(&rd, "rd", true, "send recursive queries to -host")
 
 	flag.Parse()
 
@@ -49,7 +51,7 @@ func main() {
 
 	var r *resolver.Resolver
 	if host != "" {
-		r, err = resolver.NewResolverClient(resolver.RootCache, network, host, nil)
+		r, err = resolver.NewResolverClient(resolver.EmptyCache, network, host, nil, rd)
 	} else {
 		conn, err := net.ListenUDP(network, nil)
 		if err != nil {

@@ -61,7 +61,6 @@ func NewRootZone() *Zone {
 	return zone
 }
 
-// RootCache is a global Authority containing only . suitable for caching
 type rootCache struct {
 	root *Zone
 }
@@ -70,4 +69,8 @@ func (r rootCache) Find(_ dns.Name) ZoneAuthority {
 	return r.root
 }
 
+// RootCache is a global Authority containing only . suitable for caching
 var RootCache rootCache = rootCache{NewRootZone()}
+
+// EmptyCache is like RootCache but without any hints
+var EmptyCache rootCache = rootCache{NewZone(nil, true)}

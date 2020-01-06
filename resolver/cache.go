@@ -1,7 +1,6 @@
 package resolver
 
 import (
-	"reflect"
 	"time"
 
 	"tessier-ashpool.net/dns"
@@ -145,7 +144,7 @@ func (c *Cache) Enter(at time.Time, merge bool, records []*dns.Record) {
 						for _, cr := range crrset.records {
 							found := false
 							for _, rr := range rrset.records {
-								if reflect.DeepEqual(cr.RecordData, rr.RecordData) {
+								if cr.RecordData.Equal(rr.RecordData) {
 									found = true
 									break
 								}
@@ -344,7 +343,7 @@ func (c *Cache) Clone(exclude *Cache) *Cache {
 					for _, f := range frrset.records {
 						found := false
 						for _, x := range xrrset.records {
-							if reflect.DeepEqual(f.RecordData, x.RecordData) {
+							if f.RecordData.Equal(x.RecordData) {
 								found = true
 								break
 							}
@@ -382,7 +381,7 @@ func (c *Cache) Patch(remove, add *Cache) {
 					for _, r := range rrset.records {
 						found := false
 						for _, x := range xrrset.records {
-							if reflect.DeepEqual(r.RecordData, x.RecordData) {
+							if r.RecordData.Equal(x.RecordData) {
 								found = true
 								break
 							}
