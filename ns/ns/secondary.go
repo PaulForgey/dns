@@ -221,6 +221,7 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 	if err != nil {
 		logger.Fatalf("%v: cannot create resolver against %s: %v", zone.Name(), conf.Primary, err)
 	}
+	defer r.Close()
 
 	live := false
 

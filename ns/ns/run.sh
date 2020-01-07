@@ -3,7 +3,7 @@
 
 PWD=`pwd`
 
-(docker run --rm -p 5310:53/udp -p 5310:53/tcp --network=my-dns --ip=192.168.0.10 -v "$PWD/ns1:/root/db" tessier-ashpool.net/ns) &
+(docker run --rm -p 5380:5380/tcp -p 5310:53/udp -p 5310:53/tcp --network=my-dns --ip=192.168.0.10 -v "$PWD/ns1:/root/db" tessier-ashpool.net/ns) &
 
 echo "letting primary come up"
 sleep 5

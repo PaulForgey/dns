@@ -1,4 +1,7 @@
 {
+	"REST": {
+		"Addr": ":5380"
+	},
 	"Resolver": "udp",
 	"Zones":{
 		".": {

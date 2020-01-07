@@ -114,7 +114,7 @@ func (zs *Zones) Additional(msg *dns.Message, key string, rrclass dns.RRClass) {
 		// make sure we haven't already put it in
 		found := false
 		for _, a := range msg.Additional {
-			if a.RecordHeader.Name.Equal(name) && rrtype == a.Type() {
+			if a.RecordHeader.Name.Equal(name) && rrtype.Asks(a.Type()) {
 				found = true
 				break
 			}
@@ -123,7 +123,7 @@ func (zs *Zones) Additional(msg *dns.Message, key string, rrclass dns.RRClass) {
 			continue
 		}
 		for _, a := range msg.Answers {
-			if a.RecordHeader.Name.Equal(name) && rrtype == a.Type() {
+			if a.RecordHeader.Name.Equal(name) && rrtype.Asks(a.Type()) {
 				found = true
 				break
 			}

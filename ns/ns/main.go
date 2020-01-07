@@ -38,9 +38,16 @@ type Zone struct {
 	// XXX query, transfer, update ACL
 }
 
+type REST struct {
+	Addr string // if empty, listens globally on port 80. Probably not what you want
+	// XXX authentication, source address restrictions
+	// XXX TLS
+}
+
 type Conf struct {
 	Zones    map[string]Zone // zones
 	Resolver string          // udp,udp4,udp6 empty for no recursive resolver
+	REST     *REST           // REST server; omit or set to null to disable
 	// XXX global server ACL
 	// XXX mdns zone
 }
@@ -90,9 +97,6 @@ func createZone(name string, conf *Zone) (*ns.Zone, error) {
 	switch conf.Type {
 	case PrimaryType, HintType:
 		zone = ns.NewZone(resolver.NewZone(n, conf.Type == HintType))
-		if err := loadZone(zone.Zone, conf); err != nil {
-			return nil, err
-		}
 
 	case SecondaryType:
 		zone = ns.NewZone(resolver.NewZone(n, false))
@@ -105,21 +109,6 @@ func createZone(name string, conf *Zone) (*ns.Zone, error) {
 	}
 
 	return zone, nil
-}
-
-func primaryZone(ctx context.Context, conf *Zone, zone *ns.Zone) {
-	var err error
-
-	for err == nil {
-		select {
-		case <-ctx.Done():
-			err = ctx.Err()
-		case <-zone.C:
-			err = loadZone(zone.Zone, conf)
-		}
-	}
-
-	logger.Printf("%v: zone routine exiting: %v", zone.Name(), err)
 }
 
 func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net.IP, zones *ns.Zones) {
@@ -215,7 +204,17 @@ func main() {
 		logger.Fatalf("unable to parse configuration file %s: %v", confFile, err)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	wg := &sync.WaitGroup{}
 	zones := ns.NewZones()
+
+	if conf.REST != nil {
+		wg.Add(1)
+		go func() {
+			serveREST(ctx, conf.REST, zones)
+			wg.Done()
+		}()
+	}
 
 	if conf.Resolver != "" {
 		rc, err := net.ListenUDP(conf.Resolver, &net.UDPAddr{})
@@ -225,20 +224,17 @@ func main() {
 		zones.R = resolver.NewResolver(zones, dnsconn.NewConnection(rc, conf.Resolver), true)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	wg := &sync.WaitGroup{}
-
 	for k, v := range conf.Zones {
 		wg.Add(1)
 		go func(name string, c Zone) {
 			zone, err := createZone(name, &c)
 			if err != nil {
-				logger.Fatalf("%s: cannot load zone: %v", name, err)
+				logger.Fatalf("%s: cannot create zone: %v", name, err)
 			}
 			switch c.Type {
 			case PrimaryType:
 				zones.Insert(zone)
-				primaryZone(ctx, &c, zone)
+				primaryZone(ctx, &c, zone, zones.R)
 
 			case SecondaryType:
 				secondaryZone(ctx, zones, &c, zone)

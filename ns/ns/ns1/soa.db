@@ -1,9 +1,10 @@
 @ 24h 	IN SOA ns1.example.com. "hostmaster.example.com." (
-	2 ; serial
+	3 ; serial
 	3h ; refresh
 	3h ; retry
 	24h ; expire
 	10m ) ; minimum
 
 	IN NS ns1.example.com.
+	IN NS ns2.example.com.
 

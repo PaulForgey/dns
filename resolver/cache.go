@@ -309,7 +309,7 @@ func (c *Cache) Get(now time.Time, name dns.Name, rrtype dns.RRType, rrclass dns
 }
 
 // Clone peels off a copy of the zone for checkpointing, zone transfers, etc.
-// If exclude is not nil, records present in omit will be excluded from the result.
+// If exclude is not nil, records present will be excluded from the result.
 // The copied records are only authoritative ones. The RecordData fields of the records are referenced, not copied.
 // The set of returned records is also from the point of view of the cache shadowing its parent. The cloned cache
 // thus has no parent.
@@ -336,7 +336,11 @@ func (c *Cache) Clone(exclude *Cache) *Cache {
 				var xrrset *rrSet
 
 				if exclude != nil {
-					xrrset = exclude.cache.get(nkey, rrkey)
+					x := exclude
+					for xrrset == nil && x != nil {
+						xrrset = x.cache.get(nkey, rrkey)
+						x = x.parent
+					}
 				}
 
 				if xrrset != nil {
