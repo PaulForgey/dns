@@ -270,6 +270,11 @@ func main() {
 				secondaryZone(ctx, zones, &c, zone)
 
 			default:
+				if c.DbFile != "" {
+					if err := loadZone(zone.Zone, &c); err != nil {
+						logger.Fatalf("%v: cannot load zone: %v", zone.Name(), err)
+					}
+				}
 				zones.Insert(zone, true)
 			}
 			wg.Done()
