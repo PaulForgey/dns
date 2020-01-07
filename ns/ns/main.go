@@ -152,15 +152,20 @@ func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net
 			logger.Println(err)
 		} else {
 			logger.Printf("%s: listening %s %v", iface, network, laddr)
+			closer := make(chan struct{})
 			go func() {
-				<-ctx.Done()
-				c.Close()
+				select {
+				case <-ctx.Done():
+					c.Close()
+				case <-closer:
+					c.Close()
+				}
 			}()
 			for {
 				a, err := c.Accept()
 				if err != nil {
 					logger.Println(err)
-					c.Close()
+					close(closer)
 					break
 				} else {
 					wg.Add(1)
@@ -319,6 +324,10 @@ func main() {
 	sig := <-sigc
 	cancel()
 	logger.Printf("shutting down on %v", sig)
+
+	if zones.R != nil {
+		zones.R.Close()
+	}
 
 	wg.Wait()
 	logger.Printf("exiting: %v", err)
