@@ -179,7 +179,7 @@ func (z *Zone) Decode(key string, clear bool, c dns.Codec) error {
 func (z *Zone) soa_locked() *dns.Record {
 	r := z.soa
 
-	if z != nil && z.updated {
+	if r != nil && z.updated {
 		soa := r.RecordData.(*dns.SOARecord)
 		nsoa := dns.SOARecord(*soa)
 		soa = &nsoa
@@ -200,7 +200,7 @@ func (z *Zone) SOA() *dns.Record {
 
 	z.lk.RLock()
 	r = z.soa
-	if z != nil && z.updated {
+	if r != nil && z.updated {
 		z.lk.RUnlock()
 		z.lk.Lock()
 		r = z.soa_locked()
@@ -520,12 +520,12 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 	z.lk.Lock()
 	z.soa = soa
 	z.db = db
+
+	for k, _ := range z.keys {
+		delete(z.keys, k)
+	}
 	z.keys[""] = db
 
-	z.snaplk.Lock()
-	delete(z.snapshots, "")
-
-	z.snaplk.Unlock()
 	z.lk.Unlock()
 	return nil
 }
