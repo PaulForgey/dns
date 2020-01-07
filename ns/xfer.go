@@ -79,6 +79,7 @@ func ixfr(
 
 	var truncated *dns.Truncated
 	if conn.UDP && errors.As(err, &truncated) {
+		msg.TC = true
 		msg.Answers = []*dns.Record{zone.SOA()}
 		logger.Printf("%v: sending @%d to %v: retry TCP", zone.Name(), serial, to)
 		return answer(conn, dns.NoError, msg, to)

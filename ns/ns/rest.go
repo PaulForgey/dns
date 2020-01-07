@@ -52,12 +52,12 @@ func (s *restServer) doZoneReload(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(err.Error()))
 			return
 		}
-		zone := s.zones.Find(n)
+		zone := s.zones.Zone(n)
 		if zone == nil {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		zone.(*ns.Zone).Reload()
+		zone.Reload()
 
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)

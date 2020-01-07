@@ -33,6 +33,31 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 			continue
 		}
 
+		logger.Printf("%s:%v:%v: %v", conn.Interface, from, msg.Opcode, q)
+
+		switch msg.Opcode {
+		// XXX update
+
+		case dns.Notify:
+			// XXX notify access control
+			if zone := zones.Zone(q.QName); zone != nil {
+				notify(ctx, logger, conn, msg, from, zone)
+			} else {
+				msg.Answers = nil
+				answer(conn, dns.Refused, msg, from)
+			}
+			continue
+
+		case dns.StandardQuery:
+			// handled below
+
+		default:
+			answer(conn, dns.NotImplemented, msg, from)
+			continue
+		}
+
+		//standard query
+
 		// find zone for the question
 		zone := zones.Find(q.QName)
 		if zone == nil {
@@ -41,23 +66,6 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 			answer(conn, dns.Refused, msg, from)
 			continue
 		}
-
-		logger.Printf("%s:%v:%v: %v %v", conn.Interface, from, zone.Name(), msg.Opcode, q)
-
-		// XXX update
-		switch msg.Opcode {
-		case dns.Notify:
-			// XXX notify access control
-			notify(ctx, logger, conn, msg, from, zone.(*Zone))
-			continue
-		case dns.StandardQuery:
-			// handled below
-		default:
-			answer(conn, dns.NotImplemented, msg, from)
-			continue
-		}
-
-		//standard query
 
 		// XXX access control for zone transfers
 		switch q.QType {

@@ -53,13 +53,8 @@ func notify(ctx context.Context, soa *dns.Record, ip net.IP) bool {
 	return true
 }
 
-func primaryZone(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.Resolver) {
+func primaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zone, r *resolver.Resolver) {
 	var err error
-
-	err = loadZone(zone.Zone, conf)
-	if err != nil {
-		logger.Fatalf("%v: cannot load zone: %v", zone.Name(), err)
-	}
 
 	for err == nil {
 		soa := zone.SOA()
@@ -101,6 +96,7 @@ func primaryZone(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.Res
 			err = loadZone(zone.Zone, conf)
 		}
 	}
+	zones.Offline(zone)
 
 	logger.Printf("%v: zone routine exiting: %v", zone.Name(), err)
 }

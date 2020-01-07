@@ -10,6 +10,7 @@ import (
 // the Zones type holds all the zones we know of
 type Zones struct {
 	R *resolver.Resolver
+
 	sync.RWMutex
 	zones map[string]*Zone
 
@@ -19,8 +20,9 @@ type Zones struct {
 // the Zone type is a specialization of the resolver Zone with additional information needed by the server
 type Zone struct {
 	*resolver.Zone
-	C chan bool // reload
+	online bool
 
+	C chan bool // reload
 	// XXX access control
 }
 
@@ -46,16 +48,25 @@ func NewZones() *Zones {
 }
 
 // Insert adds or overwrites a zone
-func (zs *Zones) Insert(z *Zone) {
+func (zs *Zones) Insert(z *Zone, online bool) {
 	zs.Lock()
+	z.online = online
 	zs.zones[z.Name().Key()] = z
 	zs.Unlock()
 }
 
-// Remove removes a zone (takes it offline)
+// Remove removes a zone
 func (zs *Zones) Remove(z *Zone) {
 	zs.Lock()
+	z.online = false
 	delete(zs.zones, z.Name().Key())
+	zs.Unlock()
+}
+
+// Offline marks a zone offline
+func (zs *Zones) Offline(z *Zone) {
+	zs.Lock()
+	z.online = false
 	zs.Unlock()
 }
 
@@ -75,6 +86,21 @@ func (zs *Zones) Find(n dns.Name) resolver.ZoneAuthority {
 		n = n.Suffix()
 	}
 
+	if z != nil && !z.online {
+		z = nil
+	}
+
+	zs.RUnlock()
+	if z == nil {
+		return nil
+	}
+	return z
+}
+
+// Zone returns the zone by exact match, online or not
+func (zs *Zones) Zone(n dns.Name) *Zone {
+	zs.RLock()
+	z, _ := zs.zones[n.Key()]
 	zs.RUnlock()
 	return z
 }

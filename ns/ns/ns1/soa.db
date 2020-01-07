@@ -1,4 +1,4 @@
-@ 24h 	IN SOA ns1.example.com. "hostmaster.example.com." (
+@ 24h 	IN SOA ns1.example.com. "hostmaster\.dot.example.com." (
 	3 ; serial
 	3h ; refresh
 	3h ; retry

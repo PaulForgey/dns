@@ -23,10 +23,10 @@ func TestZoneSearch(t *testing.T) {
 
 	zones := NewZones()
 
-	zones.Insert(dot)
-	zones.Insert(zone1)
-	zones.Insert(zone2)
-	zones.Insert(zone3)
+	zones.Insert(dot, true)
+	zones.Insert(zone1, true)
+	zones.Insert(zone2, true)
+	zones.Insert(zone3, true)
 
 	// expect to find these names in this zone
 	tests := []struct {

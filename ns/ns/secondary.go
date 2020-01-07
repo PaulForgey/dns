@@ -228,7 +228,7 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 	// try to load from cache if we have it
 	err = loadZone(zone.Zone, conf)
 	if err == nil {
-		zones.Insert(zone)
+		zones.Insert(zone, true)
 		live = true
 	} else {
 		logger.Printf(
@@ -252,7 +252,7 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 				expire,
 			)
 			if live {
-				zones.Remove(zone)
+				zones.Offline(zone)
 				live = false
 			}
 		}
@@ -266,7 +266,7 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 			success = time.Now()
 			if !live {
 				logger.Printf("%v: online", zone.Name())
-				zones.Insert(zone)
+				zones.Insert(zone, true)
 				live = true
 			}
 		}

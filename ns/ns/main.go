@@ -58,6 +58,10 @@ var cache = resolver.NewRootZone()
 var logger *log.Logger
 
 func loadZone(zone *resolver.Zone, conf *Zone) error {
+	if conf.DbFile == "" {
+		return fmt.Errorf("%v has no DbFile", zone.Name())
+	}
+
 	c, err := dns.NewTextFileReader(conf.DbFile, zone.Name())
 	if err != nil {
 		return err
@@ -224,23 +228,49 @@ func main() {
 		zones.R = resolver.NewResolver(zones, dnsconn.NewConnection(rc, conf.Resolver), true)
 	}
 
-	for k, v := range conf.Zones {
-		wg.Add(1)
-		go func(name string, c Zone) {
+	// do primary zones first
+	for name, c := range conf.Zones {
+		if c.Type == PrimaryType {
 			zone, err := createZone(name, &c)
 			if err != nil {
 				logger.Fatalf("%s: cannot create zone: %v", name, err)
 			}
+			if err := loadZone(zone.Zone, &c); err != nil {
+				logger.Fatalf("%v: cannot load zone: %v", zone.Name(), err)
+			}
+			zones.Insert(zone, true)
+		}
+	}
+
+	for k, v := range conf.Zones {
+		wg.Add(1)
+		go func(name string, c Zone) {
+			var zone *ns.Zone
+			var err error
+
+			if c.Type != PrimaryType {
+				zone, err = createZone(name, &c)
+				if err != nil {
+					logger.Fatalf("%s: cannot create zone: %v", name, err)
+				}
+			} else {
+				n, err := dns.NameWithString(name)
+				if err != nil {
+					logger.Fatalf("%s: %v", name, err)
+				}
+				zone = zones.Zone(n)
+			}
+
 			switch c.Type {
 			case PrimaryType:
-				zones.Insert(zone)
-				primaryZone(ctx, &c, zone, zones.R)
+				primaryZone(ctx, zones, &c, zone, zones.R)
 
 			case SecondaryType:
+				zones.Insert(zone, false)
 				secondaryZone(ctx, zones, &c, zone)
 
 			default:
-				zones.Insert(zone)
+				zones.Insert(zone, true)
 			}
 			wg.Done()
 		}(k, v)
