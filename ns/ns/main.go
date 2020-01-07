@@ -59,7 +59,7 @@ var logger *log.Logger
 
 func loadZone(zone *resolver.Zone, conf *Zone) error {
 	if conf.DbFile == "" {
-		return fmt.Errorf("%v has no DbFile", zone.Name())
+		return nil
 	}
 
 	c, err := dns.NewTextFileReader(conf.DbFile, zone.Name())
@@ -156,10 +156,9 @@ func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net
 			go func() {
 				select {
 				case <-ctx.Done():
-					c.Close()
 				case <-closer:
-					c.Close()
 				}
+				c.Close()
 			}()
 			for {
 				a, err := c.Accept()
@@ -240,6 +239,9 @@ func main() {
 			if err != nil {
 				logger.Fatalf("%s: cannot create zone: %v", name, err)
 			}
+			if c.DbFile == "" {
+				logger.Fatalf("%v: primary zone has no db file", zone.Name())
+			}
 			if err := loadZone(zone.Zone, &c); err != nil {
 				logger.Fatalf("%v: cannot load zone: %v", zone.Name(), err)
 			}
@@ -275,10 +277,8 @@ func main() {
 				secondaryZone(ctx, zones, &c, zone)
 
 			default:
-				if c.DbFile != "" {
-					if err := loadZone(zone.Zone, &c); err != nil {
-						logger.Fatalf("%v: cannot load zone: %v", zone.Name(), err)
-					}
+				if err := loadZone(zone.Zone, &c); err != nil {
+					logger.Fatalf("%v: cannot load zone: %v", zone.Name(), err)
 				}
 				zones.Insert(zone, true)
 			}

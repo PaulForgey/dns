@@ -100,43 +100,45 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 
 	logger.Printf("%v: successfully transferred zone from %s", zone.Name(), conf.Primary)
 
-	tmpfile := fmt.Sprintf("%s-%d", conf.DbFile, os.Getpid())
-	out, err := os.Create(tmpfile)
-	if err != nil {
-		logger.Printf(
-			"%v: failed to create output db file %s: %v",
-			zone.Name(),
-			tmpfile,
-			err,
-		)
-		return nil // just a warning
-	}
+	if conf.DbFile != "" {
+		tmpfile := fmt.Sprintf("%s-%d", conf.DbFile, os.Getpid())
+		out, err := os.Create(tmpfile)
+		if err != nil {
+			logger.Printf(
+				"%v: failed to create output db file %s: %v",
+				zone.Name(),
+				tmpfile,
+				err,
+			)
+			return nil // just a warning
+		}
 
-	bw := bufio.NewWriter(out)
-	w := dns.NewTextWriter(bw)
+		bw := bufio.NewWriter(out)
+		w := dns.NewTextWriter(bw)
 
-	err = zone.Dump(0, "", dns.AnyClass, func(r *dns.Record) error {
-		return w.Encode(r)
-	})
-	if err != nil {
-		return err // more than a warning, something is wrong
-	}
+		err = zone.Dump(0, "", dns.AnyClass, func(r *dns.Record) error {
+			return w.Encode(r)
+		})
+		if err != nil {
+			return err // more than a warning, something is wrong
+		}
 
-	if err := bw.Flush(); err != nil {
-		return err
-	}
-	out.Close()
+		if err := bw.Flush(); err != nil {
+			return err
+		}
+		out.Close()
 
-	err = os.Rename(tmpfile, conf.DbFile)
-	if err != nil {
-		logger.Printf(
-			"%v: failed to rename %s->%s: %v",
-			zone.Name(),
-			tmpfile,
-			conf.DbFile,
-			err,
-		)
-		return nil
+		err = os.Rename(tmpfile, conf.DbFile)
+		if err != nil {
+			logger.Printf(
+				"%v: failed to rename %s->%s: %v",
+				zone.Name(),
+				tmpfile,
+				conf.DbFile,
+				err,
+			)
+			return nil
+		}
 	}
 
 	return nil
@@ -226,11 +228,13 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 	live := false
 
 	// try to load from cache if we have it
-	err = loadZone(zone.Zone, conf)
-	if err == nil {
-		zones.Insert(zone, true)
-		live = true
-	} else {
+	if conf.DbFile != "" {
+		if err = loadZone(zone.Zone, conf); err == nil {
+			zones.Insert(zone, true)
+			live = true
+		}
+	}
+	if !live {
 		logger.Printf(
 			"%v: offline: %v: will transfer from primary @ %v",
 			zone.Name(),
