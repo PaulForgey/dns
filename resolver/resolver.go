@@ -106,10 +106,55 @@ func (r *Resolver) Debug(c dns.Codec) {
 	r.debug = c
 }
 
-func (r *Resolver) ask(dest net.Addr, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (uint16, error) {
-	id := r.conn.NewMessageID()
+// Transact sends and receives a DNS query to dest, filling in msg.EDNS as necessary
+func (r *Resolver) Transact(ctx context.Context, dest net.Addr, msg *dns.Message) (*dns.Message, error) {
+	outSize := dnsconn.MinMessageSize
+	if msg.EDNS == nil {
+		msgSize := dnsconn.UDPMessageSize
+		if !r.conn.UDP {
+			msgSize = dnsconn.MaxMessageSize
+			outSize = dnsconn.MaxMessageSize
+		}
+		msg.EDNS = &dns.Record{
+			RecordHeader: dns.RecordHeader{
+				MaxMessageSize: uint16(msgSize),
+				Version:        0,
+			},
+			RecordData: &dns.EDNSRecord{},
+		}
+	}
+	if err := r.conn.WriteTo(msg, dest, outSize); err != nil {
+		return nil, err
+	}
+	return r.Receive(ctx, msg.ID)
+}
+
+// Receive returns the next answer of a given message ID (used only with tcp zone transfer)
+func (r *Resolver) Receive(ctx context.Context, id uint16) (*dns.Message, error) {
+	msg, _, err := r.conn.ReadFromIf(ctx, func(m *dns.Message) bool {
+		return m.QR && m.ID == id
+	})
+	if msg != nil {
+		if r.debug != nil {
+			r.debug.Encode(msg)
+		}
+		if msg.RCode != dns.NoError {
+			err = msg.RCode
+		}
+	}
+	return msg, err
+}
+
+// Ask sends a StandardQuery to dest, caching any results
+func (r *Resolver) Ask(
+	ctx context.Context,
+	zone ZoneAuthority,
+	dest net.Addr,
+	name dns.Name,
+	rrtype dns.RRType,
+	rrclass dns.RRClass,
+) (*dns.Message, error) {
 	msg := &dns.Message{
-		ID:     id,
 		Opcode: dns.StandardQuery,
 		RD:     r.rd,
 		Questions: []*dns.Question{
@@ -119,27 +164,10 @@ func (r *Resolver) ask(dest net.Addr, name dns.Name, rrtype dns.RRType, rrclass 
 				QClass: rrclass,
 			},
 		},
-		EDNS: &dns.Record{
-			RecordHeader: dns.RecordHeader{
-				MaxMessageSize: dnsconn.UDPMessageSize,
-				Version:        0,
-			},
-			RecordData: &dns.EDNSRecord{},
-		},
 	}
 
-	err := r.conn.WriteTo(msg, dest, dnsconn.MinMessageSize)
-	return id, err
-}
-
-func (r *Resolver) waitAnswer(ctx context.Context, id uint16, zone ZoneAuthority) (*dns.Message, error) {
-	var msg *dns.Message
-	var err error
-
 	readCtx, cancel := context.WithTimeout(ctx, qtimeout)
-	msg, _, err = r.conn.ReadFromIf(readCtx, func(m *dns.Message) bool {
-		return m.QR && m.ID == id
-	})
+	msg, err := r.Transact(readCtx, dest, msg)
 	cancel()
 
 	if msg != nil {
@@ -151,6 +179,10 @@ func (r *Resolver) waitAnswer(ctx context.Context, id uint16, zone ZoneAuthority
 
 		if r.debug != nil {
 			r.debug.Encode(msg)
+		}
+
+		if msg.RCode != dns.NoError {
+			err = msg.RCode
 		}
 	}
 
@@ -214,48 +246,37 @@ func (r *Resolver) query(
 	// if servers is empty, we did a cache only query
 	var msg *dns.Message
 	for _, dest := range servers {
-		var id uint16
-		id, err = r.ask(dest, name, rrtype, rrclass)
-		if err != nil {
+		msg, err = r.Ask(ctx, zone, dest, name, rrtype, rrclass)
+		if msg == nil {
+			// transport error
 			continue
 		}
-		// An error at this point will be a transport error.
-		// Any server error is in the successfully received message.
-		msg, err = r.waitAnswer(ctx, id, zone)
 
 		// see if we are being coerced into a TCP query
 		if err == nil && len(msg.Answers) == 0 && len(msg.Authority) == 0 && msg.TC {
 			if udpaddr, ok := dest.(*net.UDPAddr); ok {
 				var tcp *Resolver
 				tcp, err = NewResolverClient(r.auth, "tcp", udpaddr.String(), nil, r.rd)
-				tcp.Debug(r.debug)
 				if err != nil {
-					return
+					continue
 				}
+				tcp.Debug(r.debug)
 				a, ns, ar, aa, err = tcp.Query(ctx, key, name, rrtype, rrclass)
 				tcp.Close()
 
-				return
+				msg = nil
 			}
 		}
-		// use first successful server transaction
+		// use first successful answer
 		if err == nil {
 			break
 		}
 	}
-	if err != nil {
-		// none of the servers succeeded
-		return
-	}
+
 	if msg != nil {
-		if msg.RCode == dns.NoError {
-			// successful answer from server
-			a, ns, ar, aa = msg.Answers, msg.Authority, msg.Additional, msg.AA
-		} else {
-			// now propegate the server response as error
-			err = msg.RCode
-		}
-	} // else obviously cache only
+		// answer from server
+		a, ns, ar, aa = msg.Answers, msg.Authority, msg.Additional, msg.AA
+	}
 
 	return
 }
