@@ -8,6 +8,7 @@ import (
 	"log"
 	"log/syslog"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -219,7 +220,14 @@ func main() {
 	if conf.REST != nil {
 		wg.Add(1)
 		go func() {
-			serveREST(ctx, conf.REST, zones)
+			s := &RestServer{
+				Server: http.Server{
+					Addr: conf.REST.Addr,
+				},
+				Zones:          zones,
+				ShutdownServer: cancel,
+			}
+			s.Serve(ctx)
 			wg.Done()
 		}()
 	}
@@ -321,14 +329,21 @@ func main() {
 
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt)
-	sig := <-sigc
-	cancel()
-	logger.Printf("shutting down on %v", sig)
+
+	select {
+	case sig := <-sigc:
+		cancel()
+		logger.Printf("shutting down on %v", sig)
+	case <-ctx.Done():
+		logger.Printf("shutting down by request")
+	}
+
+	signal.Stop(sigc)
 
 	if zones.R != nil {
 		zones.R.Close()
 	}
 
 	wg.Wait()
-	logger.Printf("exiting: %v", err)
+	logger.Printf("exiting")
 }
