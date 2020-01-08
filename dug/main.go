@@ -18,6 +18,7 @@ var host string
 var rrtype = dns.AnyType
 var rrclass = dns.INClass
 var rd = true
+var serial uint
 
 func exitError(msg interface{}) {
 	fmt.Fprintf(os.Stderr, "%s: %v\n", os.Args[0], msg)
@@ -35,6 +36,7 @@ func main() {
 	flag.Var(&rrtype, "type", "type")
 	flag.Var(&rrclass, "class", "class")
 	flag.BoolVar(&rd, "rd", true, "send recursive queries to -host")
+	flag.UintVar(&serial, "serial", 0, "if -type=ixfr, serial to use in SOA")
 
 	flag.Parse()
 
@@ -72,16 +74,96 @@ func main() {
 		r.Debug(textCodec)
 	}
 
-	records, err := r.Resolve(context.Background(), "", name, rrtype, rrclass)
-	if err != nil {
-		exitError(err)
-	}
+	switch rrtype {
+	case dns.AXFRType, dns.IXFRType:
+		msg := &dns.Message{
+			Opcode: dns.StandardQuery,
+			Questions: []*dns.Question{
+				&dns.Question{
+					QName:  name,
+					QType:  rrtype,
+					QClass: rrclass,
+				},
+			},
+		}
+		if rrtype == dns.IXFRType {
+			msg.Authority = []*dns.Record{
+				&dns.Record{
+					RecordHeader: dns.RecordHeader{
+						Name:  name,
+						Type:  dns.SOAType,
+						Class: rrclass,
+					},
+					RecordData: &dns.SOARecord{
+						Serial: uint32(serial),
+					},
+				},
+			}
+		}
+		msg, err = r.Transact(context.Background(), nil, msg)
+		if err != nil {
+			exitError(err)
+		}
 
-	if debug {
-		fmt.Printf("\n;; answers:\n")
-	}
+		if debug {
+			fmt.Printf("\n;; transfer:\n")
+		}
 
-	for _, record := range records {
-		fmt.Println(record)
+		if len(msg.Answers) > 0 {
+			soa, _ := msg.Answers[0].RecordData.(*dns.SOARecord)
+			if soa != nil {
+				fmt.Println(msg.Answers[0])
+				msg.Answers = msg.Answers[1:]
+			}
+
+			var isoa *dns.SOARecord
+
+			for {
+				for _, record := range msg.Answers {
+					fmt.Println(record)
+
+					if record.Type() == dns.SOAType && soa != nil {
+						switch rrtype {
+						case dns.AXFRType:
+							soa = nil
+
+						case dns.IXFRType:
+							if isoa == nil {
+								isoa = record.RecordData.(*dns.SOARecord)
+								if isoa.Serial == soa.Serial {
+									soa = nil
+								}
+							} else {
+								isoa = nil
+							}
+						}
+					}
+				}
+				if rrtype == dns.IXFRType && len(msg.Answers) == 0 {
+					// hackish single answer SOA in response
+					soa = nil
+				}
+				if soa == nil {
+					break
+				}
+				msg, err = r.Receive(context.Background(), msg.ID)
+				if err != nil {
+					exitError(err)
+				}
+			}
+		}
+
+	default:
+		records, err := r.Resolve(context.Background(), "", name, rrtype, rrclass)
+		if err != nil {
+			exitError(err)
+		}
+
+		if debug {
+			fmt.Printf("\n;; answers:\n")
+		}
+		for _, record := range records {
+			fmt.Println(record)
+		}
 	}
 }
