@@ -78,6 +78,10 @@ func (c *RRClass) UnmarshalJSON(b []byte) error {
 	return c.Set(s)
 }
 
+func (c RRClass) MarshalJSON() ([]byte, error) {
+	return json.Marshal(c.String())
+}
+
 // Match returns true if either c or n are AnyClass or equal to each other
 func (c RRClass) Match(n RRClass) bool {
 	return c == AnyClass || n == AnyClass || c == n
@@ -249,6 +253,10 @@ func (t *RRType) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	return t.Set(s)
+}
+
+func (t RRType) MarshalJSON() ([]byte, error) {
+	return json.Marshal(t.String())
 }
 
 // Match returns true if either t or n are AnyType or equal to each other.

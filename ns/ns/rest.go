@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"tessier-ashpool.net/dns"
@@ -12,11 +14,14 @@ import (
 
 const (
 	zoneReload = "/dns/v1/zone/reload/"
+	zoneConf   = "/dns/v1/zone/conf/"
 	shutdown   = "/dns/v1/shutdown"
 )
 
 type RestServer struct {
+	sync.Mutex
 	http.Server
+	Conf           *Conf
 	Zones          *ns.Zones
 	ShutdownServer context.CancelFunc
 }
@@ -42,6 +47,7 @@ func (s *RestServer) Serve(ctx context.Context) {
 	h := http.NewServeMux()
 
 	addHandler(h, zoneReload, http.HandlerFunc(s.doZoneReload))
+	addHandler(h, zoneConf, http.HandlerFunc(s.doZoneConf))
 	addHandler(h, shutdown, http.HandlerFunc(s.doShutdown))
 
 	s.Handler = &requestLogger{h}
@@ -74,13 +80,51 @@ func (s *RestServer) doZoneReload(w http.ResponseWriter, r *http.Request) {
 		}
 		logger.Printf("%v: zone reload request", zone.Name())
 		zone.Reload()
+		w.WriteHeader(http.StatusNoContent)
 
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *RestServer) doZoneConf(w http.ResponseWriter, r *http.Request) {
+	s.Lock()
+	defer s.Unlock()
+
+	path := r.URL.Path // must match the configuration json key exactly
+
+	switch r.Method {
+	case http.MethodGet:
+		var output interface{}
+		if path == "" {
+			output = s.Conf.Zones
+		} else {
+			var ok bool
+			output, ok = s.Conf.Zones[path]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(output)
+
+	case http.MethodDelete:
+		c, ok := s.Conf.Zones[path]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		c.cancel()
+		delete(s.Conf.Zones, path)
+
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
 }
 
 func (s *RestServer) doShutdown(w http.ResponseWriter, r *http.Request) {
@@ -89,11 +133,9 @@ func (s *RestServer) doShutdown(w http.ResponseWriter, r *http.Request) {
 		if s.ShutdownServer != nil {
 			s.ShutdownServer()
 		}
+		w.WriteHeader(http.StatusNoContent)
 
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
 	}
-
-	w.WriteHeader(http.StatusNoContent)
 }

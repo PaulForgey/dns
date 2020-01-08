@@ -30,13 +30,17 @@ const (
 
 type Zone struct {
 	Type             ZoneType
-	DbFile           string
-	InterfaceDbFiles map[string]string // primary: interface specific records
-	Primary          string            // secondary: primary server to transfer from
-	PrimaryNetwork   string            // secondary: udp/udp4/udp6,tcp/tcp4/tcp6 (defaults to udp)
-	Incremental      bool              // secondary: use IXFR
-	Class            dns.RRClass       // seconary: zone class
+	DbFile           string            `json:",omitempty"`
+	InterfaceDbFiles map[string]string `json:",omitempty"` // primary: interface specific records
+	Primary          string            `json:",omitempty"` // secondary: primary server to transfer from
+	PrimaryNetwork   string            `json:",omitempty"` // secondary: udp/udp4/udp6,tcp/tcp4/tcp6 (defaults to udp)
+	Incremental      bool              `json:",omitempty"` // secondary: use IXFR
+	Class            dns.RRClass       `json:",omitempty"` // secondary: zone class (has invalid zero value, defaults to ANY)
 	// XXX query, transfer, update ACL
+
+	zone   *ns.Zone
+	cancel context.CancelFunc
+	ctx    context.Context
 }
 
 type REST struct {
@@ -46,9 +50,9 @@ type REST struct {
 }
 
 type Conf struct {
-	Zones    map[string]Zone // zones
-	Resolver string          // udp,udp4,udp6 empty for no recursive resolver
-	REST     *REST           // REST server; omit or set to null to disable
+	Zones    map[string]*Zone // zones
+	Resolver string           // udp,udp4,udp6 empty for no recursive resolver
+	REST     *REST            // REST server; omit or set to null to disable
 	// XXX global server ACL
 	// XXX mdns zone
 }
@@ -58,10 +62,42 @@ var confFile string
 var cache = resolver.NewRootZone()
 var logger *log.Logger
 
-func loadZone(zone *resolver.Zone, conf *Zone) error {
+func createZone(ctx context.Context, name string, conf *Zone) error {
+	if conf == nil {
+		return fmt.Errorf("zone %s has no configuration body", name)
+	}
+
+	n, err := dns.NameWithString(name)
+	if err != nil {
+		return err
+	}
+
+	switch conf.Type {
+	case PrimaryType, HintType:
+		conf.zone = ns.NewZone(resolver.NewZone(n, conf.Type == HintType))
+		if err := conf.load(); err != nil {
+			return err
+		}
+
+	case SecondaryType:
+		conf.zone = ns.NewZone(resolver.NewZone(n, false))
+
+	case CacheType: // this is builtin and name is '.' regardless of what the configuration says
+		conf.zone = ns.NewZone(cache)
+
+	default:
+		return fmt.Errorf("no such type %s", conf.Type)
+	}
+
+	conf.ctx, conf.cancel = context.WithCancel(ctx)
+	return nil
+}
+
+func (conf *Zone) load() error {
 	if conf.DbFile == "" {
 		return nil
 	}
+	zone := conf.zone
 
 	c, err := dns.NewTextFileReader(conf.DbFile, zone.Name())
 	if err != nil {
@@ -73,47 +109,37 @@ func loadZone(zone *resolver.Zone, conf *Zone) error {
 		return err
 	}
 
-	if conf.Type == PrimaryType {
-		for iface, dbfile := range conf.InterfaceDbFiles {
-			c, err := dns.NewTextFileReader(dbfile, zone.Name())
-			if err != nil {
-				return fmt.Errorf("interface %s: %w", iface, err)
-			}
-			err = zone.Decode(iface, false, c)
-			if err != nil {
-				return err
-			}
-			logger.Printf("%s:%v: loaded from %s", iface, zone.Name(), dbfile)
+	for iface, dbfile := range conf.InterfaceDbFiles {
+		// if this is a secondary zone, interface specific records will be lost on first successful transfer
+		c, err := dns.NewTextFileReader(dbfile, zone.Name())
+		if err != nil {
+			return fmt.Errorf("interface %s: %w", iface, err)
 		}
+		err = zone.Decode(iface, false, c)
+		if err != nil {
+			return err
+		}
+		logger.Printf("%s:%v: loaded from %s", iface, zone.Name(), dbfile)
 	}
 
 	logger.Printf("%v: loaded from %s", zone.Name(), conf.DbFile)
 	return nil
 }
 
-func createZone(name string, conf *Zone) (*ns.Zone, error) {
-	n, err := dns.NameWithString(name)
-	if err != nil {
-		return nil, err
-	}
-
-	var zone *ns.Zone
-
+func (conf *Zone) run(zones *ns.Zones) {
 	switch conf.Type {
-	case PrimaryType, HintType:
-		zone = ns.NewZone(resolver.NewZone(n, conf.Type == HintType))
+	case PrimaryType:
+		conf.primaryZone(zones)
 
 	case SecondaryType:
-		zone = ns.NewZone(resolver.NewZone(n, false))
-
-	case CacheType: // this is builtin and name is '.' regardless of what the configuration says
-		zone = ns.NewZone(cache)
+		conf.secondaryZone(zones)
 
 	default:
-		return nil, fmt.Errorf("no such type %s", conf.Type)
+		<-conf.ctx.Done()
 	}
 
-	return zone, nil
+	conf.cancel()
+	zones.Remove(conf.zone)
 }
 
 func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net.IP, zones *ns.Zones) {
@@ -224,6 +250,7 @@ func main() {
 				Server: http.Server{
 					Addr: conf.REST.Addr,
 				},
+				Conf:           &conf,
 				Zones:          zones,
 				ShutdownServer: cancel,
 			}
@@ -240,56 +267,19 @@ func main() {
 		zones.R = resolver.NewResolver(zones, dnsconn.NewConnection(rc, conf.Resolver), true)
 	}
 
-	// do primary zones first
+	// load all data before running
 	for name, c := range conf.Zones {
-		if c.Type == PrimaryType {
-			zone, err := createZone(name, &c)
-			if err != nil {
-				logger.Fatalf("%s: cannot create zone: %v", name, err)
-			}
-			if c.DbFile == "" {
-				logger.Fatalf("%v: primary zone has no db file", zone.Name())
-			}
-			if err := loadZone(zone.Zone, &c); err != nil {
-				logger.Fatalf("%v: cannot load zone: %v", zone.Name(), err)
-			}
-			zones.Insert(zone, true)
+		err := createZone(ctx, name, c)
+		if err != nil {
+			logger.Fatalf("%s: cannot create zone: %v", name, err)
 		}
+		zones.Insert(c.zone, c.Type != SecondaryType) // secondary offline until loaded
 	}
 
 	for k, v := range conf.Zones {
 		wg.Add(1)
-		go func(name string, c Zone) {
-			var zone *ns.Zone
-			var err error
-
-			if c.Type != PrimaryType {
-				zone, err = createZone(name, &c)
-				if err != nil {
-					logger.Fatalf("%s: cannot create zone: %v", name, err)
-				}
-			} else {
-				n, err := dns.NameWithString(name)
-				if err != nil {
-					logger.Fatalf("%s: %v", name, err)
-				}
-				zone = zones.Zone(n)
-			}
-
-			switch c.Type {
-			case PrimaryType:
-				primaryZone(ctx, zones, &c, zone, zones.R)
-
-			case SecondaryType:
-				zones.Insert(zone, false)
-				secondaryZone(ctx, zones, &c, zone)
-
-			default:
-				if err := loadZone(zone.Zone, &c); err != nil {
-					logger.Fatalf("%v: cannot load zone: %v", zone.Name(), err)
-				}
-				zones.Insert(zone, true)
-			}
+		go func(name string, c *Zone) {
+			c.run(zones)
 			wg.Done()
 		}(k, v)
 	}

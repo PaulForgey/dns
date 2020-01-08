@@ -218,18 +218,20 @@ func pollSecondary(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.R
 	return true, refresh
 }
 
-func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zone) {
+func (conf *Zone) secondaryZone(zones *ns.Zones) {
+	ctx := conf.ctx
+	zone := conf.zone
+	live := false
+
 	r, err := resolver.NewResolverClient(nil, conf.PrimaryNetwork, conf.Primary, nil, false)
 	if err != nil {
 		logger.Fatalf("%v: cannot create resolver against %s: %v", zone.Name(), conf.Primary, err)
 	}
 	defer r.Close()
 
-	live := false
-
 	// try to load from cache if we have it
 	if conf.DbFile != "" {
-		if err = loadZone(zone.Zone, conf); err == nil {
+		if err = conf.load(); err == nil {
 			zones.Insert(zone, true)
 			live = true
 		}
@@ -288,11 +290,12 @@ func secondaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zo
 				}
 				reload = time.NewTimer(time.Duration(rand.Int()%5+5) * time.Second)
 				reloadC = reload.C
-				continue
+
 			case <-rt.C:
 				trigger = true
 			case <-reloadC:
 				trigger = true
+
 			case <-ctx.Done():
 				err = ctx.Err()
 			}

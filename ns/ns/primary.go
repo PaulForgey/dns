@@ -8,7 +8,6 @@ import (
 	"tessier-ashpool.net/dns"
 	"tessier-ashpool.net/dns/dnsconn"
 	"tessier-ashpool.net/dns/ns"
-	"tessier-ashpool.net/dns/resolver"
 )
 
 func notify(ctx context.Context, soa *dns.Record, ip net.IP) bool {
@@ -53,8 +52,12 @@ func notify(ctx context.Context, soa *dns.Record, ip net.IP) bool {
 	return true
 }
 
-func primaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zone, r *resolver.Resolver) {
+func (conf *Zone) primaryZone(zones *ns.Zones) {
 	var err error
+
+	ctx := conf.ctx
+	zone := conf.zone
+	r := zones.R
 
 	for err == nil {
 		soa := zone.SOA()
@@ -93,10 +96,8 @@ func primaryZone(ctx context.Context, zones *ns.Zones, conf *Zone, zone *ns.Zone
 			err = ctx.Err()
 
 		case <-zone.C:
-			err = loadZone(zone.Zone, conf)
+			err = conf.load()
 		}
 	}
-	zones.Offline(zone)
-
 	logger.Printf("%v: zone routine exiting: %v", zone.Name(), err)
 }
