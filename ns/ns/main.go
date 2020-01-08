@@ -335,5 +335,5 @@ func main() {
 	}
 
 	wg.Wait()
-	logger.Printf("exiting")
+	logger.Printf("exiting: %v", ctx.Err())
 }

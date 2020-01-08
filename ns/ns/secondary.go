@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"net"
 	"os"
 	"time"
 
 	"tessier-ashpool.net/dns"
-	"tessier-ashpool.net/dns/dnsconn"
 	"tessier-ashpool.net/dns/ns"
 	"tessier-ashpool.net/dns/resolver"
 )
@@ -27,24 +25,14 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 		network = "tcp"
 	}
 
-	dialer := &net.Dialer{}
-	c, err := dialer.DialContext(ctx, network, conf.Primary)
+	r, err := resolver.NewResolverClient(nil, network, conf.Primary, nil, false)
 	if err != nil {
 		return err
 	}
-	conn := dnsconn.NewConnection(c, network)
-	defer conn.Close()
+	defer r.Close()
 
 	msg := &dns.Message{
-		ID:     uint16(os.Getpid()),
 		Opcode: dns.StandardQuery,
-		EDNS: &dns.Record{
-			RecordHeader: dns.RecordHeader{
-				MaxMessageSize: dnsconn.MaxMessageSize,
-				Version:        0,
-			},
-			RecordData: &dns.EDNSRecord{},
-		},
 	}
 
 	if conf.Incremental && soa != nil {
@@ -66,30 +54,30 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 		}
 	}
 
-	if err := conn.WriteTo(msg, nil, dnsconn.MaxMessageSize); err != nil {
+	tctx, cancel := context.WithTimeout(ctx, time.Minute)
+	msg, err = r.Transact(tctx, nil, msg)
+	cancel()
+	if err != nil {
 		return err
 	}
 
-	var records []*dns.Record
+	records := msg.Answers
 
 	err = zone.Xfer(conf.Incremental, func() (*dns.Record, error) {
 		if len(records) == 0 {
 			tctx, cancel := context.WithTimeout(ctx, time.Minute)
-			msg, _, err := conn.ReadFromIf(tctx, func(_ *dns.Message) bool {
-				return true
-			})
+			msg, err := r.Receive(tctx, msg.ID)
 			cancel()
-			if err == nil && msg.RCode != dns.NoError {
-				err = msg.RCode
-			}
 			if err != nil {
 				return nil, err
 			}
+
 			records = msg.Answers
 			if len(records) == 0 {
 				return nil, io.ErrUnexpectedEOF
 			}
 		}
+
 		r := records[0]
 		records = records[1:]
 		return r, nil

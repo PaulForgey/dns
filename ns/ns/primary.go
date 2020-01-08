@@ -6,18 +6,17 @@ import (
 	"time"
 
 	"tessier-ashpool.net/dns"
-	"tessier-ashpool.net/dns/dnsconn"
 	"tessier-ashpool.net/dns/ns"
+	"tessier-ashpool.net/dns/resolver"
 )
 
 func notify(ctx context.Context, soa *dns.Record, ip net.IP) bool {
-	c, err := net.DialUDP("udp", nil, &net.UDPAddr{Port: 53, IP: ip})
+	r, err := resolver.NewResolverClient(nil, "udp", "", nil, false)
 	if err != nil {
-		logger.Printf("%v: cannot create udp socket against %v: %v", soa.RecordHeader.Name, ip, err)
+		logger.Printf("%v: cannot create udp socket: %v", soa.RecordHeader.Name, err)
 		return false
 	}
-	conn := dnsconn.NewConnection(c, "udp")
-	defer conn.Close()
+	defer r.Close()
 
 	msg := &dns.Message{
 		Opcode: dns.Notify,
@@ -30,21 +29,14 @@ func notify(ctx context.Context, soa *dns.Record, ip net.IP) bool {
 		},
 		Answers: []*dns.Record{soa},
 	}
-	err = conn.WriteTo(msg, nil, dnsconn.MinMessageSize)
+
+	raddr := &net.UDPAddr{IP: ip, Port: 53}
+	to, cancel := context.WithTimeout(ctx, time.Second*10)
+	msg, err = r.Transact(to, raddr, msg)
+	cancel()
+
 	if err != nil {
 		logger.Printf("%v: cannot send NOTIFY to %v: %v", soa.RecordHeader.Name, ip, err)
-		return false
-	}
-	to, cancel := context.WithTimeout(ctx, time.Second*10)
-	msg, _, err = conn.ReadFromIf(to, func(m *dns.Message) bool {
-		return m.QR && m.ID == msg.ID
-	})
-	cancel()
-	if err == nil && msg.RCode != dns.NoError {
-		err = msg.RCode
-	}
-	if err != nil {
-		logger.Printf("%v: NOTIFY response from %v: %v", soa.RecordHeader.Name, ip, err)
 		return false
 	}
 
