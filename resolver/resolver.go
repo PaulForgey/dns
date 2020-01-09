@@ -180,10 +180,6 @@ func (r *Resolver) Ask(
 		if r.debug != nil {
 			r.debug.Encode(msg)
 		}
-
-		if msg.RCode != dns.NoError {
-			err = msg.RCode
-		}
 	}
 
 	return msg, err

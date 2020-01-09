@@ -50,6 +50,8 @@ type REST struct {
 }
 
 type Conf struct {
+	sync.Mutex
+
 	Zones    map[string]*Zone // zones
 	Resolver string           // udp,udp4,udp6 empty for no recursive resolver
 	REST     *REST            // REST server; omit or set to null to disable
@@ -243,22 +245,6 @@ func main() {
 	wg := &sync.WaitGroup{}
 	zones := ns.NewZones()
 
-	if conf.REST != nil {
-		wg.Add(1)
-		go func() {
-			s := &RestServer{
-				Server: http.Server{
-					Addr: conf.REST.Addr,
-				},
-				Conf:           &conf,
-				Zones:          zones,
-				ShutdownServer: cancel,
-			}
-			s.Serve(ctx)
-			wg.Done()
-		}()
-	}
-
 	if conf.Resolver != "" {
 		rc, err := net.ListenUDP(conf.Resolver, &net.UDPAddr{})
 		if err != nil {
@@ -282,6 +268,22 @@ func main() {
 			c.run(zones)
 			wg.Done()
 		}(k, v)
+	}
+
+	if conf.REST != nil {
+		wg.Add(1)
+		go func() {
+			s := &RestServer{
+				Server: http.Server{
+					Addr: conf.REST.Addr,
+				},
+				Conf:           &conf,
+				Zones:          zones,
+				ShutdownServer: cancel,
+			}
+			s.Serve(ctx)
+			wg.Done()
+		}()
 	}
 
 	ifaces, err := net.Interfaces()

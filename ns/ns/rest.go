@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"tessier-ashpool.net/dns"
@@ -19,7 +18,6 @@ const (
 )
 
 type RestServer struct {
-	sync.Mutex
 	http.Server
 	Conf           *Conf
 	Zones          *ns.Zones
@@ -89,8 +87,8 @@ func (s *RestServer) doZoneReload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *RestServer) doZoneConf(w http.ResponseWriter, r *http.Request) {
-	s.Lock()
-	defer s.Unlock()
+	s.Conf.Lock()
+	defer s.Conf.Unlock()
 
 	path := r.URL.Path // must match the configuration json key exactly
 
