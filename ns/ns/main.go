@@ -41,6 +41,7 @@ type Zone struct {
 	zone   *ns.Zone
 	cancel context.CancelFunc
 	ctx    context.Context
+	wg     sync.WaitGroup
 }
 
 type REST struct {
@@ -64,7 +65,7 @@ var confFile string
 var cache = resolver.NewRootZone()
 var logger *log.Logger
 
-func createZone(ctx context.Context, name string, conf *Zone) error {
+func (conf *Zone) create(ctx context.Context, name string) error {
 	if conf == nil {
 		return fmt.Errorf("zone %s has no configuration body", name)
 	}
@@ -129,19 +130,27 @@ func (conf *Zone) load() error {
 }
 
 func (conf *Zone) run(zones *ns.Zones) {
-	switch conf.Type {
-	case PrimaryType:
-		conf.primaryZone(zones)
+	conf.wg.Add(1)
+	go func() {
+		switch conf.Type {
+		case PrimaryType:
+			conf.primaryZone(zones)
 
-	case SecondaryType:
-		conf.secondaryZone(zones)
+		case SecondaryType:
+			conf.secondaryZone(zones)
 
-	default:
-		<-conf.ctx.Done()
-	}
+		default:
+			<-conf.ctx.Done()
+		}
 
-	conf.cancel()
-	zones.Remove(conf.zone)
+		zones.Remove(conf.zone)
+		conf.cancel()
+		conf.wg.Done()
+	}()
+}
+
+func (conf *Zone) wait() {
+	conf.wg.Wait()
 }
 
 func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net.IP, zones *ns.Zones) {
@@ -255,19 +264,15 @@ func main() {
 
 	// load all data before running
 	for name, c := range conf.Zones {
-		err := createZone(ctx, name, c)
+		err := c.create(ctx, name)
 		if err != nil {
 			logger.Fatalf("%s: cannot create zone: %v", name, err)
 		}
 		zones.Insert(c.zone, c.Type != SecondaryType) // secondary offline until loaded
 	}
 
-	for k, v := range conf.Zones {
-		wg.Add(1)
-		go func(name string, c *Zone) {
-			c.run(zones)
-			wg.Done()
-		}(k, v)
+	for _, c := range conf.Zones {
+		c.run(zones)
 	}
 
 	if conf.REST != nil {
@@ -336,6 +341,10 @@ func main() {
 		zones.R.Close()
 	}
 
+	for _, c := range conf.Zones {
+		c.wait()
+	}
 	wg.Wait()
+
 	logger.Printf("exiting: %v", ctx.Err())
 }

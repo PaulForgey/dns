@@ -1,9 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,11 +18,14 @@ import (
 const (
 	zoneReload = "/dns/v1/zone/reload/"
 	zoneConf   = "/dns/v1/zone/conf/"
+	zoneData   = "/dns/v1/zone/data/"
 	shutdown   = "/dns/v1/shutdown"
 )
 
 type RestServer struct {
 	http.Server
+	ctx context.Context
+
 	Conf           *Conf
 	Zones          *ns.Zones
 	ShutdownServer context.CancelFunc
@@ -46,10 +53,12 @@ func (s *RestServer) Serve(ctx context.Context) {
 
 	addHandler(h, zoneReload, http.HandlerFunc(s.doZoneReload))
 	addHandler(h, zoneConf, http.HandlerFunc(s.doZoneConf))
+	addHandler(h, zoneData, http.HandlerFunc(s.doZoneData))
 	addHandler(h, shutdown, http.HandlerFunc(s.doShutdown))
 
 	s.Handler = &requestLogger{h}
 	s.ErrorLog = logger
+	s.ctx = ctx
 
 	go func() {
 		<-ctx.Done()
@@ -119,6 +128,74 @@ func (s *RestServer) doZoneConf(w http.ResponseWriter, r *http.Request) {
 		delete(s.Conf.Zones, path)
 
 		w.WriteHeader(http.StatusNoContent)
+
+	case http.MethodPut:
+		c := &Zone{}
+		err := json.NewDecoder(r.Body).Decode(c)
+		if err == nil && c.DbFile != "" {
+			err = errors.New("DbFile may not be specified")
+		}
+		if err == nil {
+			err = c.create(s.ctx, path)
+		}
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, "%v\r\n", err)
+			return
+		}
+		s.Zones.Insert(c.zone, true)
+		c.run(s.Zones)
+
+		w.WriteHeader(http.StatusNoContent)
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *RestServer) doZoneData(w http.ResponseWriter, r *http.Request) {
+	var zone *ns.Zone
+
+	path := r.URL.Path // must match the configuration json key exactly
+	s.Conf.Lock()
+	c, ok := s.Conf.Zones[path]
+	if ok {
+		zone = c.zone
+	}
+	s.Conf.Unlock()
+
+	if zone == nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	serial, _ := strconv.Atoi(r.FormValue("serial"))
+	key := r.FormValue("key")
+
+	switch r.Method {
+	case http.MethodGet:
+		w.Header().Set("Content-Type", "text/plain")
+
+		err := zone.Dump(uint32(serial), key, dns.AnyClass, func(r *dns.Record) error {
+			_, err := fmt.Fprintf(w, "%v\n", r)
+			return err
+		})
+		if err != nil {
+			logger.Printf("%v: sending to %v: %v", zone.Name(), r.RemoteAddr, err)
+		}
+
+	case http.MethodPut:
+		c := dns.NewTextReader(bufio.NewReader(r.Body), zone.Name())
+		err := zone.Decode(key, true, c)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, "%v\r\n", err)
+			return
+		}
+
+		w.WriteHeader(http.StatusNoContent)
+
+	// XXX MethodPatch with update style fields
 
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
