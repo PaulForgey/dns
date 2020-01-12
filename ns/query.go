@@ -47,11 +47,11 @@ func (s *Server) query(ctx context.Context, msg *dns.Message, from net.Addr, zon
 		}
 	}
 
+	// fill in additionals
+	msg.Additional = nil
 	if err == nil {
-		// fill in additionals
 		s.zones.Additional(msg, s.conn.Interface, q.QClass)
 	}
-	answer(s.conn, err, msg, from)
 
-	return nil
+	return answer(s.conn, err, false, msg, from)
 }

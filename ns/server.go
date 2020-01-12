@@ -57,7 +57,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			q = msg.Questions[0]
 		} else {
 			// XXX this needs to change if we ever support an op with no Q section
-			answer(s.conn, dns.FormError, msg, from)
+			answer(s.conn, dns.FormError, true, msg, from)
 			continue
 		}
 
@@ -95,19 +95,19 @@ func (s *Server) Serve(ctx context.Context) error {
 			}
 
 		default:
-			answer(s.conn, dns.NotImplemented, msg, from)
+			answer(s.conn, dns.NotImplemented, true, msg, from)
 			continue
 		}
 
 		if zone == nil {
-			answer(s.conn, dns.Refused, msg, from)
+			answer(s.conn, dns.Refused, true, msg, from)
 		}
 	}
 
 	return nil // unreached
 }
 
-func answer(conn *dnsconn.Connection, err error, msg *dns.Message, to net.Addr) error {
+func answer(conn *dnsconn.Connection, err error, clear bool, msg *dns.Message, to net.Addr) error {
 	msg.QR = true
 
 	msg.RCode = dns.NoError
@@ -115,6 +115,9 @@ func answer(conn *dnsconn.Connection, err error, msg *dns.Message, to net.Addr) 
 		if !errors.As(err, &msg.RCode) {
 			msg.RCode = dns.ServerFailure
 		}
+	}
+
+	if clear {
 		msg.Answers = nil
 		msg.Authority = nil
 		msg.Additional = nil

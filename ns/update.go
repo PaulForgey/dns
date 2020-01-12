@@ -14,19 +14,19 @@ func (s *Server) update(ctx context.Context, msg *dns.Message, from net.Addr, zo
 		r, err := resolver.NewResolverClient(nil, "udp", zone.Primary, nil, false)
 		if err != nil {
 			s.logger.Printf("%v: cannot create resolver to primary: %v", zone.Name(), err)
-			answer(s.conn, dns.ServerFailure, msg, from)
+			answer(s.conn, dns.ServerFailure, true, msg, from)
 			return
 		}
 		go func() {
 			msg, err := r.Transact(ctx, nil, msg)
 			r.Close()
-			answer(s.conn, err, msg, from)
+			answer(s.conn, err, false, msg, from)
 		}()
 		return
 	}
 
 	updated, err := zone.Update(s.conn.Interface, msg.Answers, msg.Authority)
-	answer(s.conn, err, msg, from)
+	answer(s.conn, err, true, msg, from)
 
 	if updated {
 		go func() {
