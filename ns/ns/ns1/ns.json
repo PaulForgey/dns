@@ -1,4 +1,5 @@
 {
+	"AutoListeners": true,
 	"REST": {
 		"Addr": ":5380"
 	},

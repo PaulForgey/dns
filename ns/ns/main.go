@@ -49,12 +49,22 @@ type REST struct {
 	// XXX TLS
 }
 
+type Listener struct {
+	Network string // network name, e.g. tcp, udp4
+	Address string // network address, e.g. 127.0.0.1:53
+	Name    string // optional interface name for interface specific records (does not have to match actual interface)
+	VC      bool   // network is not packet based, that is, it needs to Accept() connections
+}
+
 type Conf struct {
 	sync.Mutex
 
-	Zones    map[string]*Zone // zones
-	Resolver string           // udp,udp4,udp6 empty for no recursive resolver
-	REST     *REST            // REST server; omit or set to null to disable
+	Zones         map[string]*Zone // zones
+	Resolver      string           // udp,udp4,udp6 empty for no recursive resolver
+	REST          *REST            // REST server; omit or set to null to disable
+	Listeners     []Listener       // additional listeners, or a specific set if opting out of automatic interface discovery
+	AutoListeners bool             // true to automatically discover all interfaces to listen on
+
 	// XXX global server ACL
 	// XXX mdns zone
 }
@@ -153,82 +163,74 @@ func (conf *Zone) wait() {
 	conf.wg.Wait()
 }
 
-func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net.IP, zones *ns.Zones, res *resolver.Resolver) {
-	ip4 := (ip.To4() != nil)
-
-	wg.Add(1)
-	go func() {
-		network := "udp"
-		if ip4 {
-			network = "udp4"
-		}
-
-		laddr := &net.UDPAddr{IP: ip, Port: 53}
-		c, err := net.ListenUDP(network, laddr)
+func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, zones *ns.Zones, res *resolver.Resolver) {
+	if l.VC {
+		c, err := net.Listen(l.Network, l.Address)
 		if err != nil {
 			logger.Println(err)
+			return
+		}
+
+		logger.Printf("%s: listening %s %v", l.Name, l.Network, l.Address)
+		closer := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+			case <-closer:
+			}
+			c.Close()
+		}()
+		for {
+			a, err := c.Accept()
+			if err != nil {
+				logger.Println(err)
+				close(closer)
+				break
+			} else {
+				closer := make(chan struct{})
+				go func() {
+					select {
+					case <-ctx.Done():
+					case <-closer:
+					}
+					a.Close()
+				}()
+				wg.Add(1)
+				go func() {
+					conn := dnsconn.NewConnection(a, l.Network)
+					conn.Interface = l.Name
+					s := ns.NewServer(logger, conn, zones, res)
+					s.Serve(ctx)
+					wg.Done()
+					close(closer)
+				}()
+			}
+		}
+	} else {
+		c, err := net.ListenPacket(l.Network, l.Address)
+		if err != nil {
+			logger.Println(err)
+			return
+		}
+		var nc net.Conn
+		if udp, ok := c.(*net.UDPConn); ok {
+			nc = udp
+		} else if unix, ok := c.(*net.UnixConn); ok {
+			nc = unix
 		} else {
-			logger.Printf("%s: listening %s %v", iface, network, laddr)
-			conn := dnsconn.NewConnection(c, network)
-			conn.Interface = iface
+			c.Close()
+			logger.Printf("%s: network type %s is not udp or unix", l.Name, l.Network)
+		}
+
+		if nc != nil {
+			logger.Printf("%s: listening %s %v", l.Name, l.Network, l.Address)
+			conn := dnsconn.NewConnection(nc, l.Network)
+			conn.Interface = l.Name
 			s := ns.NewServer(logger, conn, zones, res)
 			s.Serve(ctx)
 			conn.Close()
 		}
-		wg.Done()
-	}()
-
-	wg.Add(1)
-	go func() {
-		network := "tcp"
-		if ip4 {
-			network = "tcp4"
-		}
-
-		laddr := &net.TCPAddr{IP: ip, Port: 53}
-		c, err := net.ListenTCP(network, laddr)
-		if err != nil {
-			logger.Println(err)
-		} else {
-			logger.Printf("%s: listening %s %v", iface, network, laddr)
-			closer := make(chan struct{})
-			go func() {
-				select {
-				case <-ctx.Done():
-				case <-closer:
-				}
-				c.Close()
-			}()
-			for {
-				a, err := c.Accept()
-				if err != nil {
-					logger.Println(err)
-					close(closer)
-					break
-				} else {
-
-					closer := make(chan struct{})
-					go func() {
-						select {
-						case <-ctx.Done():
-						case <-closer:
-						}
-						a.Close()
-					}()
-					wg.Add(1)
-					go func() {
-						conn := dnsconn.NewConnection(a, network)
-						conn.Interface = iface
-						s := ns.NewServer(logger, conn, zones, res)
-						s.Serve(ctx)
-						wg.Done()
-						close(closer)
-					}()
-				}
-			}
-		}
-		wg.Done()
-	}()
+	}
 }
 
 func main() {
@@ -309,32 +311,60 @@ func main() {
 		logger.Fatalf("cannot enumerate interfaces: %v", err)
 	}
 
-	for _, ifi := range ifaces {
-		if (ifi.Flags & net.FlagUp) == 0 {
-			continue
-		}
-
-		addrs, err := ifi.Addrs()
-		if err != nil {
-			logger.Printf("unable to enumerate addresses for interface %s: %v; skipping", ifi.Name, err)
-			continue
-		}
-
-		for _, addr := range addrs {
-			if addr.Network() != "ip+net" {
+	if conf.AutoListeners {
+		for _, ifi := range ifaces {
+			if (ifi.Flags & net.FlagUp) == 0 {
 				continue
 			}
 
-			ip, _, err := net.ParseCIDR(addr.String())
+			addrs, err := ifi.Addrs()
 			if err != nil {
-				logger.Printf("bad interface address %s: %v; skipping", addr.String(), err)
-				continue // this really should not happen
+				logger.Printf("unable to enumerate addresses for interface %s: %v; skipping", ifi.Name, err)
+				continue
 			}
 
-			if ip.IsLoopback() || ip.IsGlobalUnicast() {
-				makeListeners(ctx, wg, ifi.Name, ip, zones, res)
+			for _, addr := range addrs {
+				if addr.Network() != "ip+net" {
+					continue
+				}
+
+				ip, _, err := net.ParseCIDR(addr.String())
+				if err != nil {
+					logger.Printf("bad interface address %s: %v; skipping", addr.String(), err)
+					continue // this really should not happen
+				}
+
+				if !(ip.IsLoopback() || ip.IsGlobalUnicast()) {
+					continue
+				}
+
+				udp, tcp := "udp", "tcp"
+				if ip.To4() != nil {
+					udp, tcp = "udp4", "tcp4"
+				}
+				conf.Listeners = append(conf.Listeners,
+					Listener{
+						Network: udp,
+						Address: net.JoinHostPort(ip.String(), "53"),
+						Name:    ifi.Name,
+						VC:      false,
+					},
+					Listener{
+						Network: tcp,
+						Address: net.JoinHostPort(ip.String(), "53"),
+						Name:    ifi.Name,
+						VC:      true,
+					},
+				)
 			}
 		}
+	}
+	for _, l := range conf.Listeners {
+		wg.Add(1)
+		go func(l Listener) {
+			l.run(ctx, wg, zones, res)
+			wg.Done()
+		}(l)
 	}
 
 	sigc := make(chan os.Signal, 1)

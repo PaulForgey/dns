@@ -1,4 +1,5 @@
 {
+	"AutoListeners": true,
 	"Resolver":"udp",
 	"Zones":{
 		".": {
