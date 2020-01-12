@@ -9,10 +9,17 @@ Current status
 --------------
 
 Basic pieces are in place to resolve DNS records at least known to RFC-1035, plus AAAA records, RFC8482 awareness, SRV
-and NSEC records needed for MDNS. Fully recrusive resolution is supported, and if zone data is populated and injected into
-the resolver, authoritative data can be answered locally.
+and NSEC records needed for MDNS. Fully recrusive resolution is supported. Supports updates and notify. Both AXFR and
+IXFR zone transfer queries.
 
-Server components could be easily written to support a DNS server functional to circa 1998 specifications.
+Supports EDNS to advertise larger PDUs.
+
+The server module provides the basics to answer queries, and a simple daemon has been written on top of it which handles
+primary, secondary, and hint zones.
+
+Has REST server allowing zones to be configured and loaded.
+
+There is absolutely no access control, but this will be addressed very soon.
 
 Interesting features
 --------------------
@@ -25,11 +32,9 @@ feature is to support correct MDNS behavior where records may be unique per netw
 Planned next items
 ------------------
 
-* EDNS
-* MDNS server
-* Traditional DNS server
-* AXFR/IXFR support
-* Dyanmic updates
+* Access Control
+* MDNS server and API for it
+* Quit storing extraneous and duplicate header information in the cache
 
 Further out
 -----------
