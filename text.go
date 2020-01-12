@@ -24,6 +24,8 @@ var (
 
 var ErrUnexpectedToken = errors.New("unexpected token")
 
+var labelReplacer = strings.NewReplacer(`.`, `\.`, `\`, `\\`, `"`, `\"`)
+
 type bufReadCloser struct {
 	*bufio.Reader
 	f io.Closer
@@ -812,6 +814,22 @@ func (c *TextCodec) putMessage(m *Message) error {
 	return nil
 }
 
+func (c *TextCodec) putName(n Name) error {
+	if len(n) == 0 {
+		_, err := c.w.Write([]byte(". "))
+		return err
+	}
+	for _, l := range n {
+		s := labelReplacer.Replace(l.String())
+		_, err := fmt.Fprintf(c.w, "%s.", s)
+		if err != nil {
+			return err
+		}
+	}
+	_, err := c.w.Write([]byte(" "))
+	return err
+}
+
 func (c *TextCodec) putString(s string) error {
 	s = strings.ReplaceAll(s, "\"", "\\\"")
 	_, err := fmt.Fprintf(c.w, "\"%s\" ", s)
@@ -869,7 +887,7 @@ func (c *TextCodec) Encode(i interface{}) error {
 		}
 
 	case Name:
-		if _, err := fmt.Fprintf(c.w, "%v ", t); err != nil {
+		if err := c.putName(t); err != nil {
 			return err
 		}
 

@@ -8,16 +8,44 @@ import (
 
 	"tessier-ashpool.net/dns"
 	"tessier-ashpool.net/dns/dnsconn"
+	"tessier-ashpool.net/dns/resolver"
 )
 
+var ErrNoResolver = errors.New("server has no resolver")
+var ErrNoConnection = errors.New("server has no connection")
+var ErrNoSOA = errors.New("zone has no SOA")
+var ErrNoNS = errors.New("zone has no NS records")
+var ErrNoNSAddrs = errors.New("zone has no resolvable hosts for NS records")
+
+type Server struct {
+	logger *log.Logger
+	conn   *dnsconn.Connection
+	zones  *Zones
+	res    *resolver.Resolver
+}
+
+// NewServer creates a server instance
+func NewServer(logger *log.Logger, conn *dnsconn.Connection, zones *Zones, res *resolver.Resolver) *Server {
+	return &Server{
+		logger: logger,
+		conn:   conn,
+		zones:  zones,
+		res:    res,
+	}
+}
+
 // Serve runs a unicast server answering queries for the zone set until the context is canceled or an error occurs on the conn
-func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zones *Zones) error {
+// It is safe and possible, although not necessarily beneficial, to have multiple Serve routines on the same Server instance
+func (s *Server) Serve(ctx context.Context) error {
+	if s.conn == nil {
+		return ErrNoConnection
+	}
 	for {
-		msg, from, err := conn.ReadFromIf(ctx, func(*dns.Message) bool {
+		msg, from, err := s.conn.ReadFromIf(ctx, func(*dns.Message) bool {
 			return true // we are the only consumer
 		})
 		if err != nil {
-			logger.Printf("listener %v exiting: %v", conn, err)
+			s.logger.Printf("listener %v exiting: %v", s.conn, err)
 			return err
 		}
 		if msg.QR {
@@ -29,60 +57,64 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 			q = msg.Questions[0]
 		} else {
 			// XXX this needs to change if we ever support an op with no Q section
-			answer(conn, dns.FormError, msg, from)
+			answer(s.conn, dns.FormError, msg, from)
 			continue
 		}
 
-		logger.Printf("%s:%v:%v: %v", conn.Interface, from, msg.Opcode, q)
+		s.logger.Printf("%s:%v:%v: %v", s.conn.Interface, from, msg.Opcode, q)
+
+		var zone *Zone
 
 		switch msg.Opcode {
-		// XXX update
+		case dns.Update, dns.Notify:
+			if zone = s.zones.Zone(q.QName); zone != nil {
+				switch msg.Opcode {
+				case dns.Update:
+					// XXX access control for update
+					s.update(ctx, msg, from, zone)
 
-		case dns.Notify:
-			// XXX notify access control
-			if zone := zones.Zone(q.QName); zone != nil {
-				notify(ctx, logger, conn, msg, from, zone)
-			} else {
-				msg.Answers = nil
-				answer(conn, dns.Refused, msg, from)
+				case dns.Notify:
+					// XXX access control for notify
+					s.notify(ctx, msg, from, zone)
+				}
+				continue
 			}
-			continue
 
 		case dns.StandardQuery:
+			switch q.QType {
+			case dns.AXFRType, dns.IXFRType:
+				if zone = s.zones.Zone(q.QName); zone != nil {
+					// XXX access control for zone transfers
+					s.ixfr(ctx, msg, from, zone)
+					continue
+				}
+
+			default:
+				zone, _ = s.zones.Find(q.QName).(*Zone)
+			}
 			// handled below
 
 		default:
-			answer(conn, dns.NotImplemented, msg, from)
+			answer(s.conn, dns.NotImplemented, msg, from)
+			continue
+		}
+
+		if zone == nil {
+			answer(s.conn, dns.Refused, msg, from)
 			continue
 		}
 
 		//standard query
 
-		// find zone for the question
-		zone := zones.Find(q.QName)
-		if zone == nil {
-			// zone can be nil if we are not running with a hint zone at .
-			// nothing else we can do without one
-			answer(conn, dns.Refused, msg, from)
-			continue
-		}
-
-		// XXX access control for zone transfers
-		switch q.QType {
-		case dns.AXFRType, dns.IXFRType:
-			ixfr(ctx, logger, conn, msg, from, zone.(*Zone))
-			continue
-		}
-
 		// XXX access control for queries
 		// XXX access control for recursive queries
 
-		msg.RA = (zones.R != nil)
+		msg.RA = (s.res != nil)
 		msg.AA = !zone.Hint()
 
 		// try our own authority first
 		msg.Answers, msg.Authority, err = zone.Lookup(
-			conn.Interface,
+			s.conn.Interface,
 			q.QName,
 			q.QType,
 			q.QClass,
@@ -93,9 +125,9 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 			if zone.Hint() || len(msg.Authority) > 0 {
 				msg.AA = false
 				msg.Authority = nil
-				msg.Answers, err = zones.R.Resolve(
+				msg.Answers, err = s.res.Resolve(
 					ctx,
-					conn.Interface,
+					s.conn.Interface,
 					q.QName,
 					q.QType,
 					q.QClass,
@@ -103,32 +135,35 @@ func Serve(ctx context.Context, logger *log.Logger, conn *dnsconn.Connection, zo
 			}
 		}
 
-		if msg.AA && len(msg.Authority) == 0 && errors.Is(err, dns.NameError) {
+		if msg.AA && len(msg.Authority) == 0 && errors.Is(err, dns.NXDomain) {
 			soa := zone.SOA()
 			if soa != nil {
 				msg.Authority = []*dns.Record{soa}
 			}
 		}
 
-		var rcode dns.RCode
 		if err == nil {
 			// fill in additionals
-			zones.Additional(msg, conn.Interface, q.QClass)
-		} else if !errors.As(err, &rcode) {
-			if err != nil {
-				logger.Printf("Error answering %v from %v: %v", q, from, err)
-				rcode = dns.ServerFailure
-			}
+			s.zones.Additional(msg, s.conn.Interface, q.QClass)
 		}
-		answer(conn, rcode, msg, from)
+		answer(s.conn, err, msg, from)
 	}
 
 	return nil // unreached
 }
 
-func answer(conn *dnsconn.Connection, rcode dns.RCode, msg *dns.Message, to net.Addr) error {
+func answer(conn *dnsconn.Connection, err error, msg *dns.Message, to net.Addr) error {
 	msg.QR = true
-	msg.RCode = rcode
+
+	msg.RCode = dns.NoError
+	if err != nil {
+		if !errors.As(err, &msg.RCode) {
+			msg.RCode = dns.ServerFailure
+		}
+		msg.Answers = nil
+		msg.Authority = nil
+		msg.Additional = nil
+	}
 
 	msgSize := dnsconn.MinMessageSize
 

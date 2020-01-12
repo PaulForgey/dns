@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -191,6 +192,8 @@ func (z *Zone) soa_locked() *dns.Record {
 
 		z.updated = false
 		z.soa = r
+
+		z.db.Enter(time.Now(), false, []*dns.Record{z.soa})
 	}
 
 	return r
@@ -528,4 +531,160 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 
 	z.lk.Unlock()
 	return nil
+}
+
+// Update processes updates to a zone
+func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
+	now := time.Now()
+	z.lk.Lock()
+	defer z.lk.Unlock()
+
+	db, ok := z.keys[key]
+	if !ok {
+		db = z.db
+	}
+
+	soa := z.soa_locked()
+	if soa == nil {
+		return false, fmt.Errorf("%w: zone %v has no SOA", dns.NotAuth, z.name)
+	}
+
+	// process the prereq
+	for _, r := range prereq {
+		if !r.RecordHeader.Name.HasSuffix(z.name) {
+			return false, dns.NotZone
+		}
+		rrtype, rrclass := r.Type(), r.Class()
+		exclude := (rrclass == dns.NoneClass)
+		if exclude {
+			rrclass = dns.AnyClass
+		}
+		if (rrtype == dns.AnyType || rrclass == dns.AnyClass) && r.RecordData != nil {
+			return false, dns.FormError
+		}
+
+		recs, _ := db.Get(now, r.RecordHeader.Name, rrtype, rrclass)
+		match := len(recs) > 0
+		if match && r.RecordData != nil {
+			match = false
+			for _, rr := range recs {
+				if rr.Type() != rrtype { // should only happen for CNAME not being looked for
+					break
+				}
+				if rr.RecordData.Equal(r.RecordData) {
+					match = true
+					break
+				}
+			}
+		}
+
+		if match && exclude {
+			if rrtype == dns.AnyType {
+				return false, dns.YXDomain
+			} else {
+				return false, dns.YXRRSet
+			}
+		} else if !match && !exclude {
+			if rrtype == dns.AnyType {
+				return false, dns.NXDomain
+			} else {
+				return false, dns.NXRRSet
+			}
+		}
+	}
+
+	// check the updates
+	for _, r := range update {
+		if !r.RecordHeader.Name.HasSuffix(z.name) {
+			return false, dns.NotZone
+		}
+		rrtype, rrclass := r.Type(), r.Class()
+		if (rrtype == dns.AnyType || rrclass == dns.AnyClass) && r.RecordData != nil {
+			return false, dns.FormError
+		}
+		deleteSet := (rrclass == dns.NoneClass)
+		if deleteSet {
+			if r.RecordData == nil {
+				return false, dns.FormError
+			}
+		} else if (rrtype != dns.AnyType && rrclass != dns.AnyClass) && r.RecordData == nil {
+			return false, dns.FormError
+		}
+	}
+
+	// do the updates
+	updated := false
+
+	for _, r := range update {
+		name := r.RecordHeader.Name
+		auth := name.Equal(z.name)
+		rrtype, rrclass := r.Type(), r.Class()
+		deleteSet := (rrclass == dns.NoneClass)
+		if deleteSet {
+			rrclass = soa.Class()
+		}
+		if deleteSet || r.RecordData == nil {
+			// allow removal of NS records not matching soa MName
+			// (this is a bit of a hack and departure from RFC 2136)
+			if auth && rrtype == dns.NSType && r.RecordData != nil &&
+				!r.RecordData.(dns.NSRecordType).NS().Equal(soa.RecordData.(*dns.SOARecord).MName) {
+				auth = false
+			}
+			updated = db.Remove(now, auth, &dns.Record{
+				RecordHeader: dns.RecordHeader{
+					Name:  r.RecordHeader.Name,
+					Type:  rrtype,
+					Class: rrclass,
+				},
+				RecordData: r.RecordData,
+			})
+		} else {
+			rrset, _ := db.Get(now, name, rrtype, rrclass)
+			found := false
+			for _, rr := range rrset {
+				if rr.Type() != rrtype {
+					found = true // CNAME and not looking to update one
+					break
+				}
+				if rrtype == dns.SOAType {
+					if !rr.RecordHeader.Equal(&r.RecordHeader) {
+						found = true
+						break
+					}
+					if rr.RecordData.(*dns.SOARecord).Serial > r.RecordData.(*dns.SOARecord).Serial {
+						found = true
+						break
+					}
+					rrset = nil // update replaces the only one
+					z.soa = rr
+				}
+				if rrtype == dns.WKSType {
+					w1 := rr.RecordData.(*dns.WKSRecord)
+					w2 := r.RecordData.(*dns.WKSRecord)
+					if w1.Protocol == w2.Protocol && bytes.Compare(w1.Address[:], w2.Address[:]) == 0 {
+						found = true
+						break
+					}
+				}
+				if rr.RecordData.Equal(r.RecordData) {
+					found = true
+					break
+				}
+			}
+			if found {
+				// skip existing or matching record
+				continue
+			}
+			rrset = append(rrset, r)
+			db.Enter(time.Time{}, false, rrset)
+			updated = true
+		}
+	}
+
+	// unless we updated the soa, mark zone updated (if it updated)
+	if z.soa == soa || z.soa.Equal(soa) {
+		z.updated = updated
+	}
+
+	return updated, nil
 }

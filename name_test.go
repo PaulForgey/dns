@@ -10,6 +10,42 @@ func dump(bytes []byte) {
 	fmt.Println(hex.Dump(bytes))
 }
 
+func TestLabelIntern(t *testing.T) {
+	labels := make([]*Label, 4)
+	strings := []string{"tessier-ashpool", "tessier-ashpool", "shoesinonehour", "Tessier-Ashpool"}
+
+	for i := range labels {
+		var err error
+		labels[i], err = LabelWithString(strings[i])
+		if err != nil {
+			t.Fatalf("%s: %v", strings[i], err)
+		}
+	}
+
+	if labels[0] != labels[1] {
+		t.Fatalf("%s and %s should have same pointers: %p, %p",
+			strings[0], strings[1],
+			labels[0], labels[1],
+		)
+	}
+	if labels[0] == labels[2] {
+		t.Fatalf("%s and %s should not have same pointer: %p",
+			strings[0], strings[2],
+			labels[0],
+		)
+	}
+	if labels[0] == labels[3] {
+		t.Fatalf("%s and %s should be different instances: %p, %p",
+			strings[0], strings[3],
+			labels[0], labels[3],
+		)
+	}
+	t.Logf("case preserved instances %v and %v", labels[0], labels[3])
+	if !labels[0].Equal(labels[3]) {
+		t.Fatalf("%v and %v should be Equal", labels[0], labels[3])
+	}
+}
+
 func TestLable(t *testing.T) {
 	l, err := LabelWithString("tessier-ashpool")
 	if err != nil {

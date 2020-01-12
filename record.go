@@ -18,11 +18,12 @@ type RRType uint16
 type RRClass uint16
 
 const (
-	INClass  RRClass = 1
-	CSClass  RRClass = 2
-	CHClass  RRClass = 3
-	HSClass  RRClass = 4
-	AnyClass RRClass = 255 // query
+	INClass   RRClass = 1
+	CSClass   RRClass = 2
+	CHClass   RRClass = 3
+	HSClass   RRClass = 4
+	NoneClass RRClass = 254
+	AnyClass  RRClass = 255 // query
 )
 
 func (c RRClass) String() string {
@@ -82,9 +83,9 @@ func (c RRClass) MarshalJSON() ([]byte, error) {
 	return json.Marshal(c.String())
 }
 
-// Match returns true if either c or n are AnyClass or equal to each other
+// Match returns true if either c or n are AnyClass, NoneClass, or equal to each other
 func (c RRClass) Match(n RRClass) bool {
-	return c == AnyClass || n == AnyClass || c == n
+	return c == AnyClass || c == NoneClass || n == AnyClass || n == NoneClass || c == n
 }
 
 // Asks returns true if c == n or if c is AnyClass
@@ -104,7 +105,7 @@ const (
 	MGType      RRType = 8
 	MRType      RRType = 9
 	NULLType    RRType = 10
-	WKSType     RRType = 11 // pseudo
+	WKSType     RRType = 11 // pseudo(ish)
 	PTRType     RRType = 12
 	HINFOType   RRType = 13
 	MINFOType   RRType = 14
@@ -292,6 +293,14 @@ type RecordHeader struct {
 	Flags          uint16 // decode only, EDNS
 }
 
+func (r *RecordHeader) Equal(n *RecordHeader) bool {
+	return r.Name.Equal(n.Name) && r.Type == n.Type && r.Class == n.Class
+}
+
+func (r *RecordHeader) Match(n *RecordHeader) bool {
+	return r.Name.Equal(n.Name) && r.Type.Match(n.Type) && r.Class.Match(n.Class)
+}
+
 // The RecordData type describes how to marshal and demarshal via the Encoder and Decoder types
 type RecordData interface {
 	Encoder
@@ -323,6 +332,33 @@ func (r *Record) Type() RRType {
 
 func (r *Record) Class() RRClass {
 	return r.RecordHeader.Class
+}
+
+func (r *Record) Equal(n *Record) bool {
+	if r == n {
+		return true
+	}
+	if r.RecordHeader.Equal(&n.RecordHeader) {
+		return true
+	}
+	if r.RecordData == n.RecordData {
+		return true
+	}
+	return r.RecordData.Equal(n.RecordData)
+}
+
+// Match returns true if the records match for the purposes of an update prereq
+func (r *Record) Match(n *Record) bool {
+	if !r.RecordHeader.Match(&n.RecordHeader) {
+		return false
+	}
+
+	if r.RecordData == nil || n.RecordData == nil {
+		// value independent match
+		return true
+	}
+
+	return r.RecordData.Equal(n.RecordData)
 }
 
 // The UnknownRecord type can store rdata of unknown resource records.

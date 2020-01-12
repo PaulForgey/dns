@@ -9,8 +9,6 @@ import (
 
 // the Zones type holds all the zones we know of
 type Zones struct {
-	R *resolver.Resolver
-
 	sync.RWMutex
 	zones map[string]*Zone
 
@@ -20,6 +18,8 @@ type Zones struct {
 // the Zone type is a specialization of the resolver Zone with additional information needed by the server
 type Zone struct {
 	*resolver.Zone
+	Primary string
+
 	online bool
 
 	C chan bool // reload
@@ -37,6 +37,7 @@ func (z *Zone) Reload() {
 	select {
 	case z.C <- true:
 		// don't block
+	default:
 	}
 }
 

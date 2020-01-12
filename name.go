@@ -1,10 +1,15 @@
 package dns
 
 import (
+	"errors"
 	"strings"
+	"sync"
 )
 
-var labelReplacer = strings.NewReplacer(`.`, `\.`, `\`, `\\`, `"`, `\"`)
+var ErrLabel = errors.New("label too long")
+var ErrName = errors.New("name too long")
+
+var labelNames sync.Map
 
 // The Label type is a name component, stored in wire format.
 type Label struct {
@@ -16,7 +21,14 @@ type Label struct {
 type Name []*Label
 
 // LabelWithString creates a label from a string. As a special case, any occurance of \000 (zero) is replaced with '.'.
+// The String() method does not return a result which would parse as the same thing in this case
 func LabelWithString(s string) (*Label, error) {
+	// intern case preserved
+	value, ok := labelNames.Load(s)
+	if ok {
+		return value.(*Label), nil
+	}
+
 	n := len(s)
 	if n > 63 {
 		return nil, ErrLabel
@@ -33,12 +45,15 @@ func LabelWithString(s string) (*Label, error) {
 		}
 	}
 	l.key = strings.ToLower(string(l.data[1:]))
-	return l, nil
+
+	// if we race, faster to throw away our new one than to replace the old one
+	value, _ = labelNames.LoadOrStore(s, l)
+	return value.(*Label), nil
 }
 
 // Equal returns true if both labels compare equally according to DNS rules.
 func (l *Label) Equal(r *Label) bool {
-	return l.key == r.key
+	return l == r || l.key == r.key
 }
 
 // Less returns true if l < r
@@ -46,9 +61,14 @@ func (l *Label) Less(r *Label) bool {
 	return l.key < r.key
 }
 
-// String returns a string representation of the label, escaping the characters '.' and '\' with a preceding '\'.
+// String returns a string representation of the label
 func (l *Label) String() string {
-	return labelReplacer.Replace(string(l.data[1:]))
+	return string(l.data[1:])
+}
+
+// Length returns the wire length of the label
+func (l *Label) Length() int {
+	return len(l.data)
 }
 
 // Equal returns true if both Names are equal according to DNS rules.
@@ -128,9 +148,13 @@ func (n Name) Key() string {
 	return key
 }
 
-// Len returns the number of labels in a Name.
-func (n Name) Len() int {
-	return len(n)
+// Len returns the uncompressed wire length of the name
+func (n Name) Length() int {
+	var length int
+	for _, l := range n {
+		length += l.Length()
+	}
+	return length
 }
 
 // Append returns a new name of n.a
@@ -163,6 +187,8 @@ func NameWithLabel(l *Label) Name {
 // NameWithString creates a new Name from a string in dot notation. To include a label containing the '.' character, use the
 // \000 (zero) character instead. The resulting Labels will contain '.' characters in their place.
 func NameWithString(s string) (Name, error) {
+	var length int
+
 	labels := strings.Split(s, ".")
 	n := Name{}
 	for _, l := range labels {
@@ -173,6 +199,10 @@ func NameWithString(s string) (Name, error) {
 		if err != nil {
 			return n, err
 		}
+		length += label.Length()
+		if length > 255 {
+			return n, ErrName
+		}
 		n = n.Append(NameWithLabel(label))
 	}
 	return n, nil
@@ -180,13 +210,6 @@ func NameWithString(s string) (Name, error) {
 
 // RName returns.. itself. This method exists to easily implement the NameRecordType interface by deriving from Name
 func (n Name) RName() Name { return n }
-
-// Copy returns a copy of a name (same labels are still referenced as lables are immutable)
-func (n Name) Copy() Name {
-	c := make(Name, len(n))
-	copy(c, n)
-	return c
-}
 
 // As a convenience, Name conforms to Encoder and Decoder simplifying records having only a single domain name as rdata.
 // The underlying codec better handle Name type, otherwise this could infinitely recurse.

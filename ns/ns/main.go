@@ -33,7 +33,6 @@ type Zone struct {
 	DbFile           string            `json:",omitempty"`
 	InterfaceDbFiles map[string]string `json:",omitempty"` // primary: interface specific records
 	Primary          string            `json:",omitempty"` // secondary: primary server to transfer from
-	PrimaryNetwork   string            `json:",omitempty"` // secondary: udp/udp4/udp6,tcp/tcp4/tcp6 (defaults to udp)
 	Incremental      bool              `json:",omitempty"` // secondary: use IXFR
 	Class            dns.RRClass       `json:",omitempty"` // secondary: zone class (has invalid zero value, defaults to ANY)
 	// XXX query, transfer, update ACL
@@ -84,6 +83,7 @@ func (conf *Zone) create(ctx context.Context, name string) error {
 
 	case SecondaryType:
 		conf.zone = ns.NewZone(resolver.NewZone(n, false))
+		conf.zone.Primary = conf.Primary
 
 	case CacheType: // this is builtin and name is '.' regardless of what the configuration says
 		conf.zone = ns.NewZone(cache)
@@ -129,15 +129,15 @@ func (conf *Zone) load() error {
 	return nil
 }
 
-func (conf *Zone) run(zones *ns.Zones) {
+func (conf *Zone) run(zones *ns.Zones, res *resolver.Resolver) {
 	conf.wg.Add(1)
 	go func() {
 		switch conf.Type {
 		case PrimaryType:
-			conf.primaryZone(zones)
+			conf.primaryZone(zones, res)
 
 		case SecondaryType:
-			conf.secondaryZone(zones)
+			conf.secondaryZone(zones, res)
 
 		default:
 			<-conf.ctx.Done()
@@ -153,7 +153,7 @@ func (conf *Zone) wait() {
 	conf.wg.Wait()
 }
 
-func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net.IP, zones *ns.Zones) {
+func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net.IP, zones *ns.Zones, res *resolver.Resolver) {
 	ip4 := (ip.To4() != nil)
 
 	wg.Add(1)
@@ -171,7 +171,8 @@ func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net
 			logger.Printf("%s: listening %s %v", iface, network, laddr)
 			conn := dnsconn.NewConnection(c, network)
 			conn.Interface = iface
-			ns.Serve(ctx, logger, conn, zones)
+			s := ns.NewServer(logger, conn, zones, res)
+			s.Serve(ctx)
 			conn.Close()
 		}
 		wg.Done()
@@ -205,13 +206,23 @@ func makeListeners(ctx context.Context, wg *sync.WaitGroup, iface string, ip net
 					close(closer)
 					break
 				} else {
+
+					closer := make(chan struct{})
+					go func() {
+						select {
+						case <-ctx.Done():
+						case <-closer:
+						}
+						a.Close()
+					}()
 					wg.Add(1)
 					go func() {
 						conn := dnsconn.NewConnection(a, network)
 						conn.Interface = iface
-						ns.Serve(ctx, logger, conn, zones)
-						conn.Close()
+						s := ns.NewServer(logger, conn, zones, res)
+						s.Serve(ctx)
 						wg.Done()
+						close(closer)
 					}()
 				}
 			}
@@ -253,13 +264,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	wg := &sync.WaitGroup{}
 	zones := ns.NewZones()
+	var res *resolver.Resolver
 
 	if conf.Resolver != "" {
 		rc, err := net.ListenUDP(conf.Resolver, &net.UDPAddr{})
 		if err != nil {
 			logger.Fatalf("unable to create resolver socket: %v", err)
 		}
-		zones.R = resolver.NewResolver(zones, dnsconn.NewConnection(rc, conf.Resolver), true)
+		res = resolver.NewResolver(zones, dnsconn.NewConnection(rc, conf.Resolver), true)
 	}
 
 	// load all data before running
@@ -272,7 +284,7 @@ func main() {
 	}
 
 	for _, c := range conf.Zones {
-		c.run(zones)
+		c.run(zones, res)
 	}
 
 	if conf.REST != nil {
@@ -284,6 +296,7 @@ func main() {
 				},
 				Conf:           &conf,
 				Zones:          zones,
+				Res:            res,
 				ShutdownServer: cancel,
 			}
 			s.Serve(ctx)
@@ -319,7 +332,7 @@ func main() {
 			}
 
 			if ip.IsLoopback() || ip.IsGlobalUnicast() {
-				makeListeners(ctx, wg, ifi.Name, ip, zones)
+				makeListeners(ctx, wg, ifi.Name, ip, zones, res)
 			}
 		}
 	}
@@ -337,8 +350,8 @@ func main() {
 
 	signal.Stop(sigc)
 
-	if zones.R != nil {
-		zones.R.Close()
+	if res != nil {
+		res.Close()
 	}
 
 	for _, c := range conf.Zones {

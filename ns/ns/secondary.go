@@ -15,17 +15,7 @@ import (
 )
 
 func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, rrclass dns.RRClass) error {
-	network := conf.PrimaryNetwork
-	switch network {
-	case "udp4", "tcp4", "ip4":
-		network = "tcp4"
-	case "udp6", "tcp6", "ip6":
-		network = "tcp6"
-	default:
-		network = "tcp"
-	}
-
-	r, err := resolver.NewResolverClient(nil, network, conf.Primary, nil, false)
+	r, err := resolver.NewResolverClient(nil, "tcp", conf.Primary, nil, false)
 	if err != nil {
 		return err
 	}
@@ -206,12 +196,12 @@ func pollSecondary(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.R
 	return true, refresh
 }
 
-func (conf *Zone) secondaryZone(zones *ns.Zones) {
+func (conf *Zone) secondaryZone(zones *ns.Zones, res *resolver.Resolver) {
 	ctx := conf.ctx
 	zone := conf.zone
 	live := false
 
-	r, err := resolver.NewResolverClient(nil, conf.PrimaryNetwork, conf.Primary, nil, false)
+	r, err := resolver.NewResolverClient(nil, "udp", conf.Primary, nil, false)
 	if err != nil {
 		logger.Fatalf("%v: cannot create resolver against %s: %v", zone.Name(), conf.Primary, err)
 	}

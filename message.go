@@ -11,10 +11,14 @@ const (
 	NoError        RCode = 0
 	FormError      RCode = 1
 	ServerFailure  RCode = 2
-	NameError      RCode = 3
+	NXDomain       RCode = 3
 	NotImplemented RCode = 4
 	Refused        RCode = 5
-	NotAuth        RCode = 7
+	YXDomain       RCode = 6
+	YXRRSet        RCode = 7
+	NXRRSet        RCode = 8
+	NotAuth        RCode = 9
+	NotZone        RCode = 10
 	BadVersion     RCode = 16
 )
 
@@ -26,14 +30,22 @@ func (r RCode) Error() string {
 		return "form error"
 	case ServerFailure:
 		return "server failed"
-	case NameError:
-		return "name error"
+	case NXDomain:
+		return "name does not exist"
 	case NotImplemented:
 		return "not implemented"
 	case Refused:
 		return "refused"
+	case YXDomain:
+		return "name exists"
+	case YXRRSet:
+		return "rrset exists"
+	case NXRRSet:
+		return "rrset does not exist"
 	case NotAuth:
 		return "not authoritative"
+	case NotZone:
+		return "section outside of zone"
 	case BadVersion:
 		return "bad EDNS version"
 	}
@@ -45,9 +57,10 @@ type Opcode int
 
 const (
 	StandardQuery Opcode = 0
-	InverseQuery         = 1
-	StatusRequest        = 2
-	Notify               = 4
+	InverseQuery  Opcode = 1
+	StatusRequest Opcode = 2
+	Notify        Opcode = 4
+	Update        Opcode = 5
 )
 
 func (o Opcode) String() string {
@@ -60,6 +73,8 @@ func (o Opcode) String() string {
 		return "STATUS"
 	case Notify:
 		return "NOTIFY"
+	case Update:
+		return "UPDATE"
 	}
 	return fmt.Sprintf("%d", o)
 }

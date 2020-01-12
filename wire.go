@@ -40,9 +40,6 @@ func (e *Truncated) Error() string {
 	return fmt.Sprintf("overflowed after %d of %d in %s", e.At, e.Total, sections[e.Section])
 }
 
-var ErrCompressedName = errors.New("malformed compressed name") // badly formatted Name on the wire
-var ErrLabel = errors.New("malformed label")                    // badly formatted Label on the wire
-
 // NewWireCodec creates a new wire codec with the given buffer, either for reading or writing
 func NewWireCodec(data []byte) *WireCodec {
 	return &WireCodec{
@@ -384,7 +381,7 @@ func (w *WireCodec) getName() (Name, error) {
 
 	if (b1 & 0xc0) == 0xc0 {
 		if w.nc == nil {
-			return nil, ErrCompressedName
+			return nil, fmt.Errorf("%w: compreseed name with compression disabled", FormError)
 		}
 
 		b2, err := w.getByte()
@@ -395,13 +392,13 @@ func (w *WireCodec) getName() (Name, error) {
 		noffset := int(b1&0x3f)<<8 + int(b2)
 		name, ok := w.nc[noffset]
 		if !ok {
-			return nil, ErrCompressedName
+			return nil, fmt.Errorf("%w: bad name compression pointer", FormError)
 		}
 		return name, nil
 	}
 
 	if (b1 & 0xc0) != 0 {
-		return nil, ErrLabel
+		return nil, fmt.Errorf("%w: unknown label type %x", FormError, b1&0xc0)
 	}
 
 	if b1 == 0 {
@@ -460,13 +457,20 @@ func (w *WireCodec) getRecord(r *Record) error {
 		}
 	}
 
-	dc, err := w.Split(int(r.RecordHeader.Length))
-	if err != nil {
-		return err
+	// RFC 2136 cases of RecordData being purposfully nil
+	if r.RecordHeader.Length == 0 && (r.RecordHeader.Class == AnyClass || r.RecordHeader.Class == NoneClass) {
+		r.RecordData = nil
+	} else {
+		dc, err := w.Split(int(r.RecordHeader.Length))
+		if err != nil {
+			return err
+		}
+
+		r.RecordData = RecordFromType(r.RecordHeader.Type)
+		return dc.Decode(r.RecordData)
 	}
 
-	r.RecordData = RecordFromType(r.RecordHeader.Type)
-	return dc.Decode(r.RecordData)
+	return nil
 }
 
 func (w *WireCodec) getMessage(m *Message) error {

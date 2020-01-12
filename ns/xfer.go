@@ -3,7 +3,6 @@ package ns
 import (
 	"context"
 	"errors"
-	"log"
 	"net"
 
 	"tessier-ashpool.net/dns"
@@ -12,7 +11,7 @@ import (
 
 func sendBatch(conn *dnsconn.Connection, msg *dns.Message, to net.Addr, r []*dns.Record) error {
 	msg.Answers = r
-	err := answer(conn, dns.NoError, msg, to)
+	err := answer(conn, nil, msg, to)
 
 	var truncated *dns.Truncated
 	if !conn.UDP && errors.As(err, &truncated) && len(r) > 1 {
@@ -25,102 +24,86 @@ func sendBatch(conn *dnsconn.Connection, msg *dns.Message, to net.Addr, r []*dns
 	return err
 }
 
-func ixfr(
-	ctx context.Context,
-	logger *log.Logger,
-	conn *dnsconn.Connection,
-	msg *dns.Message,
-	to net.Addr,
-	zone *Zone,
-) error {
+func (s *Server) ixfr(ctx context.Context, msg *dns.Message, to net.Addr, zone *Zone) error {
 	q := msg.Questions[0]
 
 	if zone.Hint() || !zone.Name().Equal(q.QName) {
 		// this is not us
-		return answer(conn, dns.NotAuth, msg, to)
+		return answer(s.conn, dns.NotAuth, msg, to)
 	}
 
 	var serial uint32
 	if q.QType == dns.IXFRType {
 		if len(msg.Authority) != 1 {
-			return answer(conn, dns.FormError, msg, to)
+			return answer(s.conn, dns.FormError, msg, to)
 		}
-		s := msg.Authority[0]
-		soa, ok := s.RecordData.(*dns.SOARecord)
-		if !ok || !s.RecordHeader.Name.Equal(q.QName) {
-			return answer(conn, dns.FormError, msg, to)
+		r := msg.Authority[0]
+		soa, ok := r.RecordData.(*dns.SOARecord)
+		if !ok || !r.RecordHeader.Name.Equal(q.QName) {
+			return answer(s.conn, dns.FormError, msg, to)
 		}
 		serial = soa.Serial
 	}
 
-	logger.Printf("%v: %v %v @%d to %v", zone.Name(), q.QType, q.QClass, serial, to)
+	s.logger.Printf("%v: %v %v @%d to %v", zone.Name(), q.QType, q.QClass, serial, to)
 
 	msg.Authority = nil
 	msg.NoTC = true
 	msg.AA = true
 
 	batch := make([]*dns.Record, 0, 64)
-	err := zone.Dump(serial, conn.Interface, q.QClass, func(r *dns.Record) error {
+	err := zone.Dump(serial, s.conn.Interface, q.QClass, func(r *dns.Record) error {
 		var err error
 		batch = append(batch, r)
 		if len(batch) == cap(batch) {
-			if conn.UDP {
+			if s.conn.UDP {
 				err = &dns.Truncated{}
 			} else {
-				err = sendBatch(conn, msg, to, batch)
+				err = sendBatch(s.conn, msg, to, batch)
 				batch = batch[:0]
 			}
+		}
+		if err == nil {
+			err = ctx.Err()
 		}
 		return err
 	})
 	if err == nil && len(batch) > 0 {
-		err = sendBatch(conn, msg, to, batch)
+		err = sendBatch(s.conn, msg, to, batch)
 	}
 
 	var truncated *dns.Truncated
-	if conn.UDP && errors.As(err, &truncated) {
+	if s.conn.UDP && errors.As(err, &truncated) {
 		msg.TC = true
 		msg.Answers = []*dns.Record{zone.SOA()}
-		logger.Printf("%v: sending @%d to %v: retry TCP", zone.Name(), serial, to)
-		return answer(conn, dns.NoError, msg, to)
+		s.logger.Printf("%v: sending @%d to %v: retry TCP", zone.Name(), serial, to)
+		return answer(s.conn, nil, msg, to)
 	} else if err != nil {
-		logger.Printf("%v: failed sending @%d to %v: %v", zone.Name(), serial, to, err)
-		return answer(conn, dns.ServerFailure, msg, to)
+		s.logger.Printf("%v: failed sending @%d to %v: %v", zone.Name(), serial, to, err)
+		return answer(s.conn, err, msg, to)
 	}
 	return nil
 }
 
-func notify(
-	ctx context.Context,
-	logger *log.Logger,
-	conn *dnsconn.Connection,
-	msg *dns.Message,
-	to net.Addr,
-	zone *Zone,
-) error {
+func (s *Server) notify(ctx context.Context, msg *dns.Message, to net.Addr, zone *Zone) error {
 	q := msg.Questions[0]
 	msg.Authority = nil
 	msg.Additional = nil
 
-	if !zone.Name().Equal(q.QName) {
-		msg.Answers = nil
-		return answer(conn, dns.Refused, msg, to)
-	}
-
 	if q.QType != dns.SOAType {
-		return answer(conn, dns.NotImplemented, msg, to)
+		return answer(s.conn, dns.FormError, msg, to)
 	}
 
 	var found bool
 	for _, r := range msg.Answers {
-		a, _, err := zone.Lookup(conn.Interface, r.RecordHeader.Name, r.Type(), r.Class())
+		a, _, err := zone.Lookup(s.conn.Interface, r.RecordHeader.Name, r.Type(), r.Class())
 		if err != nil {
 			break
 		}
 
 		found = false
 		for _, rr := range a {
-			if rr.RecordData.Equal(r.RecordData) {
+			if rr.Type() == r.Type() && rr.RecordData.Equal(r.RecordData) {
 				found = true
 				break
 			}
@@ -135,5 +118,5 @@ func notify(
 	}
 
 	msg.Answers = nil
-	return answer(conn, dns.NoError, msg, to)
+	return answer(s.conn, nil, msg, to)
 }

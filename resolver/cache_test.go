@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"bytes"
 	"net"
 	"testing"
 	"time"
@@ -27,6 +28,9 @@ func makeRecordSet(t *testing.T, alt bool) []*dns.Record {
 		copy(adata[:], []byte{127, 0, 0, 1})
 		copy(aaaadata[:], net.ParseIP("::1"))
 	}
+
+	var othera [4]byte
+	copy(othera[:], []byte{192, 168, 0, 1})
 
 	return []*dns.Record{
 		&dns.Record{
@@ -59,6 +63,36 @@ func makeRecordSet(t *testing.T, alt bool) []*dns.Record {
 				Address: aaaadata,
 			},
 		},
+		&dns.Record{
+			RecordHeader: dns.RecordHeader{
+				Name:  nameWithString(t, "ns1.tessier-ashpool.net"),
+				Class: dns.INClass,
+				TTL:   5 * time.Second,
+			},
+			RecordData: &dns.TXTRecord{
+				Text: []string{"text"},
+			},
+		},
+		&dns.Record{
+			RecordHeader: dns.RecordHeader{
+				Name:  nameWithString(t, "host.tessier-ashpool.net"),
+				Class: dns.INClass,
+				TTL:   5 * time.Second,
+			},
+			RecordData: &dns.ARecord{
+				Address: othera,
+			},
+		},
+		&dns.Record{
+			RecordHeader: dns.RecordHeader{
+				Name:  nameWithString(t, "host.tessier-ashpool.net"),
+				Class: dns.INClass,
+				TTL:   5 * time.Second,
+			},
+			RecordData: &dns.ARecord{
+				Address: adata,
+			},
+		},
 	}
 }
 
@@ -88,8 +122,8 @@ func TestCacheEnterAndGet(t *testing.T) {
 	for _, record := range records {
 		t.Log(record)
 	}
-	if len(records) != 2 {
-		t.Fatalf("expected 2 records, got %d", len(records))
+	if len(records) != 3 {
+		t.Fatalf("expected 3 records, got %d", len(records))
 	}
 }
 
@@ -278,7 +312,7 @@ func TestOverwrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(records) != 2 {
-		t.Fatalf("expected 2 recoreds, got %d", len(records))
+		t.Fatalf("expected 2 records, got %d", len(records))
 	}
 	for _, r := range records {
 		t.Log(r)
@@ -296,4 +330,122 @@ func TestOverwrite(t *testing.T) {
 			t.Fatalf("got unexpected record %v", r)
 		}
 	}
+}
+
+func testRemove(t *testing.T, entered time.Time) {
+	c := NewCache(nil)
+	now := time.Now()
+
+	c.Enter(entered, false, makeRecordSet(t, false))
+
+	name := nameWithString(t, "ns1.tessier-ashpool.net")
+	// start with three records for ns1.tessier-ashpool.net
+	records, err := c.Get(now, name, dns.AnyType, dns.AnyClass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("expected 3 records, got %d", len(records))
+	}
+	// remove the TXT
+	c.Remove(now, false, &dns.Record{
+		RecordHeader: dns.RecordHeader{
+			Name:  name,
+			Type:  dns.TXTType,
+			Class: dns.INClass,
+		},
+		RecordData: nil,
+	})
+	now = now.Add(1 * time.Second)
+	records, err = c.Get(now, name, dns.AnyType, dns.AnyClass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(records))
+	}
+	// remove the rest
+	c.Remove(now, false, &dns.Record{
+		RecordHeader: dns.RecordHeader{
+			Name:  name,
+			Type:  dns.AnyType,
+			Class: dns.INClass,
+		},
+		RecordData: nil,
+	})
+	now = now.Add(1 * time.Second)
+	records, err = c.Get(now, name, dns.AnyType, dns.AnyClass)
+	if len(records) != 0 {
+		t.Fatalf("expected no records, got %d", len(records))
+	}
+
+	// start with two records for host.tessier-ashpool.net
+	name = nameWithString(t, "host.tessier-ashpool.net")
+	records, err = c.Get(now, name, dns.AnyType, dns.AnyClass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("expected 2 records, got %d", len(records))
+	}
+	// remove one of the two A records
+	c.Remove(now, false, &dns.Record{
+		RecordHeader: dns.RecordHeader{
+			Name:  name,
+			Type:  dns.AType,
+			Class: dns.INClass,
+		},
+		RecordData: &dns.ARecord{
+			Address: [4]byte{192, 168, 0, 1},
+		},
+	})
+	now = now.Add(1 * time.Second)
+	records, err = c.Get(now, name, dns.AnyType, dns.AnyClass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	r := records[0]
+	a, ok := r.RecordData.(*dns.ARecord)
+	if !ok {
+		t.Fatalf("record is not an A record; got %T", r.RecordData)
+	}
+	if bytes.Compare(a.Address[:], []byte{127, 0, 0, 1}) != 0 {
+		t.Fatalf("record is not 127.0.0.1; got %v", a.IP())
+	}
+}
+
+func TestRemove(t *testing.T) {
+	testRemove(t, time.Time{})
+
+	c := NewCache(nil)
+	now := time.Now()
+	name := nameWithString(t, "tessier-ashpool.net")
+
+	c.Enter(time.Time{}, false, makeRecordSet(t, false))
+	c.Remove(now, true, &dns.Record{
+		RecordHeader: dns.RecordHeader{
+			Name:  name,
+			Type:  dns.AnyType,
+			Class: dns.INClass,
+		},
+	})
+	records, err := c.Get(now, name, dns.AnyType, dns.AnyClass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("expected one record, got %d", len(records))
+	}
+	r := records[0]
+	_, ok := r.RecordData.(*dns.NSRecord)
+	if !ok {
+		t.Fatalf("expected NS record, got %T", r.RecordData)
+	}
+}
+
+func TestRemoveShared(t *testing.T) {
+	testRemove(t, time.Now())
 }

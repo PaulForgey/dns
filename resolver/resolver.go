@@ -462,7 +462,7 @@ func (r *Resolver) resolve(
 
 			if len(authority) == 0 {
 				// no delegation
-				return nil, dns.NameError
+				return nil, dns.NXDomain
 			}
 			if !suffix.HasSuffix(aname) || !aname.HasSuffix(progress) {
 				// got wrong delegation
@@ -507,7 +507,7 @@ func (r *Resolver) resolve(
 				return nil, err
 			}
 			if len(ips) == 0 {
-				return nil, dns.NameError
+				return nil, dns.NXDomain
 			}
 			for _, ip := range ips {
 				nsaddrs = append(nsaddrs, &net.UDPAddr{

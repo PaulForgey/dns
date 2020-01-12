@@ -22,18 +22,7 @@ func (t TypeKey) Types() (dns.RRType, dns.RRClass) {
 
 func (t TypeKey) Match(rrtype dns.RRType, rrclass dns.RRClass) bool {
 	mytype, myclass := t.Types()
-
-	// if the cache type matches the query
-	if mytype.Match(rrtype) && myclass.Match(rrclass) {
-		return true
-	}
-
-	// if we are asking for IN records and the cache is of type IN CNAME
-	if rrclass.Match(dns.INClass) && mytype == dns.CNAMEType && myclass == dns.INClass {
-		return true
-	}
-
-	return false
+	return mytype.Match(rrtype) && myclass.Match(rrclass)
 }
 
 type rrSet struct {
@@ -128,7 +117,7 @@ func (c *Cache) Enter(at time.Time, merge bool, records []*dns.Record) {
 
 	for nkey, rrmap := range entries {
 		if crrmap, ok := c.cache[nkey]; ok {
-			if at.IsZero() {
+			if authoritative {
 				for tkey, rrset := range rrmap {
 					crrmap[tkey] = rrset
 				}
@@ -178,24 +167,93 @@ func (c *Cache) Enter(at time.Time, merge bool, records []*dns.Record) {
 	}
 }
 
-// Remove removes records of the exact name, rrtype and rrclass. dns.AnyType and dns.AnyClass are not valid parameters.
-// Permanent records are also removed. Non permanent records are "removed" by having their TTL reduced to 1 and entered
-// time set to now.
-func (c *Cache) Remove(now time.Time, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) {
-	nkey := name.Key()
-	if rrmap, ok := c.cache[nkey]; ok {
-		tkey := MakeTypeKey(rrtype, rrclass)
+// Remove removes records:
+// if RecordData is nil, all matching records of the type and class are removed.
+// if RecordData is not nil, all matching records of the type, class, and data are removed.
+// the record parameter may have a type and/or class of Any, which will remove all matches.
+// Non permanent records are removed by having their TTL reduced to 1 and entered time set to now.
+// If auth is true, SOA and NS records are protected if type is Any
+// If no records were removed, Remove returns false
+func (c *Cache) Remove(now time.Time, auth bool, record *dns.Record) bool {
+	nkey := record.RecordHeader.Name.Key()
+	rrmap, ok := c.cache[nkey]
+	if !ok {
+		return false // shortcut: stop here
+	}
+	if auth && (record.Type() == dns.NSType || record.Type() == dns.SOAType) {
+		return false // shortcut: attempt to snipe auth record
+	}
+
+	rrtype, rrclass := record.Type(), record.Class()
+	tkey := MakeTypeKey(rrtype, rrclass)
+	rrsets := make(rrMap)
+	data := record.RecordData
+
+	if rrtype != dns.AnyType && rrclass != dns.AnyClass {
 		if rrset, ok := rrmap[tkey]; ok {
-			if rrset.entered.IsZero() {
-				delete(rrmap, tkey)
-			} else {
-				rrset.entered = now
-				for _, rr := range rrset.records {
-					rr.RecordHeader.TTL = time.Second
+			rrsets[tkey] = rrset
+		}
+	} else {
+		data = nil // ignore RecordData
+		for tkey, rrset := range rrmap {
+			if tkey.Match(rrtype, rrclass) {
+				if auth {
+					t, _ := tkey.Types()
+					if t == dns.SOAType || t == dns.NSType {
+						continue
+					}
 				}
+				rrsets[tkey] = rrset
 			}
 		}
 	}
+
+	updated := false
+
+	// rrsets contains candidate type+class[rrset] to be removed
+	for tkey, rrset := range rrsets {
+		if rrset.entered.IsZero() {
+			// authoritative records
+
+			var records []*dns.Record // surviving records
+			if data != nil {
+				for _, rr := range rrset.records {
+					if !rr.RecordData.Equal(data) {
+						records = append(records, rr)
+					} else {
+						updated = true
+					}
+				}
+			}
+			if len(records) == 0 {
+				updated = true
+				delete(rrmap, tkey)
+			} else {
+				rrset.records = records
+			}
+		} else {
+			// cached or mdns shared records
+
+			var records []*dns.Record // records to reset
+			expireSet(rrset, now, true)
+			rrset.entered = now
+			if data == nil {
+				records = rrset.records
+			} else {
+				for _, rr := range rrset.records {
+					if rr.RecordData.Equal(data) {
+						records = append(records, rr)
+					}
+				}
+			}
+			for _, rr := range records {
+				updated = true
+				rr.RecordHeader.TTL = time.Second
+			}
+		}
+	}
+
+	return updated
 }
 
 // used with Enter while merging records or Get, expire records from the cache and if merging, backdate their TTLs to
@@ -230,7 +288,7 @@ func expireSet(rrset *rrSet, now time.Time, adjust bool) {
 // dns.AnyType and dns.AnyClass will wildcard match.
 // Non permanent records will have their TTL values adjusted.
 // Expired records will be removed from the cache and not returned.
-// If there are no entries for the name (regardless of type), dns.NameError is returned
+// If there are no entries for the name regardless of type, dns.NXDomain is returned
 func (c *Cache) Get(now time.Time, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) ([]*dns.Record, error) {
 	var records []*dns.Record
 	var err error
@@ -245,10 +303,9 @@ func (c *Cache) Get(now time.Time, name dns.Name, rrtype dns.RRType, rrclass dns
 	if ok && len(rrmap) > 0 {
 		var tkeys []TypeKey
 		if rrtype == dns.AnyType || rrclass == dns.AnyClass {
-			for k := range rrmap {
-				tkey := TypeKey(k)
-
-				if tkey.Match(rrtype, rrclass) {
+			for tkey := range rrmap {
+				t, _ := tkey.Types()
+				if t == dns.CNAMEType || tkey.Match(rrtype, rrclass) {
 					tkeys = append(tkeys, tkey)
 				}
 			}
@@ -298,7 +355,7 @@ func (c *Cache) Get(now time.Time, name dns.Name, rrtype dns.RRType, rrclass dns
 		}
 	} else {
 		ok = false
-		err = dns.NameError
+		err = dns.NXDomain
 	}
 
 	if !ok && c.parent != nil {

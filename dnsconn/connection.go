@@ -8,6 +8,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"tessier-ashpool.net/dns"
 )
@@ -182,6 +183,7 @@ func (c *Connection) WriteTo(msg *dns.Message, addr net.Addr, msgSize int) error
 			_, err = c.conn.Write(msgBuf)
 		}
 	} else {
+		c.conn.SetWriteDeadline(time.Now().Add(5 * time.Minute))
 		binary.BigEndian.PutUint16(buffer, uint16(len(msgBuf)))
 		msgBuf = buffer[0 : writer.Offset()+2]
 		_, err = c.conn.Write(msgBuf)
