@@ -544,7 +544,7 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 		db = z.db
 	}
 
-	soa := z.soa_locked()
+	soa := z.soa
 	if soa == nil {
 		return false, fmt.Errorf("%w: zone %v has no SOA", dns.NotAuth, z.name)
 	}
@@ -660,7 +660,7 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 						break
 					}
 					rrset = nil // update replaces the only one
-					z.soa = rr
+					z.soa = r
 
 				case dns.WKSType:
 					w1 := rr.RecordData.(*dns.WKSRecord)
@@ -694,7 +694,9 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 
 	// unless we updated the soa, mark zone updated (if it updated)
 	if z.soa == soa || z.soa.Equal(soa) {
-		z.updated = updated
+		z.updated = z.updated || updated
+	} else {
+		z.updated = false
 	}
 
 	return updated, nil

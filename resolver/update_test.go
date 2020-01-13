@@ -47,6 +47,9 @@ func testUpdateCase(
 	if updated != shouldUpdate {
 		t.Fatalf("expected updated=%v, got %v", shouldUpdate, updated)
 	}
+	if q == nil {
+		return // expected error at this point
+	}
 
 	a, _, err := z.Lookup("", q.QName, q.QType, q.QClass)
 	if err != nil {
@@ -72,7 +75,18 @@ func testUpdateCase(
 	}
 }
 
-func TestZoneUpdate(t *testing.T) {
+func checkSOA(t *testing.T, z *Zone, serial uint32) {
+	soa := z.SOA()
+	if soa == nil {
+		t.Fatalf("zone %v has no SOA", z.Name())
+	}
+	soaSerial := soa.RecordData.(*dns.SOARecord).Serial
+	if soaSerial != serial {
+		t.Fatalf("zone %v expected serial %d, got %d", z.Name(), serial, soaSerial)
+	}
+}
+
+func TestUpdate(t *testing.T) {
 	name := nameWithString(t, "shoesinonehour.com")
 	zone := NewZone(name, false)
 	c := dns.NewTextReader(strings.NewReader(updateZone), name)
@@ -148,4 +162,99 @@ func TestZoneUpdate(t *testing.T) {
 		recordWithString(t, name, "ns2 5m IN A 192.168.0.2"),
 	}
 	testUpdateCase(t, zone, nil, update, q, update, nil, false)
+
+	// add a record outside the zone (expect NotZone)
+	update = []*dns.Record{
+		recordWithString(t, nil, "ns2.horsegrinders.com. 5m IN A 192.168.0.1"),
+	}
+	testUpdateCase(t, zone, nil, update, nil, nil, dns.NotZone, false)
+
+	// first time asking for SOA after all these updates, should be serial 2
+	checkSOA(t, zone, 2)
+
+	// now update SOA serial to 10
+	update = []*dns.Record{
+		recordWithString(t, name, "@ IN SOA ns1 hostmaster 10 24h 2h 1000h 5m"),
+	}
+	q = &dns.Question{
+		QName:  name,
+		QType:  dns.SOAType,
+		QClass: dns.INClass,
+	}
+	testUpdateCase(t, zone, nil, update, q, update, nil, true)
+	checkSOA(t, zone, 10) // should still be 10 and not autoincremented
+}
+
+func TestPrereqUpdate(t *testing.T) {
+	name := nameWithString(t, "shoesinonehour.com")
+	zone := NewZone(name, false)
+	c := dns.NewTextReader(strings.NewReader(updateZone), name)
+	err := zone.Decode("", false, c)
+	if err != nil {
+		t.Fatalf("cannot load zone %v: %v", name, err)
+	}
+
+	// update if record not present (should add)
+	update := []*dns.Record{
+		recordWithString(t, name, "shoes 1h IN TXT \"industry\""),
+	}
+	prereq := []*dns.Record{
+		recordWithString(t, name, "shoes 1h NONE TXT"),
+	}
+
+	q := &dns.Question{
+		QName:  nameWithString(t, "shoes").Append(name),
+		QType:  dns.TXTType,
+		QClass: dns.INClass,
+	}
+	testUpdateCase(t, zone, prereq, update, q, update, nil, true)
+
+	// same update again should fail YXRRset and original results
+	results := update
+	update = []*dns.Record{
+		recordWithString(t, name, "shoes 1h IN TXT \"dead\""),
+	}
+	testUpdateCase(t, zone, prereq, update, q, results, dns.YXRRSet, false)
+
+	// fail update with prereq not caring about type, should fail with YXDOMAIN
+	prereq = []*dns.Record{
+		recordWithString(t, name, "shoes 1h NONE ANY"),
+	}
+	testUpdateCase(t, zone, prereq, update, q, results, dns.YXDomain, false)
+
+	// update if rrset exists, should fail with NXRRSet
+	prereq = []*dns.Record{
+		recordWithString(t, name, "bozo 1h ANY TXT"),
+	}
+	testUpdateCase(t, zone, prereq, update, q, results, dns.NXRRSet, false)
+
+	// update if name exists, should fail with NXDomain
+	prereq = []*dns.Record{
+		recordWithString(t, name, "bozo 1h ANY ANY"),
+	}
+	testUpdateCase(t, zone, prereq, update, q, results, dns.NXDomain, false)
+
+	// update if rrset with value exists, add record
+	update = []*dns.Record{
+		recordWithString(t, name, "rr 1h IN A 127.0.0.10"),
+	}
+	prereq = []*dns.Record{
+		recordWithString(t, name, "rr 5m IN A 127.0.0.1"),
+	}
+	results = []*dns.Record{
+		recordWithString(t, name, "rr 5m IN A 127.0.0.1"),
+		recordWithString(t, name, "rr 1h IN A 127.0.0.10"),
+	}
+	q = &dns.Question{
+		QName:  nameWithString(t, "rr").Append(name),
+		QType:  dns.AType,
+		QClass: dns.INClass,
+	}
+	testUpdateCase(t, zone, prereq, update, q, results, nil, true)
+
+	// update if rrset with value exists, should fail with NXRRset
+	prereq = []*dns.Record{
+		recordWithString(t, name, "rr 1h IN A 192.168.0.1"),
+	}
+	testUpdateCase(t, zone, prereq, update, q, results, dns.NXRRSet, false)
 }
