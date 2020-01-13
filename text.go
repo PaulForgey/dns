@@ -68,6 +68,7 @@ func NewTextReader(r io.Reader, origin Name) *TextCodec {
 			Reader: bufio.NewReader(r),
 			f:      nil,
 		},
+		savedOrigin: origin,
 	}
 
 	return &TextCodec{
@@ -480,12 +481,16 @@ func (c *TextCodec) getRecord(r *Record) error {
 	if err := r.RecordHeader.Type.Set(token); err != nil {
 		return err
 	}
-	r.RecordData = RecordFromType(r.RecordHeader.Type)
 
-	token, err = c.token(false) // there will be at least one more token for the rdata
+	token, err = c.token(true) // allow nil rdata
 	if err != nil {
+		if errors.Is(err, io.EOF) {
+			r.RecordData = nil
+			err = nil
+		}
 		return err
 	}
+	r.RecordData = RecordFromType(r.RecordHeader.Type)
 
 	if token == raw {
 		token, err = c.token(false)

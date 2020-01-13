@@ -36,6 +36,8 @@ func (c RRClass) String() string {
 		return "CH"
 	case HSClass:
 		return "HS"
+	case NoneClass:
+		return "NONE"
 	case AnyClass:
 		return "*"
 	}
@@ -54,6 +56,8 @@ func (c *RRClass) Set(str string) error {
 		*c = CHClass
 	case "HS":
 		*c = HSClass
+	case "NONE":
+		*c = NoneClass
 	case "*", "ANY":
 		*c = AnyClass
 	default:
@@ -294,6 +298,7 @@ type RecordHeader struct {
 }
 
 func (r *RecordHeader) Equal(n *RecordHeader) bool {
+	// TTL is purposfully not compared
 	return r.Name.Equal(n.Name) && r.Type == n.Type && r.Class == n.Class
 }
 
@@ -338,11 +343,14 @@ func (r *Record) Equal(n *Record) bool {
 	if r == n {
 		return true
 	}
-	if r.RecordHeader.Equal(&n.RecordHeader) {
-		return true
+	if !r.RecordHeader.Equal(&n.RecordHeader) {
+		return false
 	}
 	if r.RecordData == n.RecordData {
 		return true
+	}
+	if r.RecordData == nil || n.RecordData == nil {
+		return false
 	}
 	return r.RecordData.Equal(n.RecordData)
 }
@@ -359,6 +367,31 @@ func (r *Record) Match(n *Record) bool {
 	}
 
 	return r.RecordData.Equal(n.RecordData)
+}
+
+// Less for the Record type is a bit silly for practical use, but allows sorting records to make testing easier
+func (r *Record) Less(n *Record) bool {
+	rn := r.RecordHeader.Name
+	nn := n.RecordHeader.Name
+	if rn.Less(nn) {
+		return true
+	}
+	if !rn.Equal(nn) {
+		return false
+	}
+	if r.Type() < n.Type() || r.Type() == n.Type() && r.Class() < n.Class() {
+		return true
+	}
+	if r.Class() != n.Class() {
+		return false
+	}
+	if r.RecordData == nil {
+		return n.RecordData != nil
+	}
+	if n.RecordData == nil {
+		return false
+	}
+	return r.RecordData.Less(n.RecordData)
 }
 
 // The UnknownRecord type can store rdata of unknown resource records.
@@ -655,7 +688,7 @@ func (m *HINFORecord) Equal(nn RecordData) bool {
 
 func (m *HINFORecord) Less(nn RecordData) bool {
 	n := nn.(*HINFORecord)
-	return m.CPU < n.CPU || m.OS < n.OS
+	return m.CPU < n.CPU || m.CPU == n.CPU && n.OS < m.OS
 }
 
 // ==========
@@ -746,7 +779,8 @@ func (m *MINFORecord) Equal(nn RecordData) bool {
 
 func (m *MINFORecord) Less(nn RecordData) bool {
 	n := nn.(*MINFORecord)
-	return m.RMailbox.Less(n.RMailbox) || m.EMailbox.Less(n.EMailbox)
+	return m.RMailbox.Less(n.RMailbox) || m.RMailbox.Equal(n.RMailbox) &&
+		m.EMailbox.Less(n.EMailbox)
 }
 
 // ==========
@@ -789,7 +823,8 @@ func (m *MXRecord) Equal(nn RecordData) bool {
 
 func (m *MXRecord) Less(nn RecordData) bool {
 	n := nn.(*MXRecord)
-	return m.Preference < n.Preference || m.Name.Less(n.Name)
+	return m.Preference < n.Preference || m.Preference == n.Preference &&
+		m.Name.Less(n.Name)
 }
 
 // ==========
@@ -906,12 +941,12 @@ func (m *SOARecord) Equal(nn RecordData) bool {
 
 func (m *SOARecord) Less(nn RecordData) bool {
 	n := nn.(*SOARecord)
-	return m.MName.Less(n.MName) ||
-		m.ReName.Less(n.ReName) ||
-		m.Serial < n.Serial ||
-		m.Refresh < n.Refresh ||
-		m.Retry < n.Retry ||
-		m.Expire < n.Expire ||
+	return m.MName.Less(n.MName) || m.MName.Equal(n.MName) &&
+		m.ReName.Less(n.ReName) || m.ReName.Equal(n.ReName) &&
+		m.Serial < n.Serial || m.Serial == n.Serial &&
+		m.Refresh < n.Refresh || m.Refresh == n.Refresh &&
+		m.Retry < n.Retry || m.Retry == n.Retry &&
+		m.Expire < n.Expire || m.Expire == n.Expire &&
 		m.Minimum < n.Minimum
 }
 
@@ -1013,8 +1048,8 @@ func (rr *WKSRecord) MarshalCodec(c Codec) error {
 
 func (m *WKSRecord) Less(nn RecordData) bool {
 	n := nn.(*WKSRecord)
-	return bytes.Compare(m.Address[:], n.Address[:]) < 0 ||
-		m.Protocol < n.Protocol ||
+	return bytes.Compare(m.Address[:], n.Address[:]) < 0 || bytes.Compare(m.Address[:], n.Address[:]) == 0 &&
+		m.Protocol < n.Protocol || m.Protocol == n.Protocol &&
 		bytes.Compare(m.Bitmap, n.Bitmap) < 0
 }
 
@@ -1076,9 +1111,9 @@ func (rr *SRVRecord) MarshalCodec(c Codec) error {
 
 func (m *SRVRecord) Less(nn RecordData) bool {
 	n := nn.(*SRVRecord)
-	return m.Priority < n.Priority ||
-		m.Weight < n.Weight ||
-		m.Port < n.Port ||
+	return m.Priority < n.Priority || m.Priority == n.Priority &&
+		m.Weight < n.Weight || m.Weight == n.Weight &&
+		m.Port < n.Port || m.Port == n.Port &&
 		m.Name.Less(n.Name)
 }
 

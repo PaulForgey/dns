@@ -642,11 +642,15 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 			rrset, _ := db.Get(now, name, rrtype, rrclass)
 			found := false
 			for _, rr := range rrset {
+				if found {
+					break
+				}
 				if rr.Type() != rrtype {
 					found = true // CNAME and not looking to update one
 					break
 				}
-				if rrtype == dns.SOAType {
+				switch rrtype {
+				case dns.SOAType:
 					if !rr.RecordHeader.Equal(&r.RecordHeader) {
 						found = true
 						break
@@ -657,18 +661,25 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 					}
 					rrset = nil // update replaces the only one
 					z.soa = rr
-				}
-				if rrtype == dns.WKSType {
+
+				case dns.WKSType:
 					w1 := rr.RecordData.(*dns.WKSRecord)
 					w2 := r.RecordData.(*dns.WKSRecord)
 					if w1.Protocol == w2.Protocol && bytes.Compare(w1.Address[:], w2.Address[:]) == 0 {
 						found = true
-						break
 					}
-				}
-				if rr.RecordData.Equal(r.RecordData) {
-					found = true
-					break
+
+				case dns.CNAMEType:
+					// like SOA and tiggers, there can only be one
+					if rr.RecordData.Equal(r.RecordData) {
+						found = true
+					}
+					rrset = nil
+
+				default:
+					if rr.RecordData.Equal(r.RecordData) {
+						found = true
+					}
 				}
 			}
 			if found {
