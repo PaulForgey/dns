@@ -14,8 +14,8 @@ import (
 	"tessier-ashpool.net/dns/resolver"
 )
 
-func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, rrclass dns.RRClass) error {
-	r, err := resolver.NewResolverClient(nil, "tcp", conf.Primary, nil, false)
+func transfer(ctx context.Context, zone *Zone, z *ns.Zone, soa *dns.Record, rrclass dns.RRClass) error {
+	r, err := resolver.NewResolverClient(nil, "tcp", zone.Primary, nil, false)
 	if err != nil {
 		return err
 	}
@@ -25,10 +25,10 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 		Opcode: dns.StandardQuery,
 	}
 
-	if conf.Incremental && soa != nil {
+	if zone.Incremental && soa != nil {
 		msg.Questions = []*dns.Question{
 			&dns.Question{
-				QName:  zone.Name(),
+				QName:  z.Name(),
 				QType:  dns.IXFRType,
 				QClass: rrclass,
 			},
@@ -37,7 +37,7 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 	} else {
 		msg.Questions = []*dns.Question{
 			&dns.Question{
-				QName:  zone.Name(),
+				QName:  z.Name(),
 				QType:  dns.AXFRType,
 				QClass: rrclass,
 			},
@@ -53,7 +53,7 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 
 	records := msg.Answers
 
-	err = zone.Xfer(conf.Incremental, func() (*dns.Record, error) {
+	err = z.Xfer(zone.Incremental, func() (*dns.Record, error) {
 		if len(records) == 0 {
 			tctx, cancel := context.WithTimeout(ctx, time.Minute)
 			msg, err := r.Receive(tctx, msg.ID)
@@ -76,15 +76,15 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 		return err
 	}
 
-	logger.Printf("%v: successfully transferred zone from %s", zone.Name(), conf.Primary)
+	logger.Printf("%v: successfully transferred zone from %s", z.Name(), zone.Primary)
 
-	if conf.DbFile != "" {
-		tmpfile := fmt.Sprintf("%s-%d", conf.DbFile, os.Getpid())
+	if zone.DbFile != "" {
+		tmpfile := fmt.Sprintf("%s-%d", zone.DbFile, os.Getpid())
 		out, err := os.Create(tmpfile)
 		if err != nil {
 			logger.Printf(
 				"%v: failed to create output db file %s: %v",
-				zone.Name(),
+				z.Name(),
 				tmpfile,
 				err,
 			)
@@ -94,7 +94,7 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 		bw := bufio.NewWriter(out)
 		w := dns.NewTextWriter(bw)
 
-		err = zone.Dump(0, "", dns.AnyClass, func(r *dns.Record) error {
+		err = z.Dump(0, "", dns.AnyClass, func(r *dns.Record) error {
 			return w.Encode(r)
 		})
 		if err != nil {
@@ -106,13 +106,13 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 		}
 		out.Close()
 
-		err = os.Rename(tmpfile, conf.DbFile)
+		err = os.Rename(tmpfile, zone.DbFile)
 		if err != nil {
 			logger.Printf(
 				"%v: failed to rename %s->%s: %v",
-				zone.Name(),
+				z.Name(),
 				tmpfile,
-				conf.DbFile,
+				zone.DbFile,
 				err,
 			)
 			return nil
@@ -122,17 +122,17 @@ func transfer(ctx context.Context, conf *Zone, zone *ns.Zone, soa *dns.Record, r
 	return nil
 }
 
-func pollSecondary(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.Resolver) (bool, time.Duration) {
+func pollSecondary(ctx context.Context, zone *Zone, z *ns.Zone, r *resolver.Resolver) (bool, time.Duration) {
 	var refresh, retry time.Duration
 	var serial uint32
 	var rsoa *dns.Record
 
-	rrclass := conf.Class
+	rrclass := zone.Class
 	if rrclass == 0 {
 		rrclass = dns.INClass
 	}
 
-	soa := zone.SOA()
+	soa := z.SOA()
 	if soa == nil {
 		// defaults until we can query SOA
 		refresh = time.Hour * 24
@@ -144,12 +144,12 @@ func pollSecondary(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.R
 		serial = rr.Serial
 	}
 
-	a, _, _, aa, err := r.Query(ctx, "", zone.Name(), dns.SOAType, rrclass)
+	a, _, _, aa, err := r.Query(ctx, "", z.Name(), dns.SOAType, rrclass)
 	if err != nil {
 		logger.Printf(
 			"%v: error connecting to %s: %v. Will retry in %v",
-			zone.Name(),
-			conf.Primary,
+			z.Name(),
+			zone.Primary,
 			err,
 			retry,
 		)
@@ -158,8 +158,8 @@ func pollSecondary(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.R
 	if !aa {
 		logger.Printf(
 			"%v: answer from %s is not authoritative. Will retry in %v",
-			zone.Name(),
-			conf.Primary,
+			z.Name(),
+			zone.Primary,
 			retry,
 		)
 		return false, retry
@@ -174,19 +174,19 @@ func pollSecondary(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.R
 	if rsoa == nil {
 		logger.Printf(
 			"%v: answer from %s did not return SOA? Will retry in %v",
-			zone.Name(),
-			conf.Primary,
+			z.Name(),
+			zone.Primary,
 			retry,
 		)
 		return false, retry
 	}
 	if serial != rsoa.RecordData.(*dns.SOARecord).Serial {
-		err := transfer(ctx, conf, zone, soa, rrclass)
+		err := transfer(ctx, zone, z, soa, rrclass)
 		if err != nil {
 			logger.Printf(
 				"%v: error transferring from %s: %v. Will retry in %v",
-				zone.Name(),
-				conf.Primary,
+				z.Name(),
+				zone.Primary,
 				err,
 				retry,
 			)
@@ -196,30 +196,30 @@ func pollSecondary(ctx context.Context, conf *Zone, zone *ns.Zone, r *resolver.R
 	return true, refresh
 }
 
-func (conf *Zone) secondaryZone(zones *ns.Zones, res *resolver.Resolver) {
-	ctx := conf.ctx
-	zone := conf.zone
+func (zone *Zone) secondaryZone(zones *ns.Zones, res *resolver.Resolver) {
+	ctx := zone.ctx
+	z := zone.zone
 	live := false
 
-	r, err := resolver.NewResolverClient(nil, "udp", conf.Primary, nil, false)
+	r, err := resolver.NewResolverClient(nil, "udp", zone.Primary, nil, false)
 	if err != nil {
-		logger.Fatalf("%v: cannot create resolver against %s: %v", zone.Name(), conf.Primary, err)
+		logger.Fatalf("%v: cannot create resolver against %s: %v", z.Name(), zone.Primary, err)
 	}
 	defer r.Close()
 
 	// try to load from cache if we have it
-	if conf.DbFile != "" {
-		if err = conf.load(); err == nil {
-			zones.Insert(zone, true)
+	if zone.DbFile != "" {
+		if err = zone.load(); err == nil {
+			zones.Insert(z, true)
 			live = true
 		}
 	}
 	if !live {
 		logger.Printf(
 			"%v: offline: %v: will transfer from primary @ %v",
-			zone.Name(),
+			z.Name(),
 			err,
-			conf.Primary,
+			zone.Primary,
 		)
 	}
 
@@ -232,25 +232,25 @@ func (conf *Zone) secondaryZone(zones *ns.Zones, res *resolver.Resolver) {
 		if now.Sub(success) > expire {
 			logger.Printf(
 				"%v: offline: successful refresh beyond expire time of %v",
-				zone.Name(),
+				z.Name(),
 				expire,
 			)
 			if live {
-				zones.Offline(zone)
+				zones.Offline(z)
 				live = false
 			}
 		}
 
-		ok, refresh := pollSecondary(ctx, conf, zone, r)
+		ok, refresh := pollSecondary(ctx, zone, z, r)
 		if ok {
-			if soa := zone.SOA(); soa != nil {
+			if soa := z.SOA(); soa != nil {
 				expire = soa.RecordData.(*dns.SOARecord).Expire
 			}
 			// fat and happy
 			success = time.Now()
 			if !live {
-				logger.Printf("%v: online", zone.Name())
-				zones.Insert(zone, true)
+				logger.Printf("%v: online", z.Name())
+				zones.Insert(z, true)
 				live = true
 			}
 		}
@@ -262,7 +262,7 @@ func (conf *Zone) secondaryZone(zones *ns.Zones, res *resolver.Resolver) {
 
 		for !trigger && err == nil {
 			select {
-			case <-zone.C:
+			case <-z.ReloadC():
 				if reload != nil {
 					reload.Stop()
 				}
@@ -284,5 +284,5 @@ func (conf *Zone) secondaryZone(zones *ns.Zones, res *resolver.Resolver) {
 		}
 	}
 
-	logger.Printf("%v: zone routine exiting: %v", zone.Name(), err)
+	logger.Printf("%v: zone routine exiting: %v", z.Name(), err)
 }

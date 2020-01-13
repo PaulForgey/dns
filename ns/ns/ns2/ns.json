@@ -1,4 +1,12 @@
 {
+	"ACLs": {
+		"ALL": [ {} ],
+		"internal": [
+			{
+				"CIDR": "192.168.0.0/16"
+			}
+		]
+	},
 	"AutoListeners": true,
 	"Resolver":"udp",
 	"Zones":{
@@ -10,13 +18,18 @@
 			"DbFile":"secondary.example.com.db",
 			"Primary":"192.168.0.10:53",
 			"Class":"IN",
-			"Incremental":true
+			"Incremental":true,
+			"AllowQuery": [ "ALL" ],
+			"AllowTransfer": [ "internal" ],
+			"AllowNotify": [ "internal" ]
 		},
 		"168.192.in-addr.arpa": {
 			"Type":"secondary",
 			"Primary":"192.168.0.10:53",
-			"Class":"IN"
+			"Class":"IN",
+			"AllowQuery": [ "ALL" ],
+			"AllowTransfer": [ "internal" ],
+			"AllowNotify": [ "internal" ]
 		}
-
 	}
 }

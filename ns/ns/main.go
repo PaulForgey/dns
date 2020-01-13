@@ -35,8 +35,12 @@ type Zone struct {
 	Primary          string            `json:",omitempty"` // secondary: primary server to transfer from
 	Incremental      bool              `json:",omitempty"` // secondary: use IXFR
 	Class            dns.RRClass       `json:",omitempty"` // secondary: zone class (has invalid zero value, defaults to ANY)
-	// XXX query, transfer, update ACL
+	AllowQuery       []string
+	AllowTransfer    []string
+	AllowUpdate      []string
+	AllowNotify      []string
 
+	conf   *Conf
 	zone   *ns.Zone
 	cancel context.CancelFunc
 	ctx    context.Context
@@ -44,26 +48,67 @@ type Zone struct {
 }
 
 type REST struct {
-	Addr string // if empty, listens globally on port 80. Probably not what you want
-	// XXX authentication, source address restrictions
+	Addr        string // if empty, listens globally on port 80. Probably not what you want
+	AllowGET    []string
+	AllowPUT    []string
+	AllowDELETE []string
+	AllowPOST   []string
+	AllowPATCH  []string
 	// XXX TLS
 }
 
 type Listener struct {
-	Network string // network name, e.g. tcp, udp4
-	Address string // network address, e.g. 127.0.0.1:53
-	Name    string // optional interface name for interface specific records (does not have to match actual interface)
-	VC      bool   // network is not packet based, that is, it needs to Accept() connections
+	Network       string // network name, e.g. tcp, udp4
+	Address       string // network address, e.g. 127.0.0.1:53
+	InterfaceName string // optional interface name for interface specific records (does not have to match actual interface)
+	VC            bool   // network is not packet based, that is, it needs to Accept() connections
 }
 
-type Conf struct {
-	sync.Mutex
+// all conditions must match in an element, any element must match in a list.
+// an ACE matches if any of the specified conditions match, or if no conditions are specified.
+// that is, an empty ACE means to match all
+type CIDR struct {
+	net.IPNet
+}
 
-	Zones         map[string]*Zone // zones
-	Resolver      string           // udp,udp4,udp6 empty for no recursive resolver
-	REST          *REST            // REST server; omit or set to null to disable
-	Listeners     []Listener       // additional listeners, or a specific set if opting out of automatic interface discovery
-	AutoListeners bool             // true to automatically discover all interfaces to listen on
+func (c *CIDR) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	if _, ipnet, err := net.ParseCIDR(s); err != nil {
+		return err
+	} else {
+		c.IPNet = *ipnet
+	}
+	return nil
+}
+
+func (c CIDR) MarshalJSON() ([]byte, error) {
+	return json.Marshal(c.IPNet.String())
+}
+
+// XXX need user authentication options for REST, and once we have DNSSEC (sigh), keys
+type ACE struct {
+	InterfaceName string `json:",omitempty"` // interface name
+	CIDR          *CIDR  `json:",omitempty"` // CIDR mask, if applicable
+	Resource      string `json:",omitempty"` // URL path, if applicable
+}
+
+// an empty ACL means to deny
+// so to deny all specify and empty ACL, to allow all, specify an ACL with a single empty ACE
+type ACL []ACE
+
+type Conf struct {
+	sync.RWMutex
+
+	ACLs           map[string]ACL   // ACLs by name
+	Zones          map[string]*Zone // zones
+	Resolver       string           // udp,udp4,udp6 empty for no recursive resolver
+	REST           *REST            `json:",omitmepyt"` // REST server; omit or set to null to disable
+	Listeners      []Listener       `json:",omitmepty"` // additional listeners, or a specific set
+	AutoListeners  bool             // true to automatically discover all interfaces to listen on
+	AllowRecursion []string         `json:",omitempty"` // ACLs for recursion
 
 	// XXX global server ACL
 	// XXX mdns zone
@@ -74,8 +119,8 @@ var confFile string
 var cache = resolver.NewRootZone()
 var logger *log.Logger
 
-func (conf *Zone) create(ctx context.Context, name string) error {
-	if conf == nil {
+func (zone *Zone) create(ctx context.Context, conf *Conf, name string) error {
+	if zone == nil {
 		return fmt.Errorf("zone %s has no configuration body", name)
 	}
 
@@ -84,86 +129,92 @@ func (conf *Zone) create(ctx context.Context, name string) error {
 		return err
 	}
 
-	switch conf.Type {
+	switch zone.Type {
 	case PrimaryType, HintType:
-		conf.zone = ns.NewZone(resolver.NewZone(n, conf.Type == HintType))
-		if err := conf.load(); err != nil {
+		zone.zone = ns.NewZone(resolver.NewZone(n, zone.Type == HintType))
+		if err := zone.load(); err != nil {
 			return err
 		}
 
 	case SecondaryType:
-		conf.zone = ns.NewZone(resolver.NewZone(n, false))
-		conf.zone.Primary = conf.Primary
+		zone.zone = ns.NewZone(resolver.NewZone(n, false))
+		zone.zone.Primary = zone.Primary
 
 	case CacheType: // this is builtin and name is '.' regardless of what the configuration says
-		conf.zone = ns.NewZone(cache)
+		zone.zone = ns.NewZone(cache)
 
 	default:
-		return fmt.Errorf("no such type %s", conf.Type)
+		return fmt.Errorf("no such type %s", zone.Type)
 	}
 
-	conf.ctx, conf.cancel = context.WithCancel(ctx)
+	zone.zone.AllowQuery = conf.Access(&zone.AllowQuery)
+	zone.zone.AllowUpdate = conf.Access(&zone.AllowUpdate)
+	zone.zone.AllowTransfer = conf.Access(&zone.AllowTransfer)
+	zone.zone.AllowNotify = conf.Access(&zone.AllowNotify)
+	zone.conf = conf
+	zone.ctx, zone.cancel = context.WithCancel(ctx)
 	return nil
 }
 
-func (conf *Zone) load() error {
-	if conf.DbFile == "" {
+func (zone *Zone) load() error {
+	if zone.DbFile == "" {
 		return nil
 	}
-	zone := conf.zone
+	z := zone.zone
 
-	c, err := dns.NewTextFileReader(conf.DbFile, zone.Name())
+	c, err := dns.NewTextFileReader(zone.DbFile, z.Name())
 	if err != nil {
 		return err
 	}
 
-	err = zone.Decode("", false, c)
+	err = z.Decode("", false, c)
 	if err != nil {
 		return err
 	}
 
-	for iface, dbfile := range conf.InterfaceDbFiles {
+	for iface, dbfile := range zone.InterfaceDbFiles {
 		// if this is a secondary zone, interface specific records will be lost on first successful transfer
-		c, err := dns.NewTextFileReader(dbfile, zone.Name())
+		c, err := dns.NewTextFileReader(dbfile, z.Name())
 		if err != nil {
 			return fmt.Errorf("interface %s: %w", iface, err)
 		}
-		err = zone.Decode(iface, false, c)
+		err = z.Decode(iface, false, c)
 		if err != nil {
 			return err
 		}
-		logger.Printf("%s:%v: loaded from %s", iface, zone.Name(), dbfile)
+		logger.Printf("%s:%v: loaded from %s", iface, z.Name(), dbfile)
 	}
 
-	logger.Printf("%v: loaded from %s", zone.Name(), conf.DbFile)
+	logger.Printf("%v: loaded from %s", z.Name(), zone.DbFile)
 	return nil
 }
 
-func (conf *Zone) run(zones *ns.Zones, res *resolver.Resolver) {
-	conf.wg.Add(1)
+func (zone *Zone) run(zones *ns.Zones, res *resolver.Resolver) {
+	zone.wg.Add(1)
 	go func() {
-		switch conf.Type {
+		switch zone.Type {
 		case PrimaryType:
-			conf.primaryZone(zones, res)
+			zone.primaryZone(zones, res)
 
 		case SecondaryType:
-			conf.secondaryZone(zones, res)
+			zone.secondaryZone(zones, res)
 
 		default:
-			<-conf.ctx.Done()
+			<-zone.ctx.Done()
 		}
 
-		zones.Remove(conf.zone)
-		conf.cancel()
-		conf.wg.Done()
+		zones.Remove(zone.zone)
+		zone.cancel()
+		zone.wg.Done()
 	}()
 }
 
-func (conf *Zone) wait() {
-	conf.wg.Wait()
+func (zone *Zone) wait() {
+	zone.wg.Wait()
 }
 
-func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, zones *ns.Zones, res *resolver.Resolver) {
+func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zones *ns.Zones, res *resolver.Resolver) {
+	allowRecursion := conf.Access(&conf.AllowRecursion)
 	if l.VC {
 		c, err := net.Listen(l.Network, l.Address)
 		if err != nil {
@@ -171,7 +222,7 @@ func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, zones *ns.Zones,
 			return
 		}
 
-		logger.Printf("%s: listening %s %v", l.Name, l.Network, l.Address)
+		logger.Printf("%s: listening %s %v", l.InterfaceName, l.Network, l.Address)
 		closer := make(chan struct{})
 		go func() {
 			select {
@@ -198,8 +249,8 @@ func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, zones *ns.Zones,
 				wg.Add(1)
 				go func() {
 					conn := dnsconn.NewConnection(a, l.Network)
-					conn.Interface = l.Name
-					s := ns.NewServer(logger, conn, zones, res)
+					conn.Interface = l.InterfaceName
+					s := ns.NewServer(logger, conn, zones, res, allowRecursion)
 					s.Serve(ctx)
 					wg.Done()
 					close(closer)
@@ -219,14 +270,14 @@ func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, zones *ns.Zones,
 			nc = unix
 		} else {
 			c.Close()
-			logger.Printf("%s: network type %s is not udp or unix", l.Name, l.Network)
+			logger.Printf("%s: network type %s is not udp or unix", l.InterfaceName, l.Network)
 		}
 
 		if nc != nil {
-			logger.Printf("%s: listening %s %v", l.Name, l.Network, l.Address)
+			logger.Printf("%s: listening %s %v", l.InterfaceName, l.Network, l.Address)
 			conn := dnsconn.NewConnection(nc, l.Network)
-			conn.Interface = l.Name
-			s := ns.NewServer(logger, conn, zones, res)
+			conn.Interface = l.InterfaceName
+			s := ns.NewServer(logger, conn, zones, res, allowRecursion)
 			s.Serve(ctx)
 			conn.Close()
 		}
@@ -278,7 +329,7 @@ func main() {
 
 	// load all data before running
 	for name, c := range conf.Zones {
-		err := c.create(ctx, name)
+		err := c.create(ctx, &conf, name)
 		if err != nil {
 			logger.Fatalf("%s: cannot create zone: %v", name, err)
 		}
@@ -342,18 +393,19 @@ func main() {
 				if ip.To4() != nil {
 					udp, tcp = "udp4", "tcp4"
 				}
+				address := net.JoinHostPort(ip.String(), "53")
 				conf.Listeners = append(conf.Listeners,
 					Listener{
-						Network: udp,
-						Address: net.JoinHostPort(ip.String(), "53"),
-						Name:    ifi.Name,
-						VC:      false,
+						Network:       udp,
+						Address:       address,
+						InterfaceName: ifi.Name,
+						VC:            false,
 					},
 					Listener{
-						Network: tcp,
-						Address: net.JoinHostPort(ip.String(), "53"),
-						Name:    ifi.Name,
-						VC:      true,
+						Network:       tcp,
+						Address:       address,
+						InterfaceName: ifi.Name,
+						VC:            true,
 					},
 				)
 			}
@@ -362,7 +414,7 @@ func main() {
 	for _, l := range conf.Listeners {
 		wg.Add(1)
 		go func(l Listener) {
-			l.run(ctx, wg, zones, res)
+			l.run(ctx, wg, &conf, zones, res)
 			wg.Done()
 		}(l)
 	}

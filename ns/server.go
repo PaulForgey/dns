@@ -17,20 +17,32 @@ var ErrNoSOA = errors.New("zone has no SOA")
 var ErrNoNS = errors.New("zone has no NS records")
 var ErrNoNSAddrs = errors.New("zone has no resolvable hosts for NS records")
 
+type Access interface {
+	Check(from net.Addr, iface string, resource string) bool
+}
+
 type Server struct {
-	logger *log.Logger
-	conn   *dnsconn.Connection
-	zones  *Zones
-	res    *resolver.Resolver
+	logger         *log.Logger
+	conn           *dnsconn.Connection
+	zones          *Zones
+	res            *resolver.Resolver
+	allowRecursion Access
 }
 
 // NewServer creates a server instance
-func NewServer(logger *log.Logger, conn *dnsconn.Connection, zones *Zones, res *resolver.Resolver) *Server {
+func NewServer(
+	logger *log.Logger,
+	conn *dnsconn.Connection,
+	zones *Zones,
+	res *resolver.Resolver,
+	allowRecursion Access,
+) *Server {
 	return &Server{
-		logger: logger,
-		conn:   conn,
-		zones:  zones,
-		res:    res,
+		logger:         logger,
+		conn:           conn,
+		zones:          zones,
+		res:            res,
+		allowRecursion: allowRecursion,
 	}
 }
 
@@ -70,11 +82,17 @@ func (s *Server) Serve(ctx context.Context) error {
 			if zone = s.zones.Zone(q.QName); zone != nil {
 				switch msg.Opcode {
 				case dns.Update:
-					// XXX access control for update
+					if zone.AllowUpdate == nil || !zone.AllowUpdate.Check(from, s.conn.Interface, "") {
+						answer(s.conn, dns.Refused, true, msg, from)
+						continue
+					}
 					s.update(ctx, msg, from, zone)
 
 				case dns.Notify:
-					// XXX access control for notify
+					if zone.AllowNotify == nil || !zone.AllowNotify.Check(from, s.conn.Interface, "") {
+						answer(s.conn, dns.Refused, true, msg, from)
+						continue
+					}
 					s.notify(ctx, msg, from, zone)
 				}
 			}
@@ -83,13 +101,19 @@ func (s *Server) Serve(ctx context.Context) error {
 			switch q.QType {
 			case dns.AXFRType, dns.IXFRType:
 				if zone = s.zones.Zone(q.QName); zone != nil {
-					// XXX access control for zone transfers
+					if zone.AllowTransfer == nil || !zone.AllowTransfer.Check(from, s.conn.Interface, "") {
+						answer(s.conn, dns.Refused, true, msg, from)
+						continue
+					}
 					s.ixfr(ctx, msg, from, zone)
 				}
 
 			default:
 				if zone, _ = s.zones.Find(q.QName).(*Zone); zone != nil {
-					// XXX access control for queries
+					if zone.AllowQuery == nil || !zone.AllowQuery.Check(from, s.conn.Interface, "") {
+						answer(s.conn, dns.Refused, true, msg, from)
+						continue
+					}
 					s.query(ctx, msg, from, zone)
 				}
 			}

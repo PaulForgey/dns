@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -25,7 +26,12 @@ const (
 
 type RestServer struct {
 	http.Server
-	ctx context.Context
+	ctx         context.Context
+	allowGET    ns.Access
+	allowPUT    ns.Access
+	allowDELETE ns.Access
+	allowPOST   ns.Access
+	allowPATCH  ns.Access
 
 	Conf           *Conf
 	Zones          *ns.Zones
@@ -42,6 +48,54 @@ func (rl *requestLogger) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rl.h.ServeHTTP(w, r)
 }
 
+type requestAuth struct {
+	h http.Handler
+	s *RestServer
+}
+
+func (ra *requestAuth) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	auth := false
+
+	var ip net.IP
+	var addr net.Addr
+
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil {
+		ip = net.ParseIP(host)
+	}
+	if ip == nil {
+		logger.Printf("cannot determine source addr of %s: %v", r.RemoteAddr, err)
+	} else {
+		addr = &net.IPAddr{
+			IP: ip,
+		}
+	}
+	// if addr is nil at this point and an ACE needs the ip, the check will deny
+
+	switch r.Method {
+	case http.MethodGet:
+		auth = ra.s.allowGET.Check(addr, "", r.URL.Path)
+	case http.MethodPut:
+		auth = ra.s.allowPUT.Check(addr, "", r.URL.Path)
+	case http.MethodDelete:
+		auth = ra.s.allowDELETE.Check(addr, "", r.URL.Path)
+	case http.MethodPost:
+		auth = ra.s.allowPOST.Check(addr, "", r.URL.Path)
+	case http.MethodPatch:
+		auth = ra.s.allowPATCH.Check(addr, "", r.URL.Path)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	if auth {
+		ra.h.ServeHTTP(w, r)
+	} else {
+		logger.Printf("denying %s %v from %s", r.Method, r.URL, r.RemoteAddr)
+		w.WriteHeader(http.StatusUnauthorized)
+	}
+}
+
 func addHandler(mux *http.ServeMux, path string, h http.Handler) {
 	if strings.HasSuffix(path, "/") {
 		mux.Handle(path, http.StripPrefix(path, h))
@@ -51,6 +105,12 @@ func addHandler(mux *http.ServeMux, path string, h http.Handler) {
 }
 
 func (s *RestServer) Serve(ctx context.Context) {
+	s.allowGET = s.Conf.Access(&s.Conf.REST.AllowGET)
+	s.allowPUT = s.Conf.Access(&s.Conf.REST.AllowPUT)
+	s.allowDELETE = s.Conf.Access(&s.Conf.REST.AllowDELETE)
+	s.allowPOST = s.Conf.Access(&s.Conf.REST.AllowPOST)
+	s.allowPATCH = s.Conf.Access(&s.Conf.REST.AllowPATCH)
+
 	h := http.NewServeMux()
 
 	addHandler(h, zoneReload, http.HandlerFunc(s.doZoneReload))
@@ -58,7 +118,7 @@ func (s *RestServer) Serve(ctx context.Context) {
 	addHandler(h, zoneData, http.HandlerFunc(s.doZoneData))
 	addHandler(h, shutdown, http.HandlerFunc(s.doShutdown))
 
-	s.Handler = &requestLogger{h}
+	s.Handler = &requestAuth{&requestLogger{h}, s}
 	s.ErrorLog = logger
 	s.ctx = ctx
 
@@ -138,7 +198,7 @@ func (s *RestServer) doZoneConf(w http.ResponseWriter, r *http.Request) {
 			err = errors.New("DbFile may not be specified")
 		}
 		if err == nil {
-			err = c.create(s.ctx, path)
+			err = c.create(s.ctx, s.Conf, path)
 		}
 		if err != nil {
 			w.WriteHeader(http.StatusBadRequest)

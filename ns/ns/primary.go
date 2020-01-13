@@ -5,18 +5,18 @@ import (
 	"tessier-ashpool.net/dns/resolver"
 )
 
-func (conf *Zone) primaryZone(zones *ns.Zones, res *resolver.Resolver) {
+func (zone *Zone) primaryZone(zones *ns.Zones, res *resolver.Resolver) {
 	var err error
 
-	ctx := conf.ctx
-	zone := conf.zone
+	ctx := zone.ctx
+	z := zone.zone
 
-	s := ns.NewServer(logger, nil, zones, res)
+	s := ns.NewServer(logger, nil, zones, res, zone.conf.Access(&zone.conf.AllowRecursion))
 
 	for err == nil {
-		err = s.SendNotify(ctx, zone)
+		err = s.SendNotify(ctx, z)
 		if err != nil {
-			logger.Printf("%v: failed to send NOTIFY: %v", zone.Name(), err)
+			logger.Printf("%v: failed to send NOTIFY: %v", z.Name(), err)
 			err = nil // just a warning
 		}
 
@@ -24,9 +24,9 @@ func (conf *Zone) primaryZone(zones *ns.Zones, res *resolver.Resolver) {
 		case <-ctx.Done():
 			err = ctx.Err()
 
-		case <-zone.C:
-			err = conf.load()
+		case <-z.ReloadC():
+			err = zone.load()
 		}
 	}
-	logger.Printf("%v: zone routine exiting: %v", zone.Name(), err)
+	logger.Printf("%v: zone routine exiting: %v", z.Name(), err)
 }

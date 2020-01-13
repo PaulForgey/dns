@@ -1,12 +1,26 @@
 {
+	"ACLs": {
+		"ALL": [ {} ],
+		"internal": [
+			{
+				"CIDR": "192.168.0.0/16"
+			}
+		]
+	},
 	"AutoListeners": true,
 	"REST": {
-		"Addr": ":5380"
+		"Addr": ":5380",
+		"AllowGET": [ "ALL" ],
+		"AllowPUT": [ "ALL" ],
+		"AllowDELETE": [ "ALL" ],
+		"AllowPOST": [ "ALL" ],
+		"AllowPATCH": [ "ALL" ]
 	},
 	"Resolver": "udp",
 	"Zones":{
 		".": {
-			"Type": "cache"
+			"Type": "cache",
+			"AllowQuery": [ "ALL" ]
 		},
 		"example.com": {
 			"Type": "primary",
@@ -14,23 +28,35 @@
 			"InterfaceDbFiles": {
 				"lo": "lo.example.com.db",
 				"eth0": "eth0.example.com.db"
-			}
+			},
+			"AllowQuery": [ "ALL" ],
+			"AllowUpdate": [ "ALL" ],
+			"AllowTransfer": [ "ALL" ],
+			"AllowNotify": [ "ALL" ]
 		},
 		"168.192.in-addr.arpa": {
 			"Type": "primary",
-			"DbFile": "168.192.db"
+			"DbFile": "168.192.db",
+			"AllowQuery": [ "ALL" ],
+			"AllowUpdate": [ "ALL" ],
+			"AllowTransfer": [ "ALL" ],
+			"AllowNotify": [ "ALL" ]
 		},
 		"localhost": {
 			"Type": "primary",
-			"DbFile": "localhost.db"
+			"DbFile": "localhost.db",
+			"AllowQuery": [ "ALL" ]
 		},
 		"127.in-addr.apra": {
 			"Type": "primary",
-			"DbFile": "127.db"
+			"DbFile": "127.db",
+			"AllowQuery": [ "ALL" ]
 		},
 		"0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa": {
 			"Type": "primary",
-			"DbFile": "1.ip6.db"
+			"DbFile": "1.ip6.db",
+			"AllowQuery": [ "ALL" ]
 		}
-	}
+	},
+	"AllowRecursion" : [ "ALL" ]
 }

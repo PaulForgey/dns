@@ -11,34 +11,38 @@ import (
 type Zones struct {
 	sync.RWMutex
 	zones map[string]*Zone
-
-	// XXX global unicast server options
 }
 
 // the Zone type is a specialization of the resolver Zone with additional information needed by the server
 type Zone struct {
 	*resolver.Zone
-	Primary string
+	Primary       string
+	AllowQuery    Access
+	AllowUpdate   Access
+	AllowTransfer Access
+	AllowNotify   Access
 
 	online bool
-
-	C chan bool // reload
-	// XXX access control
+	c      chan bool // reload
 }
 
 func NewZone(z *resolver.Zone) *Zone {
 	return &Zone{
 		Zone: z,
-		C:    make(chan bool, 1),
+		c:    make(chan bool, 1),
 	}
 }
 
 func (z *Zone) Reload() {
 	select {
-	case z.C <- true:
+	case z.c <- true:
 		// don't block
 	default:
 	}
+}
+
+func (z *Zone) ReloadC() <-chan bool {
+	return z.c
 }
 
 // NewZones creates an empty Zones
