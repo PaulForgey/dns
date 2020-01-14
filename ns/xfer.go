@@ -53,7 +53,7 @@ func (s *Server) ixfr(ctx context.Context, msg *dns.Message, to net.Addr, zone *
 	msg.AA = true
 
 	batch := make([]*dns.Record, 0, 64)
-	err := zone.Dump(serial, s.conn.Interface, q.QClass, func(r *dns.Record) error {
+	_, err := zone.Dump(serial, s.conn.Interface, q.QClass, func(r *dns.Record) error {
 		var err error
 		batch = append(batch, r)
 		if len(batch) == cap(batch) {

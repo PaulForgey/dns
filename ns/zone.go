@@ -23,26 +23,25 @@ type Zone struct {
 	AllowNotify   Access
 
 	online bool
-	c      chan bool // reload
+	r      chan bool // reload
 }
 
 func NewZone(z *resolver.Zone) *Zone {
 	return &Zone{
 		Zone: z,
-		c:    make(chan bool, 1),
+		r:    make(chan bool, 1),
 	}
 }
 
 func (z *Zone) Reload() {
 	select {
-	case z.c <- true:
-		// don't block
-	default:
+	case z.r <- true:
+	default: // don't block
 	}
 }
 
 func (z *Zone) ReloadC() <-chan bool {
-	return z.c
+	return z.r
 }
 
 // NewZones creates an empty Zones

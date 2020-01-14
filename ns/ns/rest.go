@@ -238,7 +238,7 @@ func (s *RestServer) doZoneData(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		w.Header().Set("Content-Type", "text/plain")
 
-		err := zone.Dump(uint32(serial), key, dns.AnyClass, func(r *dns.Record) error {
+		_, err := zone.Dump(uint32(serial), key, dns.AnyClass, func(r *dns.Record) error {
 			_, err := fmt.Fprintf(w, "%v\n", r)
 			return err
 		})

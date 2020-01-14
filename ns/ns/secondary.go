@@ -1,12 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"context"
-	"fmt"
 	"io"
 	"math/rand"
-	"os"
 	"time"
 
 	"tessier-ashpool.net/dns"
@@ -77,49 +74,7 @@ func transfer(ctx context.Context, zone *Zone, z *ns.Zone, soa *dns.Record, rrcl
 	}
 
 	logger.Printf("%v: successfully transferred zone from %s", z.Name(), zone.Primary)
-
-	if zone.DbFile != "" {
-		tmpfile := fmt.Sprintf("%s-%d", zone.DbFile, os.Getpid())
-		out, err := os.Create(tmpfile)
-		if err != nil {
-			logger.Printf(
-				"%v: failed to create output db file %s: %v",
-				z.Name(),
-				tmpfile,
-				err,
-			)
-			return nil // just a warning
-		}
-
-		bw := bufio.NewWriter(out)
-		w := dns.NewTextWriter(bw)
-
-		err = z.Dump(0, "", dns.AnyClass, func(r *dns.Record) error {
-			return w.Encode(r)
-		})
-		if err != nil {
-			return err // more than a warning, something is wrong
-		}
-
-		if err := bw.Flush(); err != nil {
-			return err
-		}
-		out.Close()
-
-		err = os.Rename(tmpfile, zone.DbFile)
-		if err != nil {
-			logger.Printf(
-				"%v: failed to rename %s->%s: %v",
-				z.Name(),
-				tmpfile,
-				zone.DbFile,
-				err,
-			)
-			return nil
-		}
-	}
-
-	return nil
+	return zone.save()
 }
 
 func pollSecondary(ctx context.Context, zone *Zone, z *ns.Zone, r *resolver.Resolver) (bool, time.Duration) {

@@ -177,8 +177,11 @@ func (c *Cache) Enter(at time.Time, merge bool, records []*dns.Record) {
 func (c *Cache) Remove(now time.Time, auth bool, record *dns.Record) bool {
 	nkey := record.RecordHeader.Name.Key()
 	rrmap, ok := c.cache[nkey]
-	if !ok {
-		return false // shortcut: stop here
+	if !ok || len(rrmap) == 0 {
+		if c.parent != nil {
+			return c.parent.Remove(now, auth, record)
+		}
+		return false
 	}
 	if auth && (record.Type() == dns.NSType || record.Type() == dns.SOAType) {
 		return false // shortcut: attempt to snipe auth record
@@ -366,12 +369,13 @@ func (c *Cache) Get(now time.Time, name dns.Name, rrtype dns.RRType, rrclass dns
 }
 
 // Clone peels off a copy of the zone for checkpointing, zone transfers, etc.
+// If shallow is true, any parents of the source cache are not consulted (although they still are from exclude)
 // If exclude is not nil, records present will be excluded from the result.
 // The copied records are only authoritative ones. The RecordData fields of the records are referenced, not copied.
 // The set of returned records is also from the point of view of the cache shadowing its parent. The cloned cache
 // thus has no parent.
 // SOA records are omitted.
-func (c *Cache) Clone(exclude *Cache) *Cache {
+func (c *Cache) Clone(shallow bool, exclude *Cache) *Cache {
 	copyIn := func(to, from cacheMap) {
 		for nkey, frrmap := range from {
 			trrmap, ok := to[nkey]
@@ -425,8 +429,10 @@ func (c *Cache) Clone(exclude *Cache) *Cache {
 
 	dup := NewCache(nil)
 	copyIn(dup.cache, c.cache)
-	for p := c.parent; p != nil; p = p.parent {
-		copyIn(dup.cache, p.cache)
+	if !shallow {
+		for p := c.parent; p != nil; p = p.parent {
+			copyIn(dup.cache, p.cache)
+		}
 	}
 
 	return dup

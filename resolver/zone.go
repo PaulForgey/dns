@@ -15,6 +15,8 @@ var ErrMartian = errors.New("record does not have suffix of zone")
 var ErrSOA = errors.New("SOA records cannot be interface specific")
 var ErrIxfr = errors.New("SOA does not match for IXFR")
 var ErrAxfr = errors.New("Mismatched or unexpected SOA values")
+var ErrNoSOA = errors.New("zone has no SOA record")
+var ErrNoKey = errors.New("zone has no record with this key")
 
 // the ZoneAuthority interface tells a resolver how to look up authoritative records or delegations
 type ZoneAuthority interface {
@@ -148,8 +150,8 @@ func (z *Zone) Load(key string, clear bool, next func() (*dns.Record, error)) er
 				if _, ok := rec.RecordData.(*dns.SOARecord); ok {
 					z.soa = rec
 				}
+				continue
 			}
-
 			records = append(records, rec)
 		}
 
@@ -161,6 +163,9 @@ func (z *Zone) Load(key string, clear bool, next func() (*dns.Record, error)) er
 		}
 	}
 
+	if z.soa != nil {
+		db.Enter(time.Time{}, false, []*dns.Record{z.soa})
+	}
 	db.Enter(time.Time{}, false, records)
 	return nil
 }
@@ -173,6 +178,43 @@ func (z *Zone) Decode(key string, clear bool, c dns.Codec) error {
 			return nil, err
 		}
 		return r, nil
+	})
+}
+
+// Save writes a shallow copy of the zone for the given key
+func (z *Zone) Save(key string, next func(r *dns.Record) error) error {
+	z.lk.RLock()
+	soa := z.soa
+	if soa == nil {
+		z.lk.RUnlock()
+		return ErrNoSOA
+	}
+	for z.updated {
+		// insure we are left holding a read lock with up to date SOA
+		z.lk.RUnlock()
+		z.lk.Lock()
+		soa = z.soa_locked()
+		z.lk.Unlock()
+		z.lk.RLock()
+	}
+	db, ok := z.keys[key]
+	if !ok {
+		z.lk.RUnlock()
+		return ErrNoKey // this is a shallow operation, so wrong key is an error
+	}
+	data := db.Clone(true, nil)
+	z.lk.RUnlock()
+
+	if err := next(soa); err != nil {
+		return err
+	}
+	return data.Enumerate(dns.AnyClass, next)
+}
+
+// Encode calls Save using codec as convenience
+func (z *Zone) Encode(key string, c dns.Codec) error {
+	return z.Save(key, func(r *dns.Record) error {
+		return c.Encode(r)
 	})
 }
 
@@ -320,9 +362,16 @@ func (z *Zone) Enter(records []*dns.Record) {
 // Dump returns all records for a zone, optionally since a given soa.
 // If serial is 0 or the zone does not have history for serial, a full result set is returned, otherwise an incremental result.
 // The current serial will be snapshotted for future history if it was not already.
-func (z *Zone) Dump(serial uint32, key string, rrclass dns.RRClass, next func(*dns.Record) error) error {
+func (z *Zone) Dump(serial uint32, key string, rrclass dns.RRClass, next func(*dns.Record) error) (uint32, error) {
+	var toSerial uint32
+
 	z.lk.Lock()
 	soa := z.soa_locked()
+	if soa == nil {
+		z.lk.Unlock()
+		return 0, ErrNoSOA
+	}
+	toSerial = soa.RecordData.(*dns.SOARecord).Serial
 	db, ok := z.keys[key]
 	if !ok {
 		key = ""
@@ -353,10 +402,10 @@ func (z *Zone) Dump(serial uint32, key string, rrclass dns.RRClass, next func(*d
 			}
 
 			last := prior.collapse()
-			remove = last.Clone(db)
-			add = db.Clone(last)
+			remove = last.Clone(false, db)
+			add = db.Clone(false, last)
 		} else {
-			add = db.Clone(nil)
+			add = db.Clone(false, nil)
 		}
 
 		snap = &snapshot{
@@ -379,34 +428,34 @@ func (z *Zone) Dump(serial uint32, key string, rrclass dns.RRClass, next func(*d
 		if from == snap {
 			from = nil
 		} else if from == nil {
-			data = db.Clone(nil)
+			data = db.Clone(false, nil)
 		}
 	} else {
-		data = db.Clone(nil)
+		data = db.Clone(false, nil)
 	}
 	z.lk.Unlock() // done holding on to the zone data; can now answer queries while transferring. snapshots still locked
 
 	if err := next(soa); err != nil {
-		return err
+		return toSerial, err
 	}
 
 	if from != nil {
 		if err := snap.xfer(from, rrclass, next); err != nil {
-			return err
+			return toSerial, err
 		}
 		if err := next(soa); err != nil {
-			return err
+			return toSerial, err
 		}
 	} else if data != nil {
 		if err := data.Enumerate(rrclass, next); err != nil {
-			return err
+			return toSerial, err
 		}
 		if err := next(soa); err != nil {
-			return err
+			return toSerial, err
 		}
 	}
 
-	return nil
+	return toSerial, nil
 }
 
 // Xfer parses a zone transfer.
@@ -417,7 +466,7 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 
 	var db *Cache
 	if ixfr {
-		db = z.db.Clone(nil)
+		db = z.db.Clone(false, nil)
 	} else {
 		db = NewCache(nil)
 	}
@@ -546,7 +595,7 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 
 	soa := z.soa
 	if soa == nil {
-		return false, fmt.Errorf("%w: zone %v has no SOA", dns.NotAuth, z.name)
+		return false, ErrNoSOA
 	}
 
 	// process the prereq
