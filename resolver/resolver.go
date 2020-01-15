@@ -116,11 +116,8 @@ func (r *Resolver) Transact(ctx context.Context, dest net.Addr, msg *dns.Message
 			outSize = dnsconn.MaxMessageSize
 		}
 		msg.EDNS = &dns.Record{
-			RecordHeader: dns.RecordHeader{
-				MaxMessageSize: uint16(msgSize),
-				Version:        0,
-			},
-			RecordData: &dns.EDNSRecord{},
+			H: dns.NewEDNSHeader(uint16(msgSize), 0, 0, 0),
+			D: &dns.EDNSRecord{},
 		}
 	}
 	if err := r.conn.WriteTo(msg, dest, outSize); err != nil {
@@ -292,7 +289,7 @@ func (r *Resolver) ResolveIP(
 		return nil, err
 	}
 	for _, r := range a {
-		if ip, ok := r.RecordData.(dns.IPRecordType); ok {
+		if ip, ok := r.D.(dns.IPRecordType); ok {
 			results = append(results, ip)
 		}
 	}
@@ -328,7 +325,7 @@ func (r *Resolver) resolveIP(
 	}
 
 	for _, r := range records {
-		if ip, ok := r.RecordData.(dns.IPRecordType); ok {
+		if ip, ok := r.D.(dns.IPRecordType); ok {
 			results = append(results, ip)
 		}
 	}
@@ -368,14 +365,14 @@ func (r *Resolver) Resolve(
 			var cnames []dns.Name
 
 			for _, r := range result {
-				seen[r.RecordHeader.Name.Key()] = true // seen in answer
+				seen[r.Name().Key()] = true // seen in answer
 			}
 
 			// do not chase names which:
 			// 1) we already chased
 			// 2) had their names already provided in this result or a prior one
 			for _, r := range result {
-				if c, ok := r.RecordData.(*dns.CNAMERecord); ok {
+				if c, ok := r.D.(*dns.CNAMERecord); ok {
 					if !seen[c.Name.Key()] {
 						seen[c.Name.Key()] = true // chased
 						cnames = append(cnames, c.Name)
@@ -445,14 +442,14 @@ func (r *Resolver) resolve(
 			var aname dns.Name
 
 			for _, record := range append(a, ns...) {
-				if auth, ok := record.RecordData.(dns.NSRecordType); ok {
+				if auth, ok := record.D.(dns.NSRecordType); ok {
 					if len(aname) == 0 {
-						aname = record.RecordHeader.Name
-					} else if !aname.Equal(record.RecordHeader.Name) {
+						aname = record.Name()
+					} else if !aname.Equal(record.Name()) {
 						return nil, fmt.Errorf(
 							"%w: authority section contains %v != %v",
 							ErrLameDelegation,
-							record.RecordHeader.Name,
+							record.Name(),
 							aname,
 						)
 					}
@@ -520,7 +517,7 @@ func (r *Resolver) resolve(
 
 	if rrtype == dns.AnyType && len(a) > 0 {
 		for _, rr := range a {
-			if hinfo, ok := rr.RecordData.(*dns.HINFORecord); ok && hinfo.CPU == "RFC8482" {
+			if hinfo, ok := rr.D.(*dns.HINFORecord); ok && hinfo.CPU == "RFC8482" {
 				a, err = r.resolve(ctx, key, name, dns.AType, rrclass)
 				if err != nil {
 					return nil, err
@@ -528,7 +525,7 @@ func (r *Resolver) resolve(
 				// do not ask for the others if CNAME'd
 				cname := false
 				for _, ar := range a {
-					_, cname = ar.RecordData.(*dns.CNAMERecord)
+					_, cname = ar.D.(*dns.CNAMERecord)
 					if cname {
 						// ..ffs, could have answered _that_ instead in the first place.
 						// see section 4.2 of RFC8482

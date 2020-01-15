@@ -34,62 +34,68 @@ func makeRecordSet(t *testing.T, alt bool) []*dns.Record {
 
 	return []*dns.Record{
 		&dns.Record{
-			RecordHeader: dns.RecordHeader{
-				Name:  nameWithString(t, "tessier-ashpool.net"),
-				Class: dns.INClass,
-				TTL:   10 * time.Second,
-			},
-			RecordData: &dns.NSRecord{
+			H: dns.NewHeader(
+				nameWithString(t, "tessier-ashpool.net"),
+				dns.NSType,
+				dns.INClass,
+				10*time.Second,
+			),
+			D: &dns.NSRecord{
 				Name: nameWithString(t, "ns1.tessier-ashpool.net"),
 			},
 		},
 		&dns.Record{
-			RecordHeader: dns.RecordHeader{
-				Name:  nameWithString(t, "ns1.tessier-ashpool.net"),
-				Class: dns.INClass,
-				TTL:   5 * time.Second,
-			},
-			RecordData: &dns.ARecord{
+			H: dns.NewHeader(
+				nameWithString(t, "ns1.tessier-ashpool.net"),
+				dns.AType,
+				dns.INClass,
+				5*time.Second,
+			),
+			D: &dns.ARecord{
 				Address: adata,
 			},
 		},
 		&dns.Record{
-			RecordHeader: dns.RecordHeader{
-				Name:  nameWithString(t, "ns1.tessier-ashpool.net"),
-				Class: dns.INClass,
-				TTL:   5 * time.Second,
-			},
-			RecordData: &dns.AAAARecord{
+			H: dns.NewHeader(
+				nameWithString(t, "ns1.tessier-ashpool.net"),
+				dns.AAAAType,
+				dns.INClass,
+				5*time.Second,
+			),
+			D: &dns.AAAARecord{
 				Address: aaaadata,
 			},
 		},
 		&dns.Record{
-			RecordHeader: dns.RecordHeader{
-				Name:  nameWithString(t, "ns1.tessier-ashpool.net"),
-				Class: dns.INClass,
-				TTL:   5 * time.Second,
-			},
-			RecordData: &dns.TXTRecord{
+			H: dns.NewHeader(
+				nameWithString(t, "ns1.tessier-ashpool.net"),
+				dns.TXTType,
+				dns.INClass,
+				5*time.Second,
+			),
+			D: &dns.TXTRecord{
 				Text: []string{"text"},
 			},
 		},
 		&dns.Record{
-			RecordHeader: dns.RecordHeader{
-				Name:  nameWithString(t, "host.tessier-ashpool.net"),
-				Class: dns.INClass,
-				TTL:   5 * time.Second,
-			},
-			RecordData: &dns.ARecord{
+			H: dns.NewHeader(
+				nameWithString(t, "host.tessier-ashpool.net"),
+				dns.AType,
+				dns.INClass,
+				5*time.Second,
+			),
+			D: &dns.ARecord{
 				Address: othera,
 			},
 		},
 		&dns.Record{
-			RecordHeader: dns.RecordHeader{
-				Name:  nameWithString(t, "host.tessier-ashpool.net"),
-				Class: dns.INClass,
-				TTL:   5 * time.Second,
-			},
-			RecordData: &dns.ARecord{
+			H: dns.NewHeader(
+				nameWithString(t, "host.tessier-ashpool.net"),
+				dns.AType,
+				dns.INClass,
+				5*time.Second,
+			),
+			D: &dns.ARecord{
 				Address: adata,
 			},
 		},
@@ -110,9 +116,6 @@ func TestCacheEnterAndGet(t *testing.T) {
 	}
 	if len(records) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(records))
-	}
-	if !records[0].RecordHeader.Authoritative {
-		t.Fatalf("should be authoritative")
 	}
 
 	records, err = c.Get(time.Now(), nameWithString(t, "ns1.tessier-ashpool.net"), dns.AnyType, dns.INClass)
@@ -142,8 +145,8 @@ func TestCacheExpire(t *testing.T) {
 		t.Fatalf("expected 1 record, got %d", len(records))
 	}
 	t.Log(records[0])
-	if records[0].RecordHeader.TTL != 5*time.Second {
-		t.Fatalf("TTL=%v, expected 5s", records[0].RecordHeader.TTL)
+	if records[0].H.TTL() != 5*time.Second {
+		t.Fatalf("TTL=%v, expected 5s", records[0].H.TTL())
 	}
 
 	records, _ = c.Get(now, nameWithString(t, "ns1.tessier-ashpool.net"), dns.NSType, dns.INClass)
@@ -177,13 +180,9 @@ func TestCacheOverwrite(t *testing.T) {
 	}
 
 	// should be original record
-	ip := records[0].RecordData.(dns.IPRecordType).IP()
+	ip := records[0].D.(dns.IPRecordType).IP()
 	if !ip.Equal(net.ParseIP("127.0.0.1")) {
 		t.Fatalf("got %v, expected 127.0.0.1", ip)
-	}
-	// should be authoritative
-	if !records[0].RecordHeader.Authoritative {
-		t.Fatalf("should be authoritative")
 	}
 
 	c.Enter(time.Time{}, false, makeRecordSet(t, true))
@@ -196,13 +195,9 @@ func TestCacheOverwrite(t *testing.T) {
 	}
 
 	// should be new record
-	ip = records[0].RecordData.(dns.IPRecordType).IP()
+	ip = records[0].D.(dns.IPRecordType).IP()
 	if !ip.Equal(net.ParseIP("127.0.0.2")) {
 		t.Fatalf("got %v, expected 127.0.0.2", ip)
-	}
-	// should be authoritative
-	if !records[0].RecordHeader.Authoritative {
-		t.Fatalf("should be authoritative")
 	}
 }
 
@@ -210,15 +205,15 @@ func TestNegativeCache(t *testing.T) {
 	c := NewCache(nil)
 	now := time.Now()
 
-	c.Enter(now, true, []*dns.Record{&dns.Record{
-		RecordHeader: dns.RecordHeader{
-			Name:  nameWithString(t, "ns2.tessier-ashpool.net"),
-			TTL:   10 * time.Second,
-			Type:  dns.AType,
-			Class: dns.INClass,
+	c.Enter(now, true, []*dns.Record{
+		&dns.Record{
+			H: dns.NewHeader(
+				nameWithString(t, "ns2.tessier-ashpool.net"),
+				dns.AType,
+				dns.INClass,
+				10*time.Second,
+			),
 		},
-		RecordData: nil,
-	},
 	})
 
 	now = now.Add(5 * time.Second)
@@ -230,14 +225,11 @@ func TestNegativeCache(t *testing.T) {
 	if len(records) != 1 {
 		t.Fatalf("expected 1 record, got %d", len(records))
 	}
-	if records[0].RecordHeader.Authoritative {
-		t.Fatalf("record should not be authoritative")
+	if records[0].H.TTL() != 5*time.Second {
+		t.Fatalf("expected TTL of 5s, got %v", records[0])
 	}
-	if records[0].RecordHeader.TTL != 5*time.Second {
-		t.Fatalf("expected TTL of 5s, got %v", records[0].TTL)
-	}
-	if records[0].RecordData != nil {
-		t.Fatalf("expected nil RecordData, got %v", records[0].RecordData)
+	if records[0].D != nil {
+		t.Fatalf("expected nil D, got %v", records[0].D)
 	}
 }
 
@@ -262,8 +254,8 @@ func TestMerge(t *testing.T) {
 
 	var seen1, seen2 bool
 	for _, r := range records {
-		ip := r.RecordData.(dns.IPRecordType).IP()
-		switch r.RecordHeader.TTL {
+		ip := r.D.(dns.IPRecordType).IP()
+		switch r.H.TTL() {
 		case 2 * time.Second:
 			if !ip.Equal(net.ParseIP("127.0.0.1")) {
 				t.Fatalf("expected 127.0.0.1, got %v", r)
@@ -293,7 +285,7 @@ func TestMerge(t *testing.T) {
 		t.Fatalf("expected 2 records, got %d", len(records))
 	}
 	for _, r := range records {
-		if r.RecordHeader.TTL != 5*time.Second {
+		if r.H.TTL() != 5*time.Second {
 			t.Fatalf("TTL should be 5s, got %v", r)
 		}
 	}
@@ -316,8 +308,8 @@ func TestOverwrite(t *testing.T) {
 	}
 	for _, r := range records {
 		t.Log(r)
-		ip := r.RecordData.(dns.IPRecordType).IP()
-		switch r.RecordHeader.TTL {
+		ip := r.D.(dns.IPRecordType).IP()
+		switch r.H.TTL() {
 		case 5 * time.Second:
 			if !ip.Equal(net.ParseIP("127.0.0.2")) {
 				t.Fatalf("expected 127.0.0.2, got %v", r)
@@ -349,12 +341,13 @@ func testRemove(t *testing.T, entered time.Time) {
 	}
 	// remove the TXT
 	c.Remove(now, false, &dns.Record{
-		RecordHeader: dns.RecordHeader{
-			Name:  name,
-			Type:  dns.TXTType,
-			Class: dns.INClass,
-		},
-		RecordData: nil,
+		H: dns.NewHeader(
+			name,
+			dns.TXTType,
+			dns.INClass,
+			0,
+		),
+		D: nil,
 	})
 	now = now.Add(1 * time.Second)
 	records, err = c.Get(now, name, dns.AnyType, dns.AnyClass)
@@ -366,12 +359,13 @@ func testRemove(t *testing.T, entered time.Time) {
 	}
 	// remove the rest
 	c.Remove(now, false, &dns.Record{
-		RecordHeader: dns.RecordHeader{
-			Name:  name,
-			Type:  dns.AnyType,
-			Class: dns.INClass,
-		},
-		RecordData: nil,
+		H: dns.NewHeader(
+			name,
+			dns.AnyType,
+			dns.INClass,
+			0,
+		),
+		D: nil,
 	})
 	now = now.Add(1 * time.Second)
 	records, err = c.Get(now, name, dns.AnyType, dns.AnyClass)
@@ -390,12 +384,13 @@ func testRemove(t *testing.T, entered time.Time) {
 	}
 	// remove one of the two A records
 	c.Remove(now, false, &dns.Record{
-		RecordHeader: dns.RecordHeader{
-			Name:  name,
-			Type:  dns.AType,
-			Class: dns.INClass,
-		},
-		RecordData: &dns.ARecord{
+		H: dns.NewHeader(
+			name,
+			dns.AType,
+			dns.INClass,
+			0,
+		),
+		D: &dns.ARecord{
 			Address: [4]byte{192, 168, 0, 1},
 		},
 	})
@@ -408,9 +403,9 @@ func testRemove(t *testing.T, entered time.Time) {
 		t.Fatalf("expected 1 record, got %d", len(records))
 	}
 	r := records[0]
-	a, ok := r.RecordData.(*dns.ARecord)
+	a, ok := r.D.(*dns.ARecord)
 	if !ok {
-		t.Fatalf("record is not an A record; got %T", r.RecordData)
+		t.Fatalf("record is not an A record; got %T", r.D)
 	}
 	if bytes.Compare(a.Address[:], []byte{127, 0, 0, 1}) != 0 {
 		t.Fatalf("record is not 127.0.0.1; got %v", a.IP())
@@ -426,11 +421,13 @@ func TestRemove(t *testing.T) {
 
 	c.Enter(time.Time{}, false, makeRecordSet(t, false))
 	c.Remove(now, true, &dns.Record{
-		RecordHeader: dns.RecordHeader{
-			Name:  name,
-			Type:  dns.AnyType,
-			Class: dns.INClass,
-		},
+		H: dns.NewHeader(
+			name,
+			dns.AnyType,
+			dns.INClass,
+			0,
+		),
+		D: nil,
 	})
 	records, err := c.Get(now, name, dns.AnyType, dns.AnyClass)
 	if err != nil {
@@ -440,9 +437,9 @@ func TestRemove(t *testing.T) {
 		t.Fatalf("expected one record, got %d", len(records))
 	}
 	r := records[0]
-	_, ok := r.RecordData.(*dns.NSRecord)
+	_, ok := r.D.(*dns.NSRecord)
 	if !ok {
-		t.Fatalf("expected NS record, got %T", r.RecordData)
+		t.Fatalf("expected NS record, got %T", r.D)
 	}
 }
 

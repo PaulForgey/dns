@@ -92,7 +92,7 @@ func pollSecondary(ctx context.Context, zone *Zone, z *ns.Zone, r *resolver.Reso
 		refresh = time.Hour * 24
 		retry = time.Hour * 2
 	} else {
-		rr := soa.RecordData.(*dns.SOARecord)
+		rr := soa.D.(*dns.SOARecord)
 		refresh = rr.Refresh
 		retry = rr.Retry
 		serial = rr.Serial
@@ -120,7 +120,7 @@ func pollSecondary(ctx context.Context, zone *Zone, z *ns.Zone, r *resolver.Reso
 	}
 	for _, r := range a {
 		var ok bool
-		if _, ok = r.RecordData.(*dns.SOARecord); ok {
+		if _, ok = r.D.(*dns.SOARecord); ok {
 			rsoa = r
 			break
 		}
@@ -134,7 +134,7 @@ func pollSecondary(ctx context.Context, zone *Zone, z *ns.Zone, r *resolver.Reso
 		)
 		return false, retry
 	}
-	if serial != rsoa.RecordData.(*dns.SOARecord).Serial {
+	if serial != rsoa.D.(*dns.SOARecord).Serial {
 		err := transfer(ctx, zone, z, soa, rrclass)
 		if err != nil {
 			logger.Printf(
@@ -198,7 +198,7 @@ func (zone *Zone) secondaryZone(zones *ns.Zones, res *resolver.Resolver) {
 		ok, refresh := pollSecondary(ctx, zone, z, r)
 		if ok {
 			if soa := z.SOA(); soa != nil {
-				expire = soa.RecordData.(*dns.SOARecord).Expire
+				expire = soa.D.(*dns.SOARecord).Expire
 			}
 			// fat and happy
 			success = time.Now()

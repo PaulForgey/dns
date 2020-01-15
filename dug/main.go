@@ -149,12 +149,13 @@ func main() {
 		if rrtype == dns.IXFRType {
 			msg.Authority = []*dns.Record{
 				&dns.Record{
-					RecordHeader: dns.RecordHeader{
-						Name:  name,
-						Type:  dns.SOAType,
-						Class: rrclass,
-					},
-					RecordData: &dns.SOARecord{
+					H: dns.NewHeader(
+						name,
+						dns.SOAType,
+						rrclass,
+						0,
+					),
+					D: &dns.SOARecord{
 						Serial: uint32(serial),
 					},
 				},
@@ -170,7 +171,7 @@ func main() {
 		}
 
 		if len(msg.Answers) > 0 {
-			soa, _ := msg.Answers[0].RecordData.(*dns.SOARecord)
+			soa, _ := msg.Answers[0].D.(*dns.SOARecord)
 			if soa != nil {
 				fmt.Println(msg.Answers[0])
 				msg.Answers = msg.Answers[1:]
@@ -189,7 +190,7 @@ func main() {
 
 						case dns.IXFRType:
 							if isoa == nil {
-								isoa = record.RecordData.(*dns.SOARecord)
+								isoa = record.D.(*dns.SOARecord)
 								if isoa.Serial == soa.Serial {
 									soa = nil
 								}

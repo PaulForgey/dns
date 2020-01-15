@@ -73,13 +73,13 @@ func compareZone(t *testing.T, z1, z2 *Zone) {
 	})
 
 	for _, r := range r1 {
-		r2, _, _ := z2.Lookup("", r.RecordHeader.Name, r.Type(), r.Class())
+		r2, _, _ := z2.Lookup("", r.Name(), r.Type(), r.Class())
 		if len(r2) < 1 {
-			t.Fatalf("z2 did not contain %v %v %v", r.RecordHeader.Name, r.Type(), r.Class())
+			t.Fatalf("z2 did not contain %v %v %v", r.Name(), r.Type(), r.Class())
 		}
 		found := false
 		for _, rr := range r2 {
-			if reflect.DeepEqual(rr.RecordData, r.RecordData) {
+			if reflect.DeepEqual(rr.D, r.D) {
 				found = true
 				break
 			}
@@ -137,7 +137,7 @@ func parseTransfer(t *testing.T, serial uint32, records []*dns.Record) []*zoneDe
 	if len(records) < 1 {
 		t.Fatal("no records present")
 	}
-	soa, ok := records[0].RecordData.(*dns.SOARecord)
+	soa, ok := records[0].D.(*dns.SOARecord)
 	if !ok {
 		t.Fatalf("not soa record, got %v", records[0])
 	}
@@ -149,7 +149,7 @@ func parseTransfer(t *testing.T, serial uint32, records []*dns.Record) []*zoneDe
 	}
 
 	last := records[len(records)-1]
-	soa, ok = last.RecordData.(*dns.SOARecord)
+	soa, ok = last.D.(*dns.SOARecord)
 	if !ok {
 		t.Fatalf("not soa record, got %v", last)
 	}
@@ -162,7 +162,7 @@ func parseTransfer(t *testing.T, serial uint32, records []*dns.Record) []*zoneDe
 	var from bool
 
 	for _, r := range records[1 : len(records)-1] {
-		soa, ok := r.RecordData.(*dns.SOARecord)
+		soa, ok := r.D.(*dns.SOARecord)
 		if ok {
 			if from {
 				delta.to = soa.Serial

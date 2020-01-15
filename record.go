@@ -95,7 +95,7 @@ func (c RRClass) Match(n RRClass) bool {
 
 // Asks returns true if c == n or if c is AnyClass
 func (c RRClass) Asks(n RRClass) bool {
-	return c == AnyClass || c == n
+	return c == AnyClass || c == NoneClass || c == n
 }
 
 const (
@@ -275,36 +275,168 @@ func (t RRType) Asks(n RRType) bool {
 	return t == AnyType || t == n
 }
 
-// A RecordHeader contains the common fields in a Record.
-// When creating one to be marshalled, only Name and TTL need to be valid.
-// Type is not expected to be valid unless it is either associated with an unknown record type, or if its
-// coresponding data is nil (negative cache entries).
-type RecordHeader struct {
-	Name Name
-	TTL  time.Duration
-
-	Type   RRType // decode only, or if RecordData is nil
-	Class  RRClass
-	Length uint16 // decode only
-
-	CacheFlush bool // mdns
-
-	OriginalTTL   time.Duration // cache only
-	Authoritative bool          // cache only
-
-	MaxMessageSize uint16 // decode only, EDNS
-	ExtRCode       uint8  // decode only, EDNS
-	Version        uint8  // decode only, EDNS
-	Flags          uint16 // decode only, EDNS
+// the RecordHeader interface identifies the type and class of a record
+type RecordHeader interface {
+	Encoder
+	Decoder
+	Name() Name
+	Type() RRType
+	Class() RRClass
+	TTL() time.Duration
+	Equal(RecordHeader) bool
 }
 
-func (r *RecordHeader) Equal(n *RecordHeader) bool {
-	// TTL is purposfully not compared
-	return r.Name.Equal(n.Name) && r.Type == n.Type && r.Class == n.Class
+// the HeaderData type contains uninterpreted header data
+type HeaderData struct {
+	name    Name
+	rrtype  uint16
+	rrclass uint16
+	ttl     uint32
 }
 
-func (r *RecordHeader) Match(n *RecordHeader) bool {
-	return r.Name.Equal(n.Name) && r.Type.Match(n.Type) && r.Class.Match(n.Class)
+func (h *HeaderData) MarshalCodec(c Codec) error {
+	return EncodeSequence(c, h.name, h.rrtype, h.rrclass, h.ttl)
+}
+
+func (h *HeaderData) UnmarshalCodec(c Codec) error {
+	return DecodeSequence(c, &h.name, &h.rrtype, &h.rrclass, &h.ttl)
+}
+
+func (h *HeaderData) Type() RRType {
+	return RRType(h.rrtype)
+}
+
+// the Header type is a standard unicast resource record header
+type Header HeaderData
+
+func NewHeader(name Name, rrtype RRType, rrclass RRClass, ttl time.Duration) *Header {
+	return &Header{
+		name:    name,
+		rrtype:  uint16(rrtype),
+		rrclass: uint16(rrclass),
+		ttl:     uint32(ttl / time.Second),
+	}
+}
+
+func (h *Header) MarshalCodec(c Codec) error {
+	return (*HeaderData)(h).MarshalCodec(c)
+}
+
+func (h *Header) UnmarshalCodec(c Codec) error {
+	return (*HeaderData)(h).UnmarshalCodec(c)
+}
+
+func HeaderFromData(d *HeaderData) *Header {
+	return (*Header)(d)
+}
+
+func (h *Header) Equal(m RecordHeader) bool {
+	return h.Name().Equal(m.Name()) && h.Type() == m.Type() && h.Class() == m.Class()
+}
+
+func (h *Header) Name() Name {
+	return h.name
+}
+
+func (h *Header) Type() RRType {
+	return RRType(h.rrtype)
+}
+
+func (h *Header) Class() RRClass {
+	return RRClass(h.rrclass)
+}
+
+func (h *Header) TTL() time.Duration {
+	return time.Duration(h.ttl) * time.Second
+}
+
+// the MHeader type is an MDNS resource record header
+type MDNSHeader struct {
+	*Header
+}
+
+func NewMDNSHeader(name Name, rrtype RRType, rrclass RRClass, ttl time.Duration, cacheFlush bool) *MDNSHeader {
+	m := &MDNSHeader{NewHeader(name, rrtype, rrclass, ttl)}
+	if cacheFlush {
+		m.rrclass |= 0x8000
+	}
+	return m
+}
+
+func MDNSHeaderFromData(d *HeaderData) *MDNSHeader {
+	return &MDNSHeader{HeaderFromData(d)}
+}
+
+func (m *MDNSHeader) CacheFlush() bool {
+	return (m.rrclass & 0x8000) != 0
+}
+
+func (m *MDNSHeader) Class() RRClass {
+	return RRClass(m.rrclass & 0x7fff)
+}
+
+type EDNSHeader HeaderData
+
+// the EDNSHeader is an EDNS additional record header
+func NewEDNSHeader(maxMessageSize uint16, extRCode uint8, version uint8, flags uint16) *EDNSHeader {
+	return &EDNSHeader{
+		name:    nil,
+		rrtype:  uint16(EDNSType),
+		rrclass: maxMessageSize,
+		ttl:     uint32(extRCode)<<24 | uint32(version)<<16 | uint32(flags),
+	}
+}
+
+func EDNSHeaderFromData(d *HeaderData) *EDNSHeader {
+	return (*EDNSHeader)(HeaderFromData(d))
+}
+
+func (e *EDNSHeader) MarshalCodec(c Codec) error {
+	return (*HeaderData)(e).MarshalCodec(c)
+}
+
+func (e *EDNSHeader) UnmarshalCodec(c Codec) error {
+	return (*HeaderData)(e).UnmarshalCodec(c)
+}
+
+func (e *EDNSHeader) Equal(m RecordHeader) bool {
+	return false
+}
+
+func (e *EDNSHeader) Name() Name {
+	return nil
+}
+
+func (e *EDNSHeader) Type() RRType {
+	return EDNSType
+}
+
+func (e *EDNSHeader) Class() RRClass {
+	return InvalidClass
+}
+
+func (e *EDNSHeader) TTL() time.Duration {
+	return 0
+}
+
+func (e *EDNSHeader) MaxMessageSize() uint16 {
+	return e.rrclass
+}
+
+func (e *EDNSHeader) ExtRCode() uint8 {
+	return uint8(e.ttl >> 24)
+}
+
+func (e *EDNSHeader) SetExtRCode(r uint8) {
+	e.ttl = uint32(r<<24) | (e.ttl & 0x00ffffff)
+}
+
+func (e *EDNSHeader) Version() uint8 {
+	return uint8((e.ttl >> 16) & 0xff)
+}
+
+func (e *EDNSHeader) Flags() uint16 {
+	return uint16(e.ttl & 0xffff)
 }
 
 // The RecordData type describes how to marshal and demarshal via the Encoder and Decoder types
@@ -319,8 +451,8 @@ type RecordData interface {
 
 // The Record type fully describes a full resource record.
 type Record struct {
-	RecordHeader
-	RecordData
+	H RecordHeader
+	D RecordData
 }
 
 func (r *Record) String() string {
@@ -329,51 +461,53 @@ func (r *Record) String() string {
 	return strings.TrimSpace(w.String())
 }
 
+func (r *Record) Name() Name {
+	return r.H.Name()
+}
+
 func (r *Record) Type() RRType {
-	if r.RecordData == nil {
-		return r.RecordHeader.Type
-	}
-	return r.RecordData.Type()
+	return r.H.Type()
 }
 
 func (r *Record) Class() RRClass {
-	return r.RecordHeader.Class
+	return r.H.Class()
 }
 
 func (r *Record) Equal(n *Record) bool {
 	if r == n {
 		return true
 	}
-	if !r.RecordHeader.Equal(&n.RecordHeader) {
+	if !r.H.Equal(n.H) {
 		return false
 	}
-	if r.RecordData == n.RecordData {
+	if r.D == n.D {
 		return true
 	}
-	if r.RecordData == nil || n.RecordData == nil {
+	if r.D == nil || n.D == nil {
 		return false
 	}
-	return r.RecordData.Equal(n.RecordData)
+	return r.D.Equal(n.D)
 }
 
 // Match returns true if the records match for the purposes of an update prereq
 func (r *Record) Match(n *Record) bool {
-	if !r.RecordHeader.Match(&n.RecordHeader) {
+	if !r.Name().Equal(n.Name()) {
 		return false
 	}
-
-	if r.RecordData == nil || n.RecordData == nil {
+	if !r.Type().Match(n.Type()) || !r.Class().Match(n.Class()) {
+		return false
+	}
+	if r.D == nil || n.D == nil {
 		// value independent match
 		return true
 	}
-
-	return r.RecordData.Equal(n.RecordData)
+	return r.D.Equal(n.D)
 }
 
 // Less for the Record type is a bit silly for practical use, but allows sorting records to make testing easier
 func (r *Record) Less(n *Record) bool {
-	rn := r.RecordHeader.Name
-	nn := n.RecordHeader.Name
+	rn := r.Name()
+	nn := n.Name()
 	if rn.Less(nn) {
 		return true
 	}
@@ -386,13 +520,13 @@ func (r *Record) Less(n *Record) bool {
 	if r.Class() != n.Class() {
 		return false
 	}
-	if r.RecordData == nil {
-		return n.RecordData != nil
+	if r.D == nil {
+		return n.D != nil
 	}
-	if n.RecordData == nil {
+	if n.D == nil {
 		return false
 	}
-	return r.RecordData.Less(n.RecordData)
+	return r.D.Less(n.D)
 }
 
 // The UnknownRecord type can store rdata of unknown resource records.

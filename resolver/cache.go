@@ -33,6 +33,12 @@ type rrSet struct {
 type rrMap map[TypeKey]*rrSet
 type cacheMap map[string]rrMap
 
+type cacheHeader struct {
+	*dns.Header
+	originalTTL   time.Duration
+	authoritative bool
+}
+
 func (c cacheMap) get(name string, types TypeKey) *rrSet {
 	if rrmap, ok := c[name]; ok {
 		if rrset, ok := rrmap[types]; ok {
@@ -67,7 +73,7 @@ func (c *Cache) Root() *Cache {
 
 // Enter adds or updates records with the timestamp in the at parameter. If at is the zero value, the records are permanent.
 // Permanent records do not adjust their TTL values when retreived, and can only be overwritten other permanent records.
-// Negative cache entries can exist by entering Records containing a nil RecordData value.
+// Negative cache entries can exist by entering Records containing a nil data value.
 // TTL values of 0 will be entered having value 1.
 // If merge is true (mdns), merge two sets of non-authoritative records, aging the existing TTL values. If merge is true
 // and at is the zero value, Enter panics.
@@ -79,23 +85,21 @@ func (c *Cache) Enter(at time.Time, merge bool, records []*dns.Record) {
 
 	entries := make(cacheMap)
 	for _, record := range records {
-		nkey := record.RecordHeader.Name.Key()
+		nkey := record.Name().Key()
 		tkey := MakeTypeKeyFromRecord(record)
 
-		crecord := &dns.Record{
-			RecordHeader: dns.RecordHeader{
-				Name:          record.Name,
-				TTL:           record.RecordHeader.TTL,
-				Type:          record.Type(),
-				Class:         record.Class(),
-				OriginalTTL:   record.RecordHeader.TTL,
-				Authoritative: authoritative,
-			},
-			RecordData: record.RecordData,
+		ttl := record.H.TTL()
+		if ttl < time.Second {
+			ttl = time.Second
 		}
 
-		if crecord.RecordHeader.TTL < time.Second {
-			crecord.RecordHeader.TTL = time.Second
+		crecord := &dns.Record{
+			H: &cacheHeader{
+				Header:        dns.NewHeader(record.Name(), record.Type(), record.Class(), ttl),
+				originalTTL:   record.H.TTL(),
+				authoritative: authoritative,
+			},
+			D: record.D,
 		}
 
 		if rrmap, ok := entries[nkey]; ok {
@@ -133,26 +137,22 @@ func (c *Cache) Enter(at time.Time, merge bool, records []*dns.Record) {
 						for _, cr := range crrset.records {
 							found := false
 							for _, rr := range rrset.records {
-								if cr.RecordData.Equal(rr.RecordData) {
+								if cr.D.Equal(rr.D) {
 									found = true
 									break
 								}
 							}
 							if !found {
-								if merge {
-									crecords = append(crecords, cr)
-								} else {
-									crecords = append(crecords, &dns.Record{
-										RecordHeader: dns.RecordHeader{
-											Name:        cr.RecordHeader.Name,
-											TTL:         time.Second,
-											Type:        cr.RecordHeader.Type,
-											Class:       cr.RecordHeader.Class,
-											OriginalTTL: cr.RecordHeader.OriginalTTL,
-										},
-										RecordData: cr.RecordData,
-									})
+								if !merge {
+									cr.H.(*cacheHeader).Header =
+										dns.NewHeader(
+											cr.Name(),
+											cr.Type(),
+											cr.Class(),
+											time.Second,
+										)
 								}
+								crecords = append(crecords, cr)
 							}
 						}
 						rrset.records = append(rrset.records, crecords...)
@@ -168,14 +168,14 @@ func (c *Cache) Enter(at time.Time, merge bool, records []*dns.Record) {
 }
 
 // Remove removes records:
-// if RecordData is nil, all matching records of the type and class are removed.
-// if RecordData is not nil, all matching records of the type, class, and data are removed.
+// if D is nil, all matching records of the type and class are removed.
+// if D is not nil, all matching records of the type, class, and data are removed.
 // the record parameter may have a type and/or class of Any, which will remove all matches.
 // Non permanent records are removed by having their TTL reduced to 1 and entered time set to now.
 // If auth is true, SOA and NS records are protected if type is Any
 // If no records were removed, Remove returns false
 func (c *Cache) Remove(now time.Time, auth bool, record *dns.Record) bool {
-	nkey := record.RecordHeader.Name.Key()
+	nkey := record.Name().Key()
 	rrmap, ok := c.cache[nkey]
 	if !ok || len(rrmap) == 0 {
 		if c.parent != nil {
@@ -190,14 +190,14 @@ func (c *Cache) Remove(now time.Time, auth bool, record *dns.Record) bool {
 	rrtype, rrclass := record.Type(), record.Class()
 	tkey := MakeTypeKey(rrtype, rrclass)
 	rrsets := make(rrMap)
-	data := record.RecordData
+	data := record.D
 
 	if rrtype != dns.AnyType && rrclass != dns.AnyClass {
 		if rrset, ok := rrmap[tkey]; ok {
 			rrsets[tkey] = rrset
 		}
 	} else {
-		data = nil // ignore RecordData
+		data = nil // ignore data
 		for tkey, rrset := range rrmap {
 			if tkey.Match(rrtype, rrclass) {
 				if auth {
@@ -221,7 +221,7 @@ func (c *Cache) Remove(now time.Time, auth bool, record *dns.Record) bool {
 			var records []*dns.Record // surviving records
 			if data != nil {
 				for _, rr := range rrset.records {
-					if !rr.RecordData.Equal(data) {
+					if !rr.D.Equal(data) {
 						records = append(records, rr)
 					} else {
 						updated = true
@@ -244,14 +244,14 @@ func (c *Cache) Remove(now time.Time, auth bool, record *dns.Record) bool {
 				records = rrset.records
 			} else {
 				for _, rr := range rrset.records {
-					if rr.RecordData.Equal(data) {
+					if rr.D.Equal(data) {
 						records = append(records, rr)
 					}
 				}
 			}
 			for _, rr := range records {
 				updated = true
-				rr.RecordHeader.TTL = time.Second
+				rr.H = dns.NewHeader(rr.Name(), rr.Type(), rr.Class(), time.Second)
 			}
 		}
 	}
@@ -271,9 +271,15 @@ func expireSet(rrset *rrSet, now time.Time, adjust bool) {
 	}
 
 	for _, rr := range rrset.records {
-		if rrset.entered.IsZero() || now.Before(rrset.entered.Add(rr.RecordHeader.TTL)) {
+		ttl := rr.H.TTL()
+		if rrset.entered.IsZero() || now.Before(rrset.entered.Add(ttl)) {
 			if adjust {
-				rr.RecordHeader.TTL -= now.Sub(rrset.entered)
+				rr.H.(*cacheHeader).Header = dns.NewHeader(
+					rr.Name(),
+					rr.Type(),
+					rr.Class(),
+					ttl-now.Sub(rrset.entered),
+				)
 			}
 			newRecords = append(newRecords, rr)
 		}
@@ -338,19 +344,17 @@ func (c *Cache) Get(now time.Time, name dns.Name, rrtype dns.RRType, rrclass dns
 						backdate = now.Sub(rrset.entered)
 					}
 					// expireSet guarantees the following will not produce 0 TTL records
-					if rr.RecordHeader.TTL <= backdate {
+					if rr.H.TTL() <= backdate {
 						panic("expireSet() left TTL <= 0")
 					}
 					record := &dns.Record{
-						RecordHeader: dns.RecordHeader{
-							Name:          name,
-							TTL:           rr.RecordHeader.TTL - backdate,
-							OriginalTTL:   rr.RecordHeader.OriginalTTL,
-							Authoritative: authoritative,
-							Type:          rr.RecordHeader.Type,
-							Class:         rr.RecordHeader.Class,
-						},
-						RecordData: rr.RecordData,
+						H: dns.NewHeader(
+							name,
+							rr.Type(),
+							rr.Class(),
+							rr.H.TTL()-backdate,
+						),
+						D: rr.D,
 					}
 					records = append(records, record)
 				}
@@ -371,7 +375,7 @@ func (c *Cache) Get(now time.Time, name dns.Name, rrtype dns.RRType, rrclass dns
 // Clone peels off a copy of the zone for checkpointing, zone transfers, etc.
 // If shallow is true, any parents of the source cache are not consulted (although they still are from exclude)
 // If exclude is not nil, records present will be excluded from the result.
-// The copied records are only authoritative ones. The RecordData fields of the records are referenced, not copied.
+// The copied records are only authoritative ones. The D fields of the records are referenced, not copied.
 // The set of returned records is also from the point of view of the cache shadowing its parent. The cloned cache
 // thus has no parent.
 // SOA records are omitted.
@@ -408,7 +412,7 @@ func (c *Cache) Clone(shallow bool, exclude *Cache) *Cache {
 					for _, f := range frrset.records {
 						found := false
 						for _, x := range xrrset.records {
-							if f.RecordData.Equal(x.RecordData) {
+							if f.D.Equal(x.D) {
 								found = true
 								break
 							}
@@ -448,7 +452,7 @@ func (c *Cache) Patch(remove, add *Cache) {
 					for _, r := range rrset.records {
 						found := false
 						for _, x := range xrrset.records {
-							if r.RecordData.Equal(x.RecordData) {
+							if r.D.Equal(x.D) {
 								found = true
 								break
 							}

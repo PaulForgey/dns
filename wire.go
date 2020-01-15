@@ -152,20 +152,7 @@ func (w *WireCodec) putName(n Name) error {
 }
 
 func (w *WireCodec) putRecord(r *Record) error {
-	var rrclass uint16
-	var ttl uint32
-
-	if r.Type() == EDNSType {
-		rrclass = r.RecordHeader.MaxMessageSize
-		ttl = uint32(r.RecordHeader.ExtRCode)<<24 |
-			uint32(r.RecordHeader.Version)<<16 |
-			uint32(r.RecordHeader.Flags)
-	} else {
-		rrclass = uint16(r.Class())
-		ttl = uint32(r.RecordHeader.TTL / time.Second)
-	}
-
-	if err := EncodeSequence(w, r.RecordHeader.Name, uint16(r.Type()), rrclass, ttl); err != nil {
+	if err := r.H.MarshalCodec(w); err != nil {
 		return err
 	}
 
@@ -176,8 +163,11 @@ func (w *WireCodec) putRecord(r *Record) error {
 
 	start := w.Offset()
 
-	if r.RecordData != nil {
-		if err := w.Encode(r.RecordData); err != nil {
+	if r.D != nil {
+		if r.H.Type() != r.D.Type() {
+			panic("inconsistent type")
+		}
+		if err := w.Encode(r.D); err != nil {
 			return err
 		}
 	}
@@ -217,7 +207,7 @@ func (w *WireCodec) putMessage(m *Message) error {
 
 	adLen := uint16(len(m.Additional))
 	if m.EDNS != nil {
-		m.EDNS.RecordHeader.ExtRCode = uint8((m.RCode & 0xff0) >> 4)
+		m.EDNS.H.(*EDNSHeader).SetExtRCode(uint8(m.RCode&0xff0) >> 4)
 		adLen++
 	}
 
@@ -429,47 +419,35 @@ func (w *WireCodec) getName() (Name, error) {
 }
 
 func (w *WireCodec) getRecord(r *Record) error {
-	var rrclass uint16
-	var ttl uint32
-	if err := DecodeSequence(
-		w,
-		&r.RecordHeader.Name,
-		(*uint16)(&r.RecordHeader.Type),
-		&rrclass,
-		&ttl,
-		&r.RecordHeader.Length,
-	); err != nil {
+	var d HeaderData
+
+	if err := d.UnmarshalCodec(w); err != nil {
 		return err
 	}
 
-	// special case pseduo opt
-	if r.RecordHeader.Type == EDNSType {
-		r.RecordHeader.MaxMessageSize = rrclass
-		r.RecordHeader.ExtRCode = uint8((ttl & 0xff000000) >> 24)
-		r.RecordHeader.Version = uint8((ttl & 0x00ff0000) >> 16)
-		r.RecordHeader.Flags = uint16(ttl & 0xffff)
+	// XXX codec will need to know it is being used for MDNS
+	if d.Type() == EDNSType {
+		r.H = EDNSHeaderFromData(&d)
 	} else {
-		r.RecordHeader.TTL = time.Duration(ttl) * time.Second
-		if (rrclass & 0x8000) != 0 {
-			r.RecordHeader.Class = RRClass(rrclass) & 0x7fff
-			r.RecordHeader.CacheFlush = true
-		} else {
-			r.RecordHeader.Class = RRClass(rrclass)
-			r.RecordHeader.CacheFlush = false
-		}
+		r.H = HeaderFromData(&d)
+	}
+
+	var length uint16
+	if err := w.Decode(&length); err != nil {
+		return err
 	}
 
 	// RFC 2136 cases of RecordData being purposfully nil
-	if r.RecordHeader.Length == 0 && (r.RecordHeader.Class == AnyClass || r.RecordHeader.Class == NoneClass) {
-		r.RecordData = nil
+	if length == 0 && (r.H.Class() == AnyClass || r.H.Class() == NoneClass) {
+		r.D = nil
 	} else {
-		dc, err := w.Split(int(r.RecordHeader.Length))
+		dc, err := w.Split(int(length))
 		if err != nil {
 			return err
 		}
 
-		r.RecordData = RecordFromType(r.RecordHeader.Type)
-		return dc.Decode(r.RecordData)
+		r.D = RecordFromType(r.H.Type())
+		return dc.Decode(r.D)
 	}
 
 	return nil
@@ -544,10 +522,11 @@ func (w *WireCodec) getMessage(m *Message) error {
 	}
 
 	if m.EDNS != nil {
-		if m.EDNS.Version > 0 {
+		eh := m.EDNS.H.(*EDNSHeader)
+		if eh.Version() > 0 {
 			return fmt.Errorf("%w: highest supported version is 0", BadVersion)
 		}
-		m.RCode |= RCode(m.EDNS.ExtRCode) << 4
+		m.RCode |= RCode(eh.ExtRCode()) << 4
 	}
 
 	return nil

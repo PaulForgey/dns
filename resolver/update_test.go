@@ -80,7 +80,7 @@ func checkSOA(t *testing.T, z *Zone, serial uint32) {
 	if soa == nil {
 		t.Fatalf("zone %v has no SOA", z.Name())
 	}
-	soaSerial := soa.RecordData.(*dns.SOARecord).Serial
+	soaSerial := soa.D.(*dns.SOARecord).Serial
 	if soaSerial != serial {
 		t.Fatalf("zone %v expected serial %d, got %d", z.Name(), serial, soaSerial)
 	}

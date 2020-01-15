@@ -31,12 +31,8 @@ func TestRecord(t *testing.T) {
 	}
 
 	record := Record{
-		RecordHeader: RecordHeader{
-			Name:  dname,
-			TTL:   600 * time.Second,
-			Class: INClass,
-		},
-		RecordData: soa,
+		H: NewHeader(dname, SOAType, INClass, 600*time.Second),
+		D: soa,
 	}
 
 	buffer := make([]byte, 512)
@@ -57,15 +53,13 @@ func TestRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	soa2, ok := record2.RecordData.(*SOARecord)
+	soa2, ok := record2.D.(*SOARecord)
 	if !ok {
-		t.Fatalf("RecordData is %T\n", record2.RecordData)
+		t.Fatalf("RecordData is %T\n", record2.D)
 	}
 
-	record.RecordHeader.Type = record2.RecordHeader.Type     // fill in parse only for DeepEqual
-	record.RecordHeader.Length = record2.RecordHeader.Length // fill in parse only for DeepEqual
-	if !reflect.DeepEqual(record.RecordHeader, record2.RecordHeader) {
-		t.Fatalf("header %+v, parsed header %+v", record.RecordHeader, record2.RecordHeader)
+	if !reflect.DeepEqual(record.H, record2.H) {
+		t.Fatalf("header %+v, parsed header %+v", record.H, record2.H)
 	}
 	if !reflect.DeepEqual(soa, soa2) {
 		t.Fatalf("soa %+v, parsed soa %+v", soa, soa2)

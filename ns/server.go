@@ -163,18 +163,15 @@ func answer(conn *dnsconn.Connection, err error, clear bool, msg *dns.Message, t
 	// client's EDNS message
 	if conn.UDP {
 		if msg.EDNS != nil {
-			msgSize = int(msg.EDNS.RecordHeader.MaxMessageSize)
+			msgSize = int(msg.EDNS.H.(*dns.EDNSHeader).MaxMessageSize())
 			if msgSize < dnsconn.MinMessageSize {
 				msgSize = dnsconn.MinMessageSize
 			}
 
 			// respond with our own
 			msg.EDNS = &dns.Record{
-				RecordHeader: dns.RecordHeader{
-					MaxMessageSize: dnsconn.UDPMessageSize,
-					Version:        0,
-				},
-				RecordData: &dns.EDNSRecord{},
+				H: dns.NewEDNSHeader(dnsconn.UDPMessageSize, 0, 0, 0),
+				D: &dns.EDNSRecord{},
 			}
 		}
 	} else {

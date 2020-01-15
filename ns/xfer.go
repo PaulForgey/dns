@@ -38,8 +38,8 @@ func (s *Server) ixfr(ctx context.Context, msg *dns.Message, to net.Addr, zone *
 			return answer(s.conn, dns.FormError, true, msg, to)
 		}
 		r := msg.Authority[0]
-		soa, ok := r.RecordData.(*dns.SOARecord)
-		if !ok || !r.RecordHeader.Name.Equal(q.QName) {
+		soa, ok := r.D.(*dns.SOARecord)
+		if !ok || !r.Name().Equal(q.QName) {
 			return answer(s.conn, dns.FormError, true, msg, to)
 		}
 		serial = soa.Serial
@@ -97,14 +97,14 @@ func (s *Server) notify(ctx context.Context, msg *dns.Message, to net.Addr, zone
 
 	var found bool
 	for _, r := range msg.Answers {
-		a, _, err := zone.Lookup(s.conn.Interface, r.RecordHeader.Name, r.Type(), r.Class())
+		a, _, err := zone.Lookup(s.conn.Interface, r.Name(), r.Type(), r.Class())
 		if err != nil {
 			break
 		}
 
 		found = false
 		for _, rr := range a {
-			if rr.Type() == r.Type() && rr.RecordData.Equal(r.RecordData) {
+			if rr.Type() == r.Type() && rr.D.Equal(r.D) {
 				found = true
 				break
 			}

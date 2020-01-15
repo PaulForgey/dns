@@ -32,12 +32,12 @@ func (s *Server) SendNotify(ctx context.Context, z *Zone) error {
 		return ErrNoNS
 	}
 	for _, n := range ns {
-		rr, ok := n.RecordData.(dns.NSRecordType)
+		rr, ok := n.D.(dns.NSRecordType)
 		if !ok {
 			continue
 		}
 		name := rr.NS()
-		if name.Equal(soa.RecordData.(*dns.SOARecord).MName) {
+		if name.Equal(soa.D.(*dns.SOARecord).MName) {
 			continue
 		}
 
@@ -53,7 +53,7 @@ func (s *Server) SendNotify(ctx context.Context, z *Zone) error {
 					Opcode: dns.Notify,
 					Questions: []*dns.Question{
 						&dns.Question{
-							QName:  soa.RecordHeader.Name,
+							QName:  soa.Name(),
 							QType:  dns.SOAType,
 							QClass: soa.Class(),
 						},

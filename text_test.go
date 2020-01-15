@@ -152,13 +152,8 @@ func TestTextRecord(t *testing.T) {
 	}
 
 	soa := &Record{
-		RecordHeader: RecordHeader{
-			Name:  origin,
-			Class: INClass,
-			Type:  SOAType,
-			TTL:   600 * time.Second,
-		},
-		RecordData: &SOARecord{
+		H: NewHeader(origin, SOAType, INClass, 600*time.Second),
+		D: &SOARecord{
 			MName:   mname,
 			ReName:  rname,
 			Serial:  1234,
@@ -241,12 +236,8 @@ func TestTextSlice(t *testing.T) {
 	}
 
 	txt := &Record{
-		RecordHeader: RecordHeader{
-			Name:  name,
-			TTL:   10 * time.Second,
-			Class: INClass,
-		},
-		RecordData: &TXTRecord{
+		H: NewHeader(name, TXTType, INClass, 10*time.Second),
+		D: &TXTRecord{
 			Text: []string{"one", "two", "three"},
 		},
 	}
@@ -267,8 +258,8 @@ func TestTextSlice(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !reflect.DeepEqual(txt.RecordData, rec.RecordData) {
-		t.Fatalf("expected %+v, got %+v", txt.RecordData, rec.RecordData)
+	if !reflect.DeepEqual(txt.D, rec.D) {
+		t.Fatalf("expected %+v, got %+v", txt.D, rec.D)
 	}
 
 	t.Log(rec)
@@ -280,9 +271,9 @@ func TestRawRecord(t *testing.T) {
 	if err := r.Decode(rec); err != nil {
 		t.Fatal(err)
 	}
-	arec, ok := rec.RecordData.(*ARecord)
+	arec, ok := rec.D.(*ARecord)
 	if !ok {
-		t.Fatalf("expected ARecord, got %T", rec.RecordData)
+		t.Fatalf("expected ARecord, got %T", rec.D)
 	}
 	if !arec.IP().Equal(net.ParseIP("1.2.3.4")) {
 		t.Fatalf("expected 1.2.3.4, got %v", arec.IP())
@@ -304,12 +295,12 @@ $ORIGIN tessier-ashpool.net
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !rec.RecordHeader.Name.Equal(name) {
-		t.Fatalf("expected %v, got %v", name, rec.RecordHeader.Name)
+	if !rec.Name().Equal(name) {
+		t.Fatalf("expected %v, got %v", name, rec.Name())
 	}
-	nsrec, ok := rec.RecordData.(*NSRecord)
+	nsrec, ok := rec.D.(*NSRecord)
 	if !ok {
-		t.Fatalf("expected NS record, got %T", rec.RecordData)
+		t.Fatalf("expected NS record, got %T", rec.D)
 	}
 	if !nsrec.Name.HasSuffix(name) {
 		t.Fatalf("%v does not end with %v", nsrec.Name, name)

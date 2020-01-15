@@ -186,14 +186,14 @@ func (zs *Zones) Additional(msg *dns.Message, key string, rrclass dns.RRClass) {
 		switch rec.Type() {
 		case dns.AType:
 			rrtype = dns.AAAAType
-			name = rec.RecordHeader.Name
+			name = rec.Name()
 
 		case dns.AAAAType:
 			rrtype = dns.AType
-			name = rec.RecordHeader.Name
+			name = rec.Name()
 
 		default:
-			if n, ok := rec.RecordData.(dns.NameRecordType); ok {
+			if n, ok := rec.D.(dns.NameRecordType); ok {
 				name = n.RName()
 				rrtype = dns.AnyType
 			}
@@ -206,7 +206,7 @@ func (zs *Zones) Additional(msg *dns.Message, key string, rrclass dns.RRClass) {
 		// make sure we haven't already put it in
 		found := false
 		for _, a := range msg.Additional {
-			if a.RecordHeader.Name.Equal(name) && rrtype.Asks(a.Type()) {
+			if a.Name().Equal(name) && rrtype.Asks(a.Type()) {
 				found = true
 				break
 			}
@@ -215,7 +215,7 @@ func (zs *Zones) Additional(msg *dns.Message, key string, rrclass dns.RRClass) {
 			continue
 		}
 		for _, a := range msg.Answers {
-			if a.RecordHeader.Name.Equal(name) && rrtype.Asks(a.Type()) {
+			if a.Name().Equal(name) && rrtype.Asks(a.Type()) {
 				found = true
 				break
 			}

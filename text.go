@@ -459,8 +459,9 @@ func (c *TextCodec) getRecord(r *Record) error {
 	}
 	c.rname = rname
 
-	r.RecordHeader.Name = rname
-	r.RecordHeader.Class = c.rrclass
+	rrclass := c.rrclass
+	ttl := c.ttl
+	var rrtype RRType
 
 	var token string
 	var gotTTL, gotClass bool
@@ -476,7 +477,7 @@ func (c *TextCodec) getRecord(r *Record) error {
 		}
 
 		if unicode.IsDigit(rune(token[0])) {
-			ttl, err := asDuration(token)
+			ttl, err = asDuration(token)
 			if err != nil {
 				return err
 			}
@@ -488,7 +489,7 @@ func (c *TextCodec) getRecord(r *Record) error {
 			break
 		}
 
-		if err := r.RecordHeader.Class.Set(token); err == nil {
+		if err := rrclass.Set(token); err == nil {
 			gotClass = true
 			continue
 		} else {
@@ -496,21 +497,22 @@ func (c *TextCodec) getRecord(r *Record) error {
 			break
 		}
 	}
-	r.RecordHeader.TTL = c.ttl
 
-	if err := r.RecordHeader.Type.Set(token); err != nil {
+	if err := rrtype.Set(token); err != nil {
 		return err
 	}
+
+	r.H = NewHeader(rname, rrtype, rrclass, ttl)
 
 	token, err = c.token(true) // allow nil rdata
 	if err != nil {
 		if errors.Is(err, io.EOF) {
-			r.RecordData = nil
+			r.D = nil
 			err = nil
 		}
 		return err
 	}
-	r.RecordData = RecordFromType(r.RecordHeader.Type)
+	r.D = RecordFromType(r.H.Type())
 
 	if token == raw {
 		token, err = c.token(false)
@@ -534,10 +536,10 @@ func (c *TextCodec) getRecord(r *Record) error {
 		}
 
 		w := NewWireCodec(data)
-		return w.Decode(r.RecordData)
+		return w.Decode(r.D)
 	} else {
 		c.unread(token)
-		return c.Decode(r.RecordData)
+		return c.Decode(r.D)
 	}
 }
 
@@ -761,19 +763,22 @@ func (c *TextCodec) putRecord(r *Record) error {
 	if _, err := fmt.Fprintf(
 		c.w,
 		"%v %v %v %v ",
-		r.RecordHeader.Name,
-		r.RecordHeader.TTL,
+		r.Name(),
+		r.H.TTL(),
 		r.Class(),
 		r.Type(),
 	); err != nil {
 		return err
 	}
 
-	if r.RecordData == nil {
+	if r.D == nil {
 		if _, err := fmt.Fprintf(c.w, "; nil"); err != nil {
 			return err
 		}
-	} else if err := c.Encode(r.RecordData); err != nil {
+	} else if err := c.Encode(r.D); err != nil {
+		if r.D.Type() != r.H.Type() {
+			panic("inconsistent type")
+		}
 		return err
 	}
 	if _, err := fmt.Fprintf(c.w, "\n"); err != nil {
@@ -848,12 +853,13 @@ func (c *TextCodec) putMessage(m *Message) error {
 	}
 
 	if m.EDNS != nil {
+		eh := m.EDNS.H.(*EDNSHeader)
 		if _, err := fmt.Fprintf(
 			c.w,
 			";; EDNS: version=%d, msgSize=%d, flags=%04x\n",
-			m.EDNS.RecordHeader.Version,
-			m.EDNS.RecordHeader.MaxMessageSize,
-			m.EDNS.RecordHeader.Flags,
+			eh.Version(),
+			eh.MaxMessageSize(),
+			eh.Flags(),
 		); err != nil {
 			return err
 		}
