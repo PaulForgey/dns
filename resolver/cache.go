@@ -35,8 +35,7 @@ type cacheMap map[string]rrMap
 
 type cacheHeader struct {
 	*dns.Header
-	originalTTL   time.Duration
-	authoritative bool
+	originalTTL time.Duration
 }
 
 func (c cacheMap) get(name string, types TypeKey) *rrSet {
@@ -95,9 +94,8 @@ func (c *Cache) Enter(at time.Time, merge bool, records []*dns.Record) {
 
 		crecord := &dns.Record{
 			H: &cacheHeader{
-				Header:        dns.NewHeader(record.Name(), record.Type(), record.Class(), ttl),
-				originalTTL:   record.H.TTL(),
-				authoritative: authoritative,
+				Header:      dns.NewHeader(record.Name(), record.Type(), record.Class(), ttl),
+				originalTTL: record.H.TTL(),
 			},
 			D: record.D,
 		}
@@ -485,12 +483,15 @@ func (c *Cache) Patch(remove, add *Cache) {
 	}
 }
 
-// Enumerate calls f for every record, excluding SOA
+// Enumerate calls f for every authoritative record, excluding SOA
 func (c *Cache) Enumerate(rrclass dns.RRClass, f func(r *dns.Record) error) error {
 	for _, rrmap := range c.cache {
 		for tkey, rrset := range rrmap {
 			t, c := tkey.Types()
 			if t == dns.SOAType || !rrclass.Match(c) {
+				continue
+			}
+			if !rrset.entered.IsZero() {
 				continue
 			}
 			for _, r := range rrset.records {
