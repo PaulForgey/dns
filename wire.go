@@ -176,8 +176,10 @@ func (w *WireCodec) putRecord(r *Record) error {
 
 	start := w.Offset()
 
-	if err := w.Encode(r.RecordData); err != nil {
-		return err
+	if r.RecordData != nil {
+		if err := w.Encode(r.RecordData); err != nil {
+			return err
+		}
 	}
 
 	length := w.Offset() - start

@@ -24,15 +24,29 @@ type Zone struct {
 
 	online bool
 	r      chan bool // reload
+	u      chan bool // update
+
+	// update hazard
+	updateWait   *sync.WaitGroup
+	updateLock   *sync.Mutex
+	updateCond   *sync.Cond
+	blockUpdates bool
 }
 
+// NewZone creates a new, empty zone for use by the server
 func NewZone(z *resolver.Zone) *Zone {
+	lock := &sync.Mutex{}
 	return &Zone{
-		Zone: z,
-		r:    make(chan bool, 1),
+		Zone:       z,
+		r:          make(chan bool, 1),
+		u:          make(chan bool, 1),
+		updateWait: &sync.WaitGroup{},
+		updateLock: lock,
+		updateCond: sync.NewCond(lock),
 	}
 }
 
+// Reload signals the zone to reload by making the channel in ReloadC() readable
 func (z *Zone) Reload() {
 	select {
 	case z.r <- true:
@@ -40,8 +54,56 @@ func (z *Zone) Reload() {
 	}
 }
 
+// Notify signals the zone to send notifications of an update by making the channel in UpdateC() reable
+func (z *Zone) Notify() {
+	select {
+	case z.u <- true:
+	default: // don't block
+	}
+}
+
+// ReloadC returns a channel which is readable when the zone requests to be reloaded
 func (z *Zone) ReloadC() <-chan bool {
 	return z.r
+}
+
+// NotifyC returns a channel which is readable when the zone requests to send notifications
+func (z *Zone) NotifyC() <-chan bool {
+	return z.u
+}
+
+// HoldUpdates blocks updates from occuring until ReloadUpdates is called
+func (z *Zone) HoldUpdates() {
+	z.updateLock.Lock()
+	if z.blockUpdates {
+		panic("HoldUpdates on held updates")
+	}
+	z.blockUpdates = true
+	z.updateLock.Unlock()
+	z.updateWait.Wait()
+}
+
+func (z *Zone) ReleaseUpdates() {
+	z.updateLock.Lock()
+	if !z.blockUpdates {
+		panic("ReleaseUpdates on released updated")
+	}
+	z.blockUpdates = false
+	z.updateCond.Broadcast()
+	z.updateLock.Unlock()
+}
+
+func (z *Zone) EnterUpdateFence() {
+	z.updateLock.Lock()
+	for z.blockUpdates {
+		z.updateCond.Wait()
+	}
+	z.updateWait.Add(1)
+	z.updateLock.Unlock()
+}
+
+func (z *Zone) LeaveUpdateFence() {
+	z.updateWait.Done()
 }
 
 // NewZones creates an empty Zones

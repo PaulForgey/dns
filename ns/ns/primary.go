@@ -11,22 +11,27 @@ func (zone *Zone) primaryZone(zones *ns.Zones, res *resolver.Resolver) {
 	ctx := zone.ctx
 	z := zone.zone
 
-	s := ns.NewServer(logger, nil, zones, res, zone.conf.Access(&zone.conf.AllowRecursion))
+	s := ns.NewServer(logger, nil, zones, res, ns.AllAccess)
+	notify := &Delay{}
+
+	s.SendNotify(ctx, z)
 
 	for err == nil {
-		err = s.SendNotify(ctx, z)
-		if err != nil {
-			logger.Printf("%v: failed to send NOTIFY: %v", z.Name(), err)
-			err = nil // just a warning
-		}
-
 		select {
 		case <-ctx.Done():
 			err = ctx.Err()
 
 		case <-z.ReloadC():
 			err = zone.load()
+
+		case <-z.NotifyC():
+			notify.Start()
+
+		case <-notify.Fire():
+			notify.Reset()
+			s.SendNotify(ctx, z)
 		}
 	}
+	notify.Stop()
 	logger.Printf("%v: zone routine exiting: %v", z.Name(), err)
 }

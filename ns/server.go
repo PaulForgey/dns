@@ -29,6 +29,18 @@ type Server struct {
 	allowRecursion Access
 }
 
+type allAccess bool
+
+func (a allAccess) Check(net.Addr, string, string) bool {
+	return bool(a)
+}
+
+// AllAccess is an instance of the Access interface which always grants access
+var AllAccess = allAccess(true)
+
+// NoAccess is an instance of the Access interface which always denies access
+var NoAccess = allAccess(false)
+
 // NewServer creates a server instance
 func NewServer(
 	logger *log.Logger,
@@ -64,16 +76,15 @@ func (s *Server) Serve(ctx context.Context) error {
 			continue // only questions
 		}
 
-		var q *dns.Question
-		if len(msg.Questions) > 0 {
-			q = msg.Questions[0]
-		} else {
+		if len(msg.Questions) == 0 {
 			// XXX this needs to change if we ever support an op with no Q section
 			answer(s.conn, dns.FormError, true, msg, from)
 			continue
 		}
+		q := msg.Questions[0]
+		// XXX if qdcount > 1, we use the first and ignore the others
 
-		s.logger.Printf("%s:%v:%v: %v", s.conn.Interface, from, msg.Opcode, q)
+		s.logger.Printf("%s:%v:%v: %v", s.conn.Interface, from, msg.Opcode, msg.Questions[0])
 
 		var zone *Zone
 

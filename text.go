@@ -16,6 +16,12 @@ import (
 	"unicode"
 )
 
+// Records is a special non-standard entity for identifying a group of resource records in a text file
+type Records struct {
+	Annotation string
+	Records    []*Record
+}
+
 // strings or runes of special meaning
 var (
 	dot = string(0)
@@ -183,6 +189,14 @@ func (c *TextCodec) nextLine() error {
 				buf.Reset()
 			}
 
+		case ';':
+			if blank {
+				// present leading whitespace up to a comment as a line starting with one
+				buf.Reset()
+				blank = false
+			}
+			buf.WriteRune(r)
+
 		default:
 			blank = blank && unicode.IsSpace(r)
 			buf.WriteRune(r)
@@ -272,6 +286,12 @@ func (c *TextCodec) token(optional bool) (string, error) {
 			if unicode.IsSpace(rune(b)) {
 				// special case: blank is a token, but only at start of line
 				return "", nil
+			}
+			if b == ';' {
+				// special case: line starting with comment
+				c.line = ""
+				c.sol = true
+				continue
 			}
 			if b == '$' {
 				// $ directives
@@ -521,6 +541,30 @@ func (c *TextCodec) getRecord(r *Record) error {
 	}
 }
 
+func (c *TextCodec) getRecords(r *Records) error {
+	if err := c.startLine(); err != nil {
+		return err
+	}
+	n, err := c.getNumber()
+	if err != nil {
+		return err
+	}
+	r.Annotation, err = c.token(true)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	r.Records = make([]*Record, n)
+	for i := 0; i < n; i++ {
+		nr := &Record{}
+		if err := c.getRecord(nr); err != nil {
+			return err
+		}
+		r.Records[i] = nr
+	}
+
+	return nil
+}
+
 func (c *TextCodec) getIP4() (net.IP, error) {
 	token, err := c.token(false)
 	if err != nil {
@@ -611,6 +655,13 @@ func (c *TextCodec) Decode(i interface{}) error {
 		}
 		*t = uint32(n)
 
+	case *int:
+		n, err := c.getNumber()
+		if err != nil {
+			return err
+		}
+		*t = int(n)
+
 	case *time.Duration:
 		token, err := c.token(false)
 		if err != nil {
@@ -689,6 +740,11 @@ func (c *TextCodec) Decode(i interface{}) error {
 			return err
 		}
 
+	case *Records:
+		if err := c.getRecords(t); err != nil {
+			return err
+		}
+
 	case Decoder:
 		if err := t.UnmarshalCodec(c); err != nil {
 			return err
@@ -714,7 +770,7 @@ func (c *TextCodec) putRecord(r *Record) error {
 	}
 
 	if r.RecordData == nil {
-		if _, err := fmt.Fprintf(c.w, "; negative cache entry"); err != nil {
+		if _, err := fmt.Fprintf(c.w, "; nil"); err != nil {
 			return err
 		}
 	} else if err := c.Encode(r.RecordData); err != nil {
@@ -733,6 +789,25 @@ func (c *TextCodec) putUnknown(r *UnknownRecord) error {
 
 	if _, err := hex.NewEncoder(c.w).Write(r.Data); err != nil {
 		return err
+	}
+
+	return nil
+}
+
+func (c *TextCodec) putRecords(r *Records) error {
+	if _, err := fmt.Fprintf(c.w, "%d ", len(r.Records)); err != nil {
+		return err
+	}
+	if err := c.putString(r.Annotation); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(c.w, "\n"); err != nil {
+		return err
+	}
+	for _, rr := range r.Records {
+		if err := c.putRecord(rr); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -852,7 +927,7 @@ func (c *TextCodec) putBitmap(b Bitmap) error {
 
 func (c *TextCodec) Encode(i interface{}) error {
 	switch t := i.(type) {
-	case byte, uint16, uint32:
+	case byte, uint16, uint32, int:
 		if _, err := fmt.Fprintf(c.w, "%d ", t); err != nil {
 			return err
 		}
@@ -918,6 +993,11 @@ func (c *TextCodec) Encode(i interface{}) error {
 
 	case *Question:
 		if err := c.putQuestion(t); err != nil {
+			return err
+		}
+
+	case *Records:
+		if err := c.putRecords(t); err != nil {
 			return err
 		}
 

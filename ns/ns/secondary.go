@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"io"
-	"math/rand"
 	"time"
 
 	"tessier-ashpool.net/dns"
@@ -211,22 +210,19 @@ func (zone *Zone) secondaryZone(zones *ns.Zones, res *resolver.Resolver) {
 		}
 
 		rt := time.NewTimer(refresh)
-		var reload *time.Timer
-		var reloadC <-chan time.Time
 		trigger := false
+		reload := &Delay{}
 
 		for !trigger && err == nil {
 			select {
 			case <-z.ReloadC():
-				if reload != nil {
-					reload.Stop()
-				}
-				reload = time.NewTimer(time.Duration(rand.Int()%5+5) * time.Second)
-				reloadC = reload.C
+				reload.Start()
 
 			case <-rt.C:
 				trigger = true
-			case <-reloadC:
+
+			case <-reload.Fire():
+				reload.Reset()
 				trigger = true
 
 			case <-ctx.Done():
@@ -234,9 +230,7 @@ func (zone *Zone) secondaryZone(zones *ns.Zones, res *resolver.Resolver) {
 			}
 		}
 		rt.Stop()
-		if reload != nil {
-			reload.Stop()
-		}
+		reload.Stop()
 	}
 
 	logger.Printf("%v: zone routine exiting: %v", z.Name(), err)

@@ -18,12 +18,13 @@ type RRType uint16
 type RRClass uint16
 
 const (
-	INClass   RRClass = 1
-	CSClass   RRClass = 2
-	CHClass   RRClass = 3
-	HSClass   RRClass = 4
-	NoneClass RRClass = 254
-	AnyClass  RRClass = 255 // query
+	InvalidClass RRClass = 0
+	INClass      RRClass = 1
+	CSClass      RRClass = 2
+	CHClass      RRClass = 3
+	HSClass      RRClass = 4
+	NoneClass    RRClass = 254
+	AnyClass     RRClass = 255 // query
 )
 
 func (c RRClass) String() string {

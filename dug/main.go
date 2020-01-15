@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"strings"
 
 	"tessier-ashpool.net/dns"
 	"tessier-ashpool.net/dns/dnsconn"
@@ -19,14 +22,65 @@ var rrtype = dns.AnyType
 var rrclass = dns.INClass
 var rd = true
 var serial uint
+var updates string
 
 func exitError(msg interface{}) {
 	fmt.Fprintf(os.Stderr, "%s: %v\n", os.Args[0], msg)
 	os.Exit(1)
 }
 
-func exitErrorF(s string, args ...interface{}) {
+func exitErrorf(s string, args ...interface{}) {
 	exitError(fmt.Sprintf(s, args...))
+}
+
+func update(name dns.Name, r *resolver.Resolver) {
+	var err error
+
+	file := os.Stdin
+	if updates != "-" {
+		file, err = os.Open(updates)
+		if err != nil {
+			exitError(err)
+		}
+		defer file.Close()
+	}
+
+	c := dns.NewTextReader(file, name)
+	msg := &dns.Message{
+		Opcode: dns.Update,
+		Questions: []*dns.Question{
+			&dns.Question{
+				QName:  name,
+				QType:  dns.SOAType,
+				QClass: rrclass,
+			},
+		},
+	}
+
+	for {
+		rr := &dns.Records{}
+		if err := c.Decode(rr); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			exitError(err)
+		}
+		switch strings.ToLower(rr.Annotation) {
+		case "prereq":
+			msg.Answers = rr.Records
+
+		case "update":
+			msg.Authority = rr.Records
+			_, err := r.Transact(context.Background(), nil, msg)
+			if err != nil {
+				exitError(err)
+			}
+			msg.Answers = nil // clear optional prereq section for next update
+
+		default:
+			exitErrorf("unknown update section type %s", rr.Annotation)
+		}
+	}
 }
 
 func main() {
@@ -37,6 +91,7 @@ func main() {
 	flag.Var(&rrclass, "class", "class")
 	flag.BoolVar(&rd, "rd", true, "send recursive queries to -host")
 	flag.UintVar(&serial, "serial", 0, "if -type=ixfr, serial to use in SOA")
+	flag.StringVar(&updates, "updates", "", "file to send ddns updates from (- for stdin)")
 
 	flag.Parse()
 
@@ -48,7 +103,7 @@ func main() {
 
 	name, err := dns.NameWithString(args[0])
 	if err != nil {
-		exitErrorF("cannot parse name '%s': %v", name, err)
+		exitErrorf("cannot parse name '%s': %v", name, err)
 	}
 
 	var r *resolver.Resolver
@@ -57,7 +112,7 @@ func main() {
 	} else {
 		conn, err := net.ListenUDP(network, nil)
 		if err != nil {
-			exitErrorF("cannot create resolver socket: %v", err)
+			exitErrorf("cannot create resolver socket: %v", err)
 		}
 		r = resolver.NewResolver(
 			resolver.RootCache,
@@ -66,12 +121,17 @@ func main() {
 		)
 	}
 	if err != nil {
-		exitErrorF("cannot create resolver: %v", err)
+		exitErrorf("cannot create resolver: %v", err)
 	}
 
 	if debug {
 		textCodec := dns.NewTextWriter(os.Stdout)
 		r.Debug(textCodec)
+	}
+
+	if updates != "" {
+		update(name, r)
+		return
 	}
 
 	switch rrtype {

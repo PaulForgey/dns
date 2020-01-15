@@ -11,7 +11,6 @@ import (
 	"tessier-ashpool.net/dns"
 )
 
-var ErrMartian = errors.New("record does not have suffix of zone")
 var ErrSOA = errors.New("SOA records cannot be interface specific")
 var ErrIxfr = errors.New("SOA does not match for IXFR")
 var ErrAxfr = errors.New("Mismatched or unexpected SOA values")
@@ -35,6 +34,12 @@ type ZoneAuthority interface {
 // the Authority interface defines a container finding closest a matching ZoneAuthority for a given Name
 type Authority interface {
 	Find(name dns.Name) ZoneAuthority
+}
+
+// the UpdateLog interface hooks zone updates.
+type UpdateLog interface {
+	// if Update returns an error, the update does not occur and the error is returned to the caller of the zone's update
+	Update(key string, update []*dns.Record) error
 }
 
 type snapshot struct {
@@ -86,6 +91,8 @@ func (s *snapshot) xfer(from *snapshot, rrclass dns.RRClass, next func(*dns.Reco
 // the Zone type holds authoritative records for a given DNS zone.
 // Records in a zone may further be keyed by interface name.
 type Zone struct {
+	UpdateLog UpdateLog
+
 	name      dns.Name
 	hint      bool
 	lk        sync.RWMutex
@@ -141,7 +148,7 @@ func (z *Zone) Load(key string, clear bool, next func() (*dns.Record, error)) er
 		rec, err := next()
 		if rec != nil {
 			if !rec.RecordHeader.Name.HasSuffix(z.name) {
-				return fmt.Errorf("%w: name=%v, suffix=%v", ErrMartian, rec.RecordHeader.Name, z.name)
+				return fmt.Errorf("%w: name=%v, suffix=%v", dns.NotZone, rec.RecordHeader.Name, z.name)
 			}
 			if rec.Type() == dns.SOAType {
 				if key != "" {
@@ -150,7 +157,6 @@ func (z *Zone) Load(key string, clear bool, next func() (*dns.Record, error)) er
 				if _, ok := rec.RecordData.(*dns.SOARecord); ok {
 					z.soa = rec
 				}
-				continue
 			}
 			records = append(records, rec)
 		}
@@ -163,9 +169,6 @@ func (z *Zone) Load(key string, clear bool, next func() (*dns.Record, error)) er
 		}
 	}
 
-	if z.soa != nil {
-		db.Enter(time.Time{}, false, []*dns.Record{z.soa})
-	}
 	db.Enter(time.Time{}, false, records)
 	return nil
 }
@@ -235,11 +238,16 @@ func (z *Zone) soa_locked() *dns.Record {
 		z.updated = false
 		z.soa = r
 
-		z.db.Enter(time.Now(), false, []*dns.Record{z.soa})
+		update := []*dns.Record{r}
+		z.db.Enter(time.Time{}, false, update)
+		if z.UpdateLog != nil {
+			z.UpdateLog.Update("", update)
+		}
 	}
 
 	return r
 }
+
 func (z *Zone) SOA() *dns.Record {
 	var r *dns.Record
 
@@ -254,6 +262,15 @@ func (z *Zone) SOA() *dns.Record {
 		z.lk.RUnlock()
 	}
 	return r
+}
+
+func (z *Zone) Class() dns.RRClass {
+	z.lk.RLock()
+	defer z.lk.RUnlock()
+	if z.soa == nil {
+		return dns.InvalidClass
+	}
+	return z.soa.Class()
 }
 
 // Lookup a name within a zone, or a delegation above it.
@@ -663,6 +680,12 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 
 	// do the updates
 	updated := false
+
+	if z.UpdateLog != nil {
+		if err := z.UpdateLog.Update(key, update); err != nil {
+			return false, err
+		}
+	}
 
 	for _, r := range update {
 		name := r.RecordHeader.Name

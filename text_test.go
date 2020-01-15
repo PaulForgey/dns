@@ -315,3 +315,39 @@ $ORIGIN tessier-ashpool.net
 		t.Fatalf("%v does not end with %v", nsrec.Name, name)
 	}
 }
+
+func TestRecords(t *testing.T) {
+	input := `
+0
+1
+localhost. IN A 127.0.0.1
+2 annotation
+host1. IN A 192.168.0.1
+host2. NONE ANY
+`
+	expect := []struct {
+		count      int
+		annotation string
+	}{
+		{0, ""},
+		{1, ""},
+		{2, "annotation"},
+	}
+
+	r := NewTextReader(strings.NewReader(input), nil)
+
+	for i, e := range expect {
+		recs := &Records{}
+		err := r.Decode(recs)
+		if err != nil {
+			t.Fatalf("case %d, %v", i, err)
+		}
+
+		if len(recs.Records) != e.count {
+			t.Fatalf("expected %d records, got %d", e.count, len(recs.Records))
+		}
+		if recs.Annotation != e.annotation {
+			t.Fatalf("expected annotatio %s, got %s", e.annotation, recs.Annotation)
+		}
+	}
+}

@@ -154,7 +154,6 @@ func (s *RestServer) doZoneReload(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
-
 }
 
 func (s *RestServer) doZoneConf(w http.ResponseWriter, r *http.Request) {
