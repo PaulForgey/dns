@@ -490,6 +490,7 @@ func (c *TextCodec) getRecord(r *Record) error {
 		}
 
 		if err := rrclass.Set(token); err == nil {
+			c.rrclass = rrclass
 			gotClass = true
 			continue
 		} else {
