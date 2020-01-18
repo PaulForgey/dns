@@ -11,7 +11,11 @@ import (
 
 func sendBatch(conn *dnsconn.Connection, msg *dns.Message, to net.Addr, r []*dns.Record) error {
 	msg.Answers = r
-	err := answer(conn, nil, false, msg, to)
+	msg.QR = true
+	msg.RCode = dns.NoError
+
+	msgSize := messageSize(conn, msg)
+	err := conn.WriteTo(msg, to, msgSize)
 
 	var truncated *dns.Truncated
 	if !conn.UDP && errors.As(err, &truncated) && len(r) > 1 {
@@ -29,18 +33,18 @@ func (s *Server) ixfr(ctx context.Context, msg *dns.Message, to net.Addr, zone *
 
 	if zone.Hint() || !zone.Name().Equal(q.QName) {
 		// this is not us
-		return answer(s.conn, dns.NotAuth, true, msg, to)
+		return s.answer(dns.NotAuth, true, msg, to)
 	}
 
 	var serial uint32
 	if q.QType == dns.IXFRType {
 		if len(msg.Authority) != 1 {
-			return answer(s.conn, dns.FormError, true, msg, to)
+			return s.answer(dns.FormError, true, msg, to)
 		}
 		r := msg.Authority[0]
 		soa, ok := r.D.(*dns.SOARecord)
 		if !ok || !r.Name().Equal(q.QName) {
-			return answer(s.conn, dns.FormError, true, msg, to)
+			return s.answer(dns.FormError, true, msg, to)
 		}
 		serial = soa.Serial
 	}
@@ -53,7 +57,7 @@ func (s *Server) ixfr(ctx context.Context, msg *dns.Message, to net.Addr, zone *
 	msg.AA = true
 
 	batch := make([]*dns.Record, 0, 64)
-	_, err := zone.Dump(serial, s.conn.Interface, q.QClass, func(r *dns.Record) error {
+	_, err := zone.Dump(serial, q.QClass, func(r *dns.Record) error {
 		var err error
 		batch = append(batch, r)
 		if len(batch) == cap(batch) {
@@ -78,10 +82,10 @@ func (s *Server) ixfr(ctx context.Context, msg *dns.Message, to net.Addr, zone *
 		msg.TC = true
 		msg.Answers = []*dns.Record{zone.SOA()}
 		s.logger.Printf("%v: sending @%d to %v: retry TCP", zone.Name(), serial, to)
-		return answer(s.conn, nil, false, msg, to)
+		return s.answer(nil, false, msg, to)
 	} else if err != nil {
 		s.logger.Printf("%v: failed sending @%d to %v: %v", zone.Name(), serial, to, err)
-		return answer(s.conn, err, true, msg, to)
+		return s.answer(err, true, msg, to)
 	}
 	return nil
 }
@@ -92,7 +96,7 @@ func (s *Server) notify(ctx context.Context, msg *dns.Message, to net.Addr, zone
 	msg.Additional = nil
 
 	if q.QType != dns.SOAType {
-		return answer(s.conn, dns.FormError, true, msg, to)
+		return s.answer(dns.FormError, true, msg, to)
 	}
 
 	var found bool
@@ -118,5 +122,5 @@ func (s *Server) notify(ctx context.Context, msg *dns.Message, to net.Addr, zone
 		zone.Reload()
 	}
 
-	return answer(s.conn, nil, true, msg, to)
+	return s.answer(nil, true, msg, to)
 }

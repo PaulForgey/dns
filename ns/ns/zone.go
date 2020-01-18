@@ -27,6 +27,7 @@ func (l *updateLog) reset() {
 	if l.file != nil {
 		l.file.Close()
 		os.Remove(l.filename)
+		l.file = nil
 	}
 }
 
@@ -188,9 +189,9 @@ func (zone *Zone) load() error {
 	}
 
 	// replay will attach the updateLog to the zone after it replays
-	if updated, err := updateLog.replay(z.Zone); err != nil {
+	if _, err := updateLog.replay(z.Zone); err != nil {
 		return err
-	} else if updated {
+	} else {
 		logger.Printf("%v: updated from %s", z.Name(), updateLog.filename)
 		if err := zone.save_locked(); err != nil {
 			return err

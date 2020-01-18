@@ -51,5 +51,5 @@ func (s *Server) query(ctx context.Context, msg *dns.Message, from net.Addr, zon
 		s.zones.Additional(msg, s.conn.Interface, q.QClass)
 	}
 
-	return answer(s.conn, err, false, msg, from)
+	return s.answer(err, false, msg, from)
 }

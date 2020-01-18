@@ -23,6 +23,9 @@ func (zone *Zone) primaryZone(zones *ns.Zones, res *resolver.Resolver) {
 
 		case <-z.ReloadC():
 			err = zone.load()
+			if err == nil {
+				notify.Start()
+			}
 
 		case <-z.NotifyC():
 			notify.Start()

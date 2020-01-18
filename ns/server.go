@@ -78,7 +78,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 		if len(msg.Questions) == 0 {
 			// XXX this needs to change if we ever support an op with no Q section
-			answer(s.conn, dns.FormError, true, msg, from)
+			s.answer(dns.FormError, true, msg, from)
 			continue
 		}
 		q := msg.Questions[0]
@@ -94,14 +94,14 @@ func (s *Server) Serve(ctx context.Context) error {
 				switch msg.Opcode {
 				case dns.Update:
 					if zone.AllowUpdate == nil || !zone.AllowUpdate.Check(from, s.conn.Interface, "") {
-						answer(s.conn, dns.Refused, true, msg, from)
+						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
 					s.update(ctx, msg, from, zone)
 
 				case dns.Notify:
 					if zone.AllowNotify == nil || !zone.AllowNotify.Check(from, s.conn.Interface, "") {
-						answer(s.conn, dns.Refused, true, msg, from)
+						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
 					s.notify(ctx, msg, from, zone)
@@ -113,7 +113,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			case dns.AXFRType, dns.IXFRType:
 				if zone = s.zones.Zone(q.QName); zone != nil {
 					if zone.AllowTransfer == nil || !zone.AllowTransfer.Check(from, s.conn.Interface, "") {
-						answer(s.conn, dns.Refused, true, msg, from)
+						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
 					s.ixfr(ctx, msg, from, zone)
@@ -122,7 +122,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			default:
 				if zone, _ = s.zones.Find(q.QName).(*Zone); zone != nil {
 					if zone.AllowQuery == nil || !zone.AllowQuery.Check(from, s.conn.Interface, "") {
-						answer(s.conn, dns.Refused, true, msg, from)
+						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
 					s.query(ctx, msg, from, zone)
@@ -130,25 +130,44 @@ func (s *Server) Serve(ctx context.Context) error {
 			}
 
 		default:
-			answer(s.conn, dns.NotImplemented, true, msg, from)
+			s.answer(dns.NotImplemented, true, msg, from)
 			continue
 		}
 
 		if zone == nil {
-			answer(s.conn, dns.Refused, true, msg, from)
+			s.answer(dns.Refused, true, msg, from)
 		}
 	}
 
 	return nil // unreached
 }
 
-func answer(conn *dnsconn.Connection, err error, clear bool, msg *dns.Message, to net.Addr) error {
+func messageSize(conn *dnsconn.Connection, msg *dns.Message) int {
+	if conn.UDP {
+		msgSize := dnsconn.MinMessageSize
+		if msg.EDNS != nil {
+			msgSize = int(msg.EDNS.H.(*dns.EDNSHeader).MaxMessageSize())
+			if msgSize < dnsconn.MinMessageSize {
+				msgSize = dnsconn.MinMessageSize
+			}
+			msg.EDNS = &dns.Record{
+				H: dns.NewEDNSHeader(dnsconn.UDPMessageSize, 0, 0, 0),
+				D: &dns.EDNSRecord{},
+			}
+		}
+		return msgSize
+	}
+	return dnsconn.MaxMessageSize
+}
+
+func (s *Server) answer(err error, clear bool, msg *dns.Message, to net.Addr) error {
 	msg.QR = true
 
 	msg.RCode = dns.NoError
 	if err != nil {
 		if !errors.As(err, &msg.RCode) {
 			msg.RCode = dns.ServerFailure
+			s.logger.Printf("responding to %v: %v", to, err)
 		}
 	}
 
@@ -158,25 +177,6 @@ func answer(conn *dnsconn.Connection, err error, clear bool, msg *dns.Message, t
 		msg.Additional = nil
 	}
 
-	msgSize := dnsconn.MinMessageSize
-
-	// client's EDNS message
-	if conn.UDP {
-		if msg.EDNS != nil {
-			msgSize = int(msg.EDNS.H.(*dns.EDNSHeader).MaxMessageSize())
-			if msgSize < dnsconn.MinMessageSize {
-				msgSize = dnsconn.MinMessageSize
-			}
-
-			// respond with our own
-			msg.EDNS = &dns.Record{
-				H: dns.NewEDNSHeader(dnsconn.UDPMessageSize, 0, 0, 0),
-				D: &dns.EDNSRecord{},
-			}
-		}
-	} else {
-		msgSize = dnsconn.MaxMessageSize
-	}
-
-	return conn.WriteTo(msg, to, msgSize)
+	msgSize := messageSize(s.conn, msg)
+	return s.conn.WriteTo(msg, to, msgSize)
 }

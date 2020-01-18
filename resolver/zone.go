@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"tessier-ashpool.net/dns"
+	"tessier-ashpool.net/dns/nsdb"
 )
 
 var ErrSOA = errors.New("SOA records cannot be interface specific")
@@ -16,6 +18,7 @@ var ErrIxfr = errors.New("SOA does not match for IXFR")
 var ErrAxfr = errors.New("Mismatched or unexpected SOA values")
 var ErrNoSOA = errors.New("zone has no SOA record")
 var ErrNoKey = errors.New("zone has no record with this key")
+var ErrXferInProgress = errors.New("zone is already transferring")
 
 // the ZoneAuthority interface tells a resolver how to look up authoritative records or delegations
 type ZoneAuthority interface {
@@ -28,7 +31,7 @@ type ZoneAuthority interface {
 	// SOA returns the zone's SOA record, may return nil
 	SOA() *dns.Record
 	// Enter enters recors into the cache (usually only makes sense with hint zones)
-	Enter(records []*dns.Record)
+	Enter(records []*dns.Record) error
 }
 
 // the Authority interface defines a container finding closest a matching ZoneAuthority for a given Name
@@ -37,55 +40,10 @@ type Authority interface {
 }
 
 // the UpdateLog interface hooks zone updates.
+// XXX this concept belongs in ns
 type UpdateLog interface {
 	// if Update returns an error, the update does not occur and the error is returned to the caller of the zone's update
 	Update(key string, update []*dns.Record) error
-}
-
-type snapshot struct {
-	soa         *dns.Record
-	remove, add *Cache // all in 'add' if not differential
-	prior       *snapshot
-}
-
-func (s *snapshot) serial() uint32 {
-	return s.soa.D.(*dns.SOARecord).Serial
-}
-
-func (s *snapshot) collapse() *Cache {
-	if s.prior == nil {
-		if s.remove != nil {
-			panic("snapshot is not differential but remove != nil")
-		}
-		return s.add
-	}
-
-	base := s.prior.collapse()
-	base.Patch(s.remove, s.add)
-	return base
-}
-
-func (s *snapshot) xfer(from *snapshot, rrclass dns.RRClass, next func(*dns.Record) error) error {
-	if s.prior != from {
-		if err := s.prior.xfer(from, rrclass, next); err != nil {
-			return err
-		}
-	}
-
-	if err := next(s.prior.soa); err != nil {
-		return err
-	}
-	if err := s.remove.Enumerate(rrclass, next); err != nil {
-		return err
-	}
-	if err := next(s.soa); err != nil {
-		return err
-	}
-	if err := s.add.Enumerate(rrclass, next); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 // the Zone type holds authoritative records for a given DNS zone.
@@ -93,27 +51,26 @@ func (s *snapshot) xfer(from *snapshot, rrclass dns.RRClass, next func(*dns.Reco
 type Zone struct {
 	UpdateLog UpdateLog
 
-	name      dns.Name
-	hint      bool
-	lk        sync.RWMutex
-	snaplk    sync.Mutex // overlaps with lk; lock lk first!
-	updated   bool
-	soa       *dns.Record
-	keys      map[string]*Cache
-	snapshots map[string]*snapshot
-	db, cache *Cache
+	name     dns.Name
+	hint     bool
+	lk       sync.RWMutex
+	xferlock int32
+	updated  bool
+	soa      *dns.Record
+	keys     map[string]nsdb.Db
+	db       nsdb.Db
+	cache    *nsdb.Cache
 }
 
 // NewZone creates a new zone with a given name
 func NewZone(name dns.Name, hint bool) *Zone {
 	zone := &Zone{
-		name:      name,
-		hint:      hint,
-		keys:      make(map[string]*Cache),
-		snapshots: make(map[string]*snapshot),
+		name: name,
+		hint: hint,
+		keys: make(map[string]nsdb.Db),
 	}
-	zone.db = NewCache(nil)
-	zone.cache = zone.db.Root()
+	zone.db = nsdb.NewMemory() // XXX while we load from files through the front end
+	zone.cache = nsdb.NewCache()
 	zone.keys[""] = zone.db
 	return zone
 }
@@ -128,22 +85,23 @@ func (z *Zone) Name() dns.Name {
 
 // Load loads in a series of records. If an SOA is found, the later in the sequence is used to update serial.
 // next returns nil, io.EOF on last record
-// Load is usually performed on an off line zone.
+// XXX this belongs in ns.Zone, but stays here while we load through the front end. resolver.Zone needs to
+//     create a hint zone
 func (z *Zone) Load(key string, clear bool, next func() (*dns.Record, error)) error {
 	z.lk.Lock()
 	defer z.lk.Unlock()
 
 	db, ok := z.keys[key]
 	if !ok {
-		db = NewCache(z.db)
+		db = nsdb.NewMemory()
 		z.keys[key] = db
 	}
 
 	if clear {
-		db.Clear(true)
+		db.Clear()
 	}
 
-	records := []*dns.Record{}
+	records := make([]*dns.Record, 0, 256)
 	for {
 		rec, err := next()
 		if rec != nil {
@@ -159,6 +117,12 @@ func (z *Zone) Load(key string, clear bool, next func() (*dns.Record, error)) er
 				}
 			}
 			records = append(records, rec)
+			if len(records) == cap(records) {
+				if _, err := nsdb.Load(db, time.Time{}, records); err != nil {
+					return err
+				}
+				records = records[:0]
+			}
 		}
 
 		if err != nil {
@@ -168,8 +132,12 @@ func (z *Zone) Load(key string, clear bool, next func() (*dns.Record, error)) er
 			return err
 		}
 	}
+	if len(records) > 0 {
+		if _, err := nsdb.Load(db, time.Time{}, records); err != nil {
+			return err
+		}
+	}
 
-	db.Enter(time.Time{}, false, records)
 	return nil
 }
 
@@ -185,6 +153,7 @@ func (z *Zone) Decode(key string, clear bool, c dns.Codec) error {
 }
 
 // Save writes a shallow copy of the zone for the given key
+// XXX this belongs in ns.Zone
 func (z *Zone) Save(key string, next func(r *dns.Record) error) error {
 	z.lk.RLock()
 	soa := z.soa
@@ -205,23 +174,37 @@ func (z *Zone) Save(key string, next func(r *dns.Record) error) error {
 		z.lk.RUnlock()
 		return ErrNoKey // this is a shallow operation, so wrong key is an error
 	}
-	data := db.Clone(true, nil)
 	z.lk.RUnlock()
 
-	if err := next(soa); err != nil {
+	if soa != nil {
+		if err := next(soa); err != nil {
+			return err
+		}
+	}
+	if err := db.Enumerate(0, func(serial uint32, records []*dns.Record) error {
+		for _, r := range records {
+			if r.Type() != dns.SOAType {
+				if err := next(r); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
-	return data.Enumerate(dns.AnyClass, next)
+
+	return nil
 }
 
 // Encode calls Save using codec as convenience
+// XXX this belongs in ns.Zone
 func (z *Zone) Encode(key string, c dns.Codec) error {
 	return z.Save(key, func(r *dns.Record) error {
 		return c.Encode(r)
 	})
 }
 
-// Retrieve SOA data.
 func (z *Zone) soa_locked() *dns.Record {
 	r := z.soa
 
@@ -238,16 +221,18 @@ func (z *Zone) soa_locked() *dns.Record {
 		z.updated = false
 		z.soa = r
 
-		update := []*dns.Record{r}
-		z.db.Enter(time.Time{}, false, update)
+		update := &nsdb.RRSet{Records: []*dns.Record{r}}
+		z.db.Enter(r.Name(), r.Type(), r.Class(), update)
 		if z.UpdateLog != nil {
-			z.UpdateLog.Update("", update)
+			z.UpdateLog.Update("", update.Records)
 		}
 	}
 
 	return r
 }
 
+// Retrieve SOA data.
+// XXX this belongs in ns.Zone
 func (z *Zone) SOA() *dns.Record {
 	var r *dns.Record
 
@@ -264,13 +249,16 @@ func (z *Zone) SOA() *dns.Record {
 	return r
 }
 
+// Class returns the class for the zone.
+// XXX this belongs in ns.Zone
 func (z *Zone) Class() dns.RRClass {
 	z.lk.RLock()
-	defer z.lk.RUnlock()
-	if z.soa == nil {
-		return dns.InvalidClass
+	rrclass := dns.InvalidClass
+	if z.soa != nil {
+		rrclass = z.soa.Class()
 	}
-	return z.soa.Class()
+	z.lk.RUnlock()
+	return rrclass
 }
 
 // Lookup a name within a zone, or a delegation above it.
@@ -279,192 +267,163 @@ func (z *Zone) Lookup(
 	name dns.Name,
 	rrtype dns.RRType,
 	rrclass dns.RRClass,
-) (a []*dns.Record, ns []*dns.Record, err error) {
-	now := time.Now()
+) ([]*dns.Record, []*dns.Record, error) {
 	z.lk.RLock()
-
-	db, ok := z.keys[key]
-	if !ok {
+	db, keyed := z.keys[key]
+	if !keyed {
 		db = z.db
 	}
+	z.lk.RUnlock()
 
-	a, err = db.Get(now, name, rrtype, rrclass)
-	if len(a) == 0 {
-		for sname := name; sname.HasSuffix(z.name); sname = sname.Suffix() {
-			if !z.hint && len(sname) == len(z.name) {
-				// we can stop here if we're authoritative
-				break
-			}
-			ns, _ = db.Get(now, sname, dns.NSType, rrclass)
-			if len(ns) > 0 {
-				err = nil
-			}
-			if len(ns) > 0 || len(sname) == 0 {
-				// either have delegation or have reached dot
-				break
+	// first check the cache
+	a, ns, err := z.lookup(z.cache, name, rrtype, rrclass)
+	if err != nil && !errors.Is(err, dns.NXDomain) {
+		return nil, nil, err
+	}
+
+	if len(a) == 0 && db != z.cache {
+		// then our database
+		a, ns, err = z.lookup(db, name, rrtype, rrclass)
+		if err != nil && !errors.Is(err, dns.NXDomain) {
+			return nil, nil, err
+		}
+
+		if len(a) == 0 && keyed {
+			// and if keyed, the main db (this has final delegation authority)
+			a, ns, err = z.lookup(z.db, name, rrtype, rrclass)
+			if err != nil && !errors.Is(err, dns.NXDomain) {
+				return nil, nil, err
 			}
 		}
 	}
 
-	z.lk.RUnlock()
-	return
+	return a, ns, err
 }
 
-// SharedUpdate does an mdns record update, paying attention to CacheFlush
-// If now is the zero value, the given records are owned by the caller. Any such records with the cache flush bit set
-// will cause a panic.
-// NSEC records matching their own name will be translated into the appropriate negative cache entries.
-func (z *Zone) SharedUpdate(now time.Time, key string, records []*dns.Record) {
-	z.lk.Lock()
-	defer z.lk.Unlock()
-
-	db, ok := z.keys[key]
-	if !ok {
-		db = NewCache(z.db)
-		z.keys[key] = db
+func (z *Zone) lookup(
+	db nsdb.Db,
+	name dns.Name,
+	rrtype dns.RRType,
+	rrclass dns.RRClass,
+) ([]*dns.Record, []*dns.Record, error) {
+	rrset, err := db.Lookup(false, name, rrtype, rrclass)
+	if rrset != nil {
+		return rrset.Records, nil, nil
+	}
+	if err != nil && !errors.Is(err, dns.NXDomain) {
+		return nil, nil, err
 	}
 
-	if now.IsZero() {
-		// easy case: these are our own records. Just put them in and we are done.
-		db.Enter(time.Time{}, false, records)
-		return
-	}
-
-	// sift into three categories: negative cache, shared, exclusive
-	var shared, exclusive, negative []*dns.Record
-	for _, r := range records {
-		if nsec, ok := r.D.(*dns.NSECRecord); ok && nsec.Next.Equal(r.Name()) {
-			rrtype := nsec.Types.Next(dns.InvalidType)
-			for rrtype != dns.InvalidType {
-				negative = append(negative, &dns.Record{
-					H: dns.NewHeader(r.Name(), rrtype, r.Class(), r.H.TTL()),
-				})
-				rrtype = nsec.Types.Next(rrtype)
-			}
-		} else {
-			if m, ok := r.H.(*dns.MDNSHeader); ok && m.CacheFlush() {
-				exclusive = append(exclusive, r)
+	// try for delegation
+	if name.HasSuffix(z.name) {
+		if rrtype == dns.NSType {
+			if len(name) > len(z.name) {
+				name = name.Suffix()
 			} else {
-				shared = append(shared, r)
+				return nil, nil, err
 			}
+		}
+		// do not dig in ourselves unless we are a hint zone
+		if len(name) == len(z.name) && !z.hint {
+			return nil, nil, err
+		}
+
+		rrset, nsset, err2 := z.lookup(db, name, dns.NSType, rrclass)
+		if rrset != nil || (err2 != nil && !errors.Is(err2, dns.NXDomain)) {
+			// delegation response or error getting it
+			return nil, rrset, err2
+		}
+		if nsset != nil {
+			return nil, nsset, nil
 		}
 	}
 
-	// do the updates
-	if len(negative) > 0 {
-		db.Enter(now, false, negative)
-	}
-	if len(shared) > 0 {
-		db.Enter(now, true, shared)
-	}
-	if len(exclusive) > 0 {
-		db.Enter(now, false, exclusive)
-	}
+	// return original empty set or NXDomain
+	return nil, nil, err
 }
 
 // Enter calls the cache's Enter method for the cache layer under this zone. As this is not an mdns operation, there
 // is no shared option and the current time is used.
 // XXX do not cache pseduo records
-func (z *Zone) Enter(records []*dns.Record) {
-	z.lk.Lock()
-	z.cache.Enter(time.Now(), false, records)
-	z.lk.Unlock()
+func (z *Zone) Enter(records []*dns.Record) error {
+	_, err := nsdb.Load(z.cache, time.Now(), records)
+	return err
 }
 
 // Dump returns all records for a zone, optionally since a given soa.
 // If serial is 0 or the zone does not have history for serial, a full result set is returned, otherwise an incremental result.
 // The current serial will be snapshotted for future history if it was not already.
-func (z *Zone) Dump(serial uint32, key string, rrclass dns.RRClass, next func(*dns.Record) error) (uint32, error) {
+// XXX this belongs in ns.Zone
+func (z *Zone) Dump(serial uint32, rrclass dns.RRClass, next func(*dns.Record) error) (uint32, error) {
 	var toSerial uint32
 
 	z.lk.Lock()
+
 	soa := z.soa_locked()
 	if soa == nil {
 		z.lk.Unlock()
 		return 0, ErrNoSOA
 	}
-	toSerial = soa.D.(*dns.SOARecord).Serial
-	db, ok := z.keys[key]
-	if !ok {
-		key = ""
-		db = z.db
+	soaD := soa.D.(*dns.SOARecord)
+	toSerial = soaD.Serial
+	fromSOA := &dns.Record{
+		H: soa.H,
+		D: &dns.SOARecord{
+			MName:   soaD.MName,
+			ReName:  soaD.ReName,
+			Serial:  serial,
+			Refresh: soaD.Refresh,
+			Retry:   soaD.Retry,
+			Expire:  soaD.Expire,
+			Minimum: soaD.Minimum,
+		},
 	}
+	toSOA := soa
 
-	z.snaplk.Lock()
-	defer z.snaplk.Unlock()
-
-	snap, ok := z.snapshots[key]
-	if !ok || snap.serial() != soa.D.(*dns.SOARecord).Serial {
-		prior := snap
-
-		var remove, add *Cache
-
-		if prior != nil {
-			// keep history clean to a maximum of 5 differentials
-			i := 0
-			p := prior
-			for p != nil && i < 5 {
-				i++
-				p = p.prior
-			}
-			if p != nil && p.prior != nil {
-				p.add = p.collapse()
-				p.remove = nil
-				p.prior = nil
-			}
-
-			last := prior.collapse()
-			remove = last.Clone(false, db)
-			add = db.Clone(false, last)
-		} else {
-			add = db.Clone(false, nil)
-		}
-
-		snap = &snapshot{
-			soa:    soa,
-			remove: remove,
-			add:    add,
-			prior:  prior,
-		}
-		z.snapshots[key] = snap
-	}
-
-	var from *snapshot
-	var data *Cache
-
-	if serial != 0 {
-		from = snap
-		for from != nil && from.serial() != serial {
-			from = from.prior
-		}
-		if from == snap {
-			from = nil
-		} else if from == nil {
-			data = db.Clone(false, nil)
-		}
-	} else {
-		data = db.Clone(false, nil)
-	}
-	z.lk.Unlock() // done holding on to the zone data; can now answer queries while transferring. snapshots still locked
+	z.lk.Unlock()
 
 	if err := next(soa); err != nil {
 		return toSerial, err
 	}
 
-	if from != nil {
-		if err := snap.xfer(from, rrclass, next); err != nil {
-			return toSerial, err
+	if serial == toSerial {
+		return toSerial, nil
+	}
+
+	if err := z.db.Snapshot(soaD.Serial); err != nil {
+		return toSerial, err
+	}
+
+	err := z.db.Enumerate(serial, func(serial uint32, records []*dns.Record) error {
+		if serial != 0 && fromSOA != nil {
+			if err := next(fromSOA); err != nil {
+				return err
+			}
+			fromSOA = nil
 		}
-		if err := next(soa); err != nil {
-			return toSerial, err
+		if serial == 0 && toSOA != nil {
+			if fromSOA == nil {
+				if err := next(toSOA); err != nil {
+					return err
+				}
+			}
+			toSOA = nil
 		}
-	} else if data != nil {
-		if err := data.Enumerate(rrclass, next); err != nil {
-			return toSerial, err
+		for _, r := range records {
+			if r.Type() == dns.SOAType {
+				continue
+			}
+			if err := next(r); err != nil {
+				return err
+			}
 		}
-		if err := next(soa); err != nil {
-			return toSerial, err
-		}
+		return nil
+	})
+	if err != nil {
+		return toSerial, err
+	}
+	if err = next(soa); err != nil {
+		return toSerial, err
 	}
 
 	return toSerial, nil
@@ -473,19 +432,20 @@ func (z *Zone) Dump(serial uint32, key string, rrclass dns.RRClass, next func(*d
 // Xfer parses a zone transfer.
 // Set ixfr to true or false to set axfr vs ixfr expectations
 // If ixfr is false, the zone is cleared.
+// XXX this belongs in ns.Zone
 func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 	z.lk.RLock()
 
-	var db *Cache
-	if ixfr {
-		db = z.db.Clone(false, nil)
-	} else {
-		db = NewCache(nil)
+	defer func() {
+		atomic.AddInt32(&z.xferlock, -1)
+		z.lk.RUnlock()
+	}()
+
+	if atomic.AddInt32(&z.xferlock, 1) > 1 {
+		return ErrXferInProgress
 	}
+
 	soa := z.soa
-
-	z.lk.RUnlock()
-
 	toSOA, err := nextRecord()
 	if err != nil {
 		return err
@@ -500,7 +460,7 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 		soa = toSOA
 	}
 
-	var del, add *Cache
+	var del, add []*dns.Record
 	records := make([]*dns.Record, 0, 256)
 	for {
 		rec, err := nextRecord()
@@ -510,17 +470,17 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 				if del != nil && add != nil {
 					// done with incremental section
 
-					add.Enter(time.Time{}, false, records)
+					add = append(add, records...)
 					records = records[:0]
 
-					db.Patch(del, add)
+					nsdb.Patch(z.db, del, add)
 					del = nil
 					add = nil
 				}
 
 				if del == nil {
 					// any records here are normal xfer
-					db.Enter(time.Time{}, false, records)
+					nsdb.Load(z.db, time.Time{}, records)
 					records = records[:0]
 
 					// if this soa is toSOA, we're done
@@ -540,14 +500,14 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 					}
 
 					soa = rec
-					del = NewCache(nil)
+					del = make([]*dns.Record, 0)
 				} else {
 					// start of add part of incremental section
 
-					del.Enter(time.Time{}, false, records)
+					del = append(del, records...)
 					records = records[:0]
 
-					add = NewCache(nil)
+					add = make([]*dns.Record, 0)
 					soa = rec
 				}
 			} else {
@@ -555,7 +515,7 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 
 				if len(records) >= cap(records) && del == nil && add == nil {
 					// flush out the normal xfer records
-					db.Enter(time.Time{}, false, records)
+					nsdb.Load(z.db, time.Time{}, records)
 					records = records[:0]
 				}
 			}
@@ -579,36 +539,37 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 	}
 
 	// done!
-	db.Enter(time.Time{}, false, []*dns.Record{soa})
-
-	z.lk.Lock()
-	z.soa = soa
-	z.db = db
-
-	for k, _ := range z.keys {
-		delete(z.keys, k)
-	}
-	z.keys[""] = db
-
-	z.lk.Unlock()
+	z.db.Enter(soa.Name(), dns.SOAType, soa.Class(), &nsdb.RRSet{Records: []*dns.Record{soa}})
+	z.soa = soa // XXX potential data race (read lock)
 	return nil
 }
 
 // Update processes updates to a zone
+// XXX this belongs in ns.Zone
 func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
-	now := time.Now()
-	z.lk.Lock()
-	defer z.lk.Unlock()
+	var db nsdb.Db
+	var ok bool
 
-	db, ok := z.keys[key]
-	if !ok {
-		db = z.db
-	}
+	abort := true
+
+	z.lk.Lock()
+	defer func() {
+		z.lk.Unlock()
+		if db != nil {
+			db.EndUpdate(abort)
+		}
+	}()
 
 	soa := z.soa
 	if soa == nil {
 		return false, ErrNoSOA
 	}
+
+	db, ok = z.keys[key]
+	if !ok {
+		db = z.db
+	}
+	db.BeginUpdate()
 
 	// process the prereq
 	for _, r := range prereq {
@@ -624,11 +585,11 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 			return false, dns.FormError
 		}
 
-		recs, _ := db.Get(now, r.Name(), rrtype, rrclass)
-		match := len(recs) > 0
+		rrset, _ := db.Lookup(false, r.Name(), rrtype, rrclass)
+		match := rrset != nil
 		if match && r.D != nil {
 			match = false
-			for _, rr := range recs {
+			for _, rr := range rrset.Records {
 				if rr.Type() != rrtype { // should only happen for CNAME not being looked for
 					break
 				}
@@ -676,72 +637,92 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 	// do the updates
 	updated := false
 
-	if z.UpdateLog != nil {
-		if err := z.UpdateLog.Update(key, update); err != nil {
-			return false, err
-		}
-	}
-
 	for _, r := range update {
-		name := r.Name()
+		name, rrtype, rrclass := r.Name(), r.Type(), r.Class()
 		auth := name.Equal(z.name)
-		rrtype, rrclass := r.Type(), r.Class()
+
 		deleteSet := (rrclass == dns.NoneClass)
 		if deleteSet {
 			rrclass = soa.Class()
 		}
 		if deleteSet || r.D == nil {
-			// allow removal of NS records not matching soa MName
-			// (this is a bit of a hack and departure from RFC 2136)
-			if auth && rrtype == dns.NSType && r.D != nil &&
-				!r.D.(dns.NSRecordType).NS().Equal(soa.D.(*dns.SOARecord).MName) {
-				auth = false
+			if auth && (rrtype == dns.NSType || rrtype == dns.SOAType) {
+				continue
 			}
-			updated = db.Remove(now, auth, &dns.Record{
-				H: dns.NewHeader(r.Name(), rrtype, rrclass, 0),
-				D: r.D,
-			})
+
+			u, err := nsdb.Patch(
+				db,
+				[]*dns.Record{
+					&dns.Record{
+						H: dns.NewHeader(r.Name(), rrtype, rrclass, 0),
+						D: r.D,
+					},
+				},
+				nil,
+			)
+			if err != nil {
+				return false, err
+			}
+			updated = updated || u
 		} else {
-			rrset, _ := db.Get(now, name, rrtype, rrclass)
+			if rrclass == dns.AnyClass {
+				rrclass = soa.Class()
+			}
+
+			rrset, err := db.Lookup(false, name, rrtype, rrclass)
+			if err != nil && !errors.Is(err, dns.NXDomain) {
+				return false, err
+			}
+
+			var update *nsdb.RRSet
+			if rrset != nil {
+				update = rrset.Copy()
+			} else {
+				update = &nsdb.RRSet{}
+			}
+
 			found := false
-			for _, rr := range rrset {
-				if found {
-					break
-				}
-				if rr.Type() != rrtype {
-					found = true // CNAME and not looking to update one
-					break
-				}
-				switch rrtype {
-				case dns.SOAType:
-					if !rr.H.Equal(r.H) {
-						found = true
+			if rrset != nil {
+				for _, rr := range rrset.Records {
+					if found {
 						break
 					}
-					if rr.D.(*dns.SOARecord).Serial > r.D.(*dns.SOARecord).Serial {
-						found = true
+					if rr.Type() != rrtype {
+						found = true // CNAME and not looking to update one
 						break
 					}
-					rrset = nil // update replaces the only one
-					z.soa = r
+					switch rrtype {
+					case dns.SOAType:
+						if !rr.H.Equal(r.H) {
+							found = true
+							break
+						}
+						if rr.D.(*dns.SOARecord).Serial > r.D.(*dns.SOARecord).Serial {
+							found = true
+							break
+						}
+						update.Records = nil // update replaces the only one
+						z.soa = r
 
-				case dns.WKSType:
-					w1 := rr.D.(*dns.WKSRecord)
-					w2 := r.D.(*dns.WKSRecord)
-					if w1.Protocol == w2.Protocol && bytes.Compare(w1.Address[:], w2.Address[:]) == 0 {
-						found = true
-					}
+					case dns.WKSType:
+						w1 := rr.D.(*dns.WKSRecord)
+						w2 := r.D.(*dns.WKSRecord)
+						if w1.Protocol == w2.Protocol &&
+							bytes.Compare(w1.Address[:], w2.Address[:]) == 0 {
+							found = true
+						}
 
-				case dns.CNAMEType:
-					// like SOA and tiggers, there can only be one
-					if rr.D.Equal(r.D) {
-						found = true
-					}
-					rrset = nil
+					case dns.CNAMEType:
+						// like SOA and tiggers, there can only be one
+						if rr.D.Equal(r.D) {
+							found = true
+						}
+						update.Records = nil
 
-				default:
-					if rr.D.Equal(r.D) {
-						found = true
+					default:
+						if rr.D.Equal(r.D) {
+							found = true
+						}
 					}
 				}
 			}
@@ -749,9 +730,17 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 				// skip existing or matching record
 				continue
 			}
-			rrset = append(rrset, r)
-			db.Enter(time.Time{}, false, rrset)
+			update.Records = append(update.Records, r)
+			if err := db.Enter(name, rrtype, rrclass, update); err != nil {
+				return false, err
+			}
 			updated = true
+		}
+	}
+
+	if z.UpdateLog != nil {
+		if err := z.UpdateLog.Update(key, update); err != nil {
+			return false, err
 		}
 	}
 
@@ -762,5 +751,6 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 		z.updated = false
 	}
 
+	abort = false
 	return updated, nil
 }

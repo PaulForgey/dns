@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -270,9 +271,9 @@ func (t RRType) Match(n RRType) bool {
 	return t == AnyType || n == AnyType || t == n
 }
 
-// Ask returns true if t == n or t is AnyType. That is, does t ask for n?
+// Ask returns true if t == n, t is AnyType, or t is a CNAME. That is, does t ask for n?
 func (t RRType) Asks(n RRType) bool {
-	return t == AnyType || t == n
+	return t == AnyType || t == n || n == CNAMEType
 }
 
 // the RecordHeader interface identifies the type and class of a record
@@ -517,7 +518,7 @@ func (r *Record) Less(n *Record) bool {
 	if r.Type() < n.Type() || r.Type() == n.Type() && r.Class() < n.Class() {
 		return true
 	}
-	if r.Class() != n.Class() {
+	if r.Type() != n.Type() || r.Class() != n.Class() {
 		return false
 	}
 	if r.D == nil {
@@ -527,6 +528,37 @@ func (r *Record) Less(n *Record) bool {
 		return false
 	}
 	return r.D.Less(n.D)
+}
+
+// RecordSets sorts through a slice of functions, calling set for each unique name, type, and class with the subset
+// of matching records.
+// records will be sorted as a side effect.
+func RecordSets(records []*Record, set func(Name, RRType, RRClass, []*Record) error) error {
+	sort.Slice(records, func(i, j int) bool { return records[i].Less(records[j]) })
+
+	var name Name
+	var rrtype RRType
+	var rrclass RRClass
+
+	j := 0
+	for i, r := range records {
+		if !name.Equal(r.Name()) || rrtype != r.Type() || rrclass != r.Class() {
+			if i > 0 {
+				if err := set(name, rrtype, rrclass, records[j:i]); err != nil {
+					return err
+				}
+			}
+			j = i
+			name, rrtype, rrclass = r.Name(), r.Type(), r.Class()
+		}
+	}
+	if j < len(records) {
+		if err := set(name, rrtype, rrclass, records[j:]); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // The UnknownRecord type can store rdata of unknown resource records.

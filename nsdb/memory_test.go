@@ -1,11 +1,7 @@
 package nsdb
 
 import (
-	"errors"
 	"fmt"
-	"io"
-	"sort"
-	"strings"
 	"testing"
 	"time"
 
@@ -65,59 +61,17 @@ otherhost 1h IN A 192.168.0.10
 // if all three revisions are loaded without clearing, final result. This expected duplicates.
 const combined = `
 shoes     1h IN TXT "industry"
-shoes     TXT       "industry"
-shoes     TXT       "industry"
 shoes     TXT       "dead"
-host      A         192.168.0.1
 host      A         192.168.0.1
 otherhost A         192.168.0.10
 `
-
-func compareRecords(t *testing.T, description string, rs1, rs2 []*dns.Record) {
-	sort.Slice(rs1, func(i, j int) bool { return rs1[i].Less(rs1[j]) })
-	sort.Slice(rs2, func(i, j int) bool { return rs2[i].Less(rs2[j]) })
-
-	equal := len(rs1) == len(rs2)
-	for i := 0; i < len(rs1) && equal; i++ {
-		equal = rs1[i].Equal(rs2[i])
-	}
-
-	if !equal {
-		t.Errorf("record sets are not equal: %s", description)
-		t.Errorf("rs1:")
-		for _, r := range rs1 {
-			t.Errorf("rs1: %v\n", r)
-		}
-		t.Errorf("rs2:\n")
-		for _, r := range rs2 {
-			t.Errorf("rs2: %v\n", r)
-		}
-		t.Fatal()
-	}
-}
-
-func parseText(t *testing.T, s string) []*dns.Record {
-	c := dns.NewTextReader(strings.NewReader(s), nil)
-	var records []*dns.Record
-	for {
-		r := &dns.Record{}
-		if err := c.Decode(r); err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			t.Fatal(err)
-		}
-		records = append(records, r)
-	}
-	return records
-}
 
 func TestLoad(t *testing.T) {
 	m := NewMemory()
 
 	for _, s := range revisions {
 		records := parseText(t, s)
-		if err := Load(m, time.Time{}, records); err != nil {
+		if _, err := Load(m, time.Time{}, records); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -141,7 +95,7 @@ func TestDelta(t *testing.T) {
 	for i, s := range revisions {
 		m.Clear()
 		records := parseText(t, s)
-		if err := Load(m, time.Time{}, records); err != nil {
+		if _, err := Load(m, time.Time{}, records); err != nil {
 			t.Fatal(err)
 		}
 
@@ -172,5 +126,81 @@ func TestDelta(t *testing.T) {
 		if err := m.Snapshot(uint32(i + 1)); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+func makeName(t *testing.T, s string) dns.Name {
+	name, err := dns.NameWithString(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return name
+}
+
+func TestLookup(t *testing.T) {
+	m := NewMemory()
+	records := parseText(t, `
+shoes 1h IN TXT "industry"
+dead IN CNAME shoes
+host IN A 127.0.0.1
+host IN AAAA ::1
+`)
+
+	if _, err := Load(m, time.Time{}, records); err != nil {
+		t.Fatal(err)
+	}
+
+	shoes := parseText(t, `
+shoes IN TXT "industry"
+`)
+	dead := parseText(t, `
+dead IN CNAME shoes
+`)
+	host := parseText(t, `
+host IN A 127.0.0.1
+host IN AAAA ::1
+`)
+
+	lookups := []struct {
+		name    dns.Name
+		rrtype  dns.RRType
+		rrclass dns.RRClass
+		expect  []*dns.Record
+	}{
+		{
+			name:    makeName(t, "shoes"),
+			rrtype:  dns.TXTType,
+			rrclass: dns.INClass,
+			expect:  shoes,
+		},
+		{
+			name:    makeName(t, "dead"),
+			rrtype:  dns.AType,
+			rrclass: dns.INClass,
+			expect:  dead,
+		},
+		{
+			name:    makeName(t, "dead"),
+			rrtype:  dns.AType,
+			rrclass: dns.AnyClass,
+			expect:  dead,
+		},
+		{
+			name:    makeName(t, "host"),
+			rrtype:  dns.AnyType,
+			rrclass: dns.INClass,
+			expect:  host,
+		},
+	}
+
+	for i, l := range lookups {
+		rrset, err := m.Lookup(false, l.name, l.rrtype, l.rrclass)
+		if err != nil {
+			t.Fatalf("case %d: %v", i, err)
+		}
+		if rrset == nil {
+			t.Fatalf("case %d: no records", i)
+		}
+		compareRecords(t, fmt.Sprintf("case %d", i), rrset.Records, l.expect)
 	}
 }

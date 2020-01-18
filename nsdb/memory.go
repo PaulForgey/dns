@@ -14,17 +14,29 @@ type Memory struct {
 	snapshots map[uint32]names // COW'd records by snapshot
 	snaplist  []uint32         // snapshots in creation order, oldest first
 	db        names            // actual database
+	update    names            // update transaction
 }
 
-type rrmap map[uint32]*RRSet
+type tkey uint32
+type rrmap map[tkey]*RRSet
 type nset struct {
 	rrmap
 	readOnly bool // part of a snapshot; copy before updating
 }
 type names map[string]*nset
 
-func typekey(rrtype dns.RRType, rrclass dns.RRClass) uint32 {
-	return uint32(uint32(rrtype)<<16 | uint32(rrclass))
+func typekey(rrtype dns.RRType, rrclass dns.RRClass) tkey {
+	return tkey(uint32(rrtype)<<16 | uint32(rrclass))
+}
+
+func (t tkey) match(exact bool, rrtype dns.RRType, rrclass dns.RRClass) bool {
+	mytype := dns.RRType(uint32(t) >> 16)
+	myclass := dns.RRClass(t & 0xffff)
+	if rrtype.Asks(mytype) && rrclass.Asks(myclass) {
+		// if exact, do not hit CNAMEs if we didn't ask for them
+		return !(exact && (rrtype != dns.AnyType && rrtype != mytype))
+	}
+	return false
 }
 
 func (rr rrmap) get(rrtype dns.RRType, rrclass dns.RRClass) (*RRSet, bool) {
@@ -34,21 +46,21 @@ func (rr rrmap) get(rrtype dns.RRType, rrclass dns.RRClass) (*RRSet, bool) {
 
 func (rm rrmap) copy() rrmap {
 	n := make(rrmap)
-	for tkey, rrset := range rm {
-		if rrset == nil || len(rrset.Records) == 0 {
+	for t, rrset := range rm {
+		if rrset == nil {
 			continue
 		}
-		n[tkey] = rrset.Copy()
+		n[t] = rrset.Copy()
 	}
 	return n
 }
 
 func (rr rrmap) set(rrtype dns.RRType, rrclass dns.RRClass, rrset *RRSet) {
-	tkey := typekey(rrtype, rrclass)
-	if rrset == nil || len(rrset.Records) == 0 {
-		delete(rr, tkey)
+	t := typekey(rrtype, rrclass)
+	if rrset == nil {
+		delete(rr, t)
 	} else {
-		rr[tkey] = rrset
+		rr[t] = rrset
 	}
 }
 
@@ -62,22 +74,25 @@ func NewMemory() *Memory {
 }
 
 // Clear removes all records (snapshots are unaffected)
-func (m *Memory) Clear() {
-	for k, _ := range m.db {
-		delete(m.db, k)
-	}
-}
-
-func (m *Memory) copyKey(key string) {
+func (m *Memory) Clear() error {
 	m.lk.Lock()
-	ns, ok := m.db[key]
-	if ok && ns.readOnly {
-		m.db[key] = &nset{rrmap: ns.rrmap.copy()}
+	defer m.lk.Unlock()
+
+	var db names
+	if m.update != nil {
+		db = m.update
+	} else {
+		db = m.db
 	}
-	m.lk.Unlock()
+
+	for k, _ := range db {
+		delete(db, k)
+	}
+	return nil
 }
 
-// assumes lock held; safe with read lock
+// assumes lock held; safe with read lock.
+// returns a COW'd shallow copy of the database
 func (m *Memory) snapshot_locked() names {
 	snapshot := make(names)
 	for key, ns := range m.db {
@@ -104,35 +119,122 @@ func (m *Memory) Snapshot(snapshot uint32) error {
 	return nil
 }
 
-func (m *Memory) Lookup(name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (*RRSet, error) {
+func (m *Memory) BeginUpdate() error {
+	m.lk.Lock()
+	defer m.lk.Unlock()
+
+	if m.update != nil {
+		return ErrAlreadyUpdating
+	}
+	m.update = m.snapshot_locked()
+	return nil
+}
+
+func (m *Memory) EndUpdate(abort bool) error {
+	m.lk.Lock()
+	defer m.lk.Unlock()
+
+	if m.update == nil {
+		return ErrNotUpdating
+	}
+	if !abort {
+		m.db = m.update
+	}
+	m.update = nil
+	return nil
+}
+
+func (m *Memory) Lookup(exact bool, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (*RRSet, error) {
 	key := name.Key()
 	m.lk.RLock()
 
-	ns, ok := m.db[key]
+	var db names
+	if m.update != nil {
+		db = m.update
+	} else {
+		db = m.db
+	}
+
+	ns, ok := db[key]
 	if !ok || ns == nil || len(ns.rrmap) == 0 {
 		m.lk.RUnlock()
 		return nil, dns.NXDomain
 	}
-	rrset, _ := ns.get(rrtype, rrclass)
+
+	var rrset *RRSet
+
+	if !exact && rrclass != dns.AnyClass {
+		rrset, _ = ns.get(dns.CNAMEType, rrclass)
+		if rrset != nil {
+			m.lk.RUnlock()
+			return rrset, nil
+		}
+	}
+
+	rotate := false
+
+	if rrtype == dns.AnyType || rrclass == dns.AnyClass {
+		rrset = &RRSet{}
+		for t, rs := range ns.rrmap {
+			if t.match(exact, rrtype, rrclass) {
+				rrset.Records = append(rrset.Records, rs.Records...)
+			}
+		}
+	} else {
+		rrset, _ = ns.get(rrtype, rrclass)
+		if rrset != nil {
+			rotate = len(rrset.Records) > 1
+		}
+	}
 
 	m.lk.RUnlock()
+	if rotate {
+		m.lk.Lock()
+		rrset.Rotate()
+		m.lk.Unlock()
+	}
+
 	return rrset, nil
 }
 
 func (m *Memory) Enter(name dns.Name, rrtype dns.RRType, rrclass dns.RRClass, rrset *RRSet) error {
+	if rrset != nil && len(rrset.Records) == 0 {
+		rrset = nil
+	}
+	if rrset != nil && (rrtype == dns.AnyType || rrclass == dns.AnyClass) {
+		return ErrInvalidRRSet
+	}
+
 	key := name.Key()
 	m.lk.Lock()
 
-	ns, ok := m.db[key]
+	var db names
+	if m.update != nil {
+		db = m.update
+	} else {
+		db = m.db
+	}
+
+	ns, ok := db[key]
 	if ok && ns.readOnly {
 		ns = &nset{rrmap: ns.rrmap.copy()}
-		m.db[key] = ns
+		db[key] = ns
 	}
+
 	if ns == nil {
 		ns = &nset{rrmap: make(rrmap)}
-		m.db[key] = ns
+		db[key] = ns
 	}
-	ns.set(rrtype, rrclass, rrset)
+
+	if rrtype == dns.AnyType || rrclass == dns.AnyClass {
+		for t, _ := range ns.rrmap {
+			if t.match(true, rrtype, rrclass) {
+				delete(ns.rrmap, t)
+			}
+		}
+	} else {
+		ns.set(rrtype, rrclass, rrset)
+	}
 
 	m.lk.Unlock()
 	return nil
@@ -158,14 +260,14 @@ func (m *Memory) Enumerate(serial uint32, f func(uint32, []*dns.Record) error) e
 				// both sides of the delta are equal for the entire name
 				continue
 			}
-			for tkey, rs := range ns.rrmap {
-				if rs == nil && len(rs.Records) == 0 {
-					// nil or empty RRSet
+			for t, rs := range ns.rrmap {
+				if rs == nil {
+					// empty RRSet
 					continue
 				}
 				var xr *RRSet
 				if xs != nil {
-					xr, _ = xs.rrmap[tkey]
+					xr, _ = xs.rrmap[t]
 				}
 				records := rs.Records
 				if xr != nil {
@@ -182,6 +284,10 @@ func (m *Memory) Enumerate(serial uint32, f func(uint32, []*dns.Record) error) e
 	}
 
 	if from != nil {
+		// send an empty header so the client knows this is a delta
+		if err := f(serial, nil); err != nil {
+			return err
+		}
 		if err := delta(serial, from, to); err != nil {
 			return err
 		}
