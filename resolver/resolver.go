@@ -169,9 +169,10 @@ func (r *Resolver) Ask(
 
 	if msg != nil {
 		if zone != nil && msg.RCode == dns.NoError {
-			zone.Enter(msg.Answers)
-			zone.Enter(msg.Authority)
-			zone.Enter(msg.Additional)
+			now := time.Now()
+			zone.Enter(now, msg.Answers)
+			zone.Enter(now, msg.Authority)
+			zone.Enter(now, msg.Additional)
 		}
 
 		if r.debug != nil {
@@ -283,14 +284,23 @@ func (r *Resolver) ResolveIP(
 	rrclass dns.RRClass,
 ) ([]dns.IPRecordType, error) {
 	var results []dns.IPRecordType
+	var types []dns.RRType
 
-	a, err := r.Resolve(ctx, key, name, r.hostType, rrclass)
-	if err != nil {
-		return nil, err
+	if r.hostType == dns.AnyType {
+		types = []dns.RRType{dns.AType, dns.AAAAType}
+	} else {
+		types = []dns.RRType{r.hostType}
 	}
-	for _, r := range a {
-		if ip, ok := r.D.(dns.IPRecordType); ok {
-			results = append(results, ip)
+
+	for _, t := range types {
+		a, err := r.Resolve(ctx, key, name, t, rrclass)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range a {
+			if ip, ok := r.D.(dns.IPRecordType); ok {
+				results = append(results, ip)
+			}
 		}
 	}
 
@@ -306,7 +316,6 @@ func (r *Resolver) resolveIP(
 	rrclass dns.RRClass,
 ) ([]dns.IPRecordType, error) {
 	var results []dns.IPRecordType
-	var records []*dns.Record
 	var types []dns.RRType
 
 	if r.hostType == dns.AnyType {
@@ -316,17 +325,15 @@ func (r *Resolver) resolveIP(
 	}
 
 	for _, t := range types {
-		recs, _, _, _, err := r.query(ctx, servers, key, name, t, rrclass)
+		a, _, _, _, err := r.query(ctx, servers, key, name, t, rrclass)
 		if err != nil {
 			return nil, err
 		}
 
-		records = append(records, recs...)
-	}
-
-	for _, r := range records {
-		if ip, ok := r.D.(dns.IPRecordType); ok {
-			results = append(results, ip)
+		for _, r := range a {
+			if ip, ok := r.D.(dns.IPRecordType); ok {
+				results = append(results, ip)
+			}
 		}
 	}
 

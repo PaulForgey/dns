@@ -1,7 +1,10 @@
 package resolver
 
 import (
+	"errors"
+	"io"
 	"strings"
+	"time"
 
 	"tessier-ashpool.net/dns"
 )
@@ -53,8 +56,18 @@ func NewRootZone() *Zone {
 	zone := NewZone(nil, true)
 
 	c := dns.NewTextReader(strings.NewReader(rootZone), nil)
-	err := zone.Decode("", false, c)
-	if err != nil {
+	records := []*dns.Record{}
+	for {
+		r := &dns.Record{}
+		if err := c.Decode(r); err != nil {
+			if !errors.Is(err, io.EOF) {
+				panic(err)
+			}
+			break
+		}
+		records = append(records, r)
+	}
+	if err := zone.Enter(time.Time{}, records); err != nil {
 		panic(err)
 	}
 

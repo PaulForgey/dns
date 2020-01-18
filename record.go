@@ -24,7 +24,7 @@ const (
 	CSClass      RRClass = 2
 	CHClass      RRClass = 3
 	HSClass      RRClass = 4
-	NoneClass    RRClass = 254
+	NoneClass    RRClass = 254 // query
 	AnyClass     RRClass = 255 // query
 )
 

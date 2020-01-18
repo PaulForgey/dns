@@ -65,6 +65,10 @@ func Load(db Db, entered time.Time, records []*dns.Record) (bool, error) {
 			if err != nil && !errors.Is(err, dns.NXDomain) {
 				return err
 			}
+			if rrset != nil && rrset.Entered.IsZero() && !entered.IsZero() {
+				// do not molest permanent records
+				return nil
+			}
 
 			if rrset == nil {
 				rrset = &RRSet{

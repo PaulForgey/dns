@@ -116,7 +116,7 @@ type Conf struct {
 
 var logStderr bool
 var confFile string
-var cache = resolver.NewRootZone()
+var cache = ns.NewCacheZone(resolver.NewRootZone())
 var logger *log.Logger
 
 func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zones *ns.Zones, res *resolver.Resolver) {
@@ -200,7 +200,12 @@ func main() {
 	flag.Parse()
 
 	if logStderr {
-		logger = log.New(os.Stderr, "ns:", log.LstdFlags)
+		hostname, err := os.Hostname()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "cannot get hostname: %v\n", err)
+			hostname = "ns"
+		}
+		logger = log.New(os.Stderr, hostname+":", log.LstdFlags)
 	} else {
 		logger, err = syslog.NewLogger(syslog.LOG_NOTICE|syslog.LOG_DAEMON, log.LstdFlags)
 		if err != nil {

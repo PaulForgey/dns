@@ -13,7 +13,6 @@ import (
 
 var ErrNoResolver = errors.New("server has no resolver")
 var ErrNoConnection = errors.New("server has no connection")
-var ErrNoSOA = errors.New("zone has no SOA")
 var ErrNoNS = errors.New("zone has no NS records")
 var ErrNoNSAddrs = errors.New("zone has no resolvable hosts for NS records")
 

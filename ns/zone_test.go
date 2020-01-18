@@ -7,7 +7,7 @@ import (
 	"tessier-ashpool.net/dns/resolver"
 )
 
-func newName(t *testing.T, n string) dns.Name {
+func nameWithString(t *testing.T, n string) dns.Name {
 	name, err := dns.NameWithString(n)
 	if err != nil {
 		t.Fatal(err)
@@ -16,10 +16,10 @@ func newName(t *testing.T, n string) dns.Name {
 }
 
 func TestZoneSearch(t *testing.T) {
-	dot := &Zone{Zone: resolver.NewZone(newName(t, "."), true)}
-	zone1 := &Zone{Zone: resolver.NewZone(newName(t, "tessier-ashpool.net"), false)}
-	zone2 := &Zone{Zone: resolver.NewZone(newName(t, "shoesinonehour.com"), false)}
-	zone3 := &Zone{Zone: resolver.NewZone(newName(t, "horses.shoesinonehour.com"), false)}
+	dot := &Zone{Zone: resolver.NewZone(nameWithString(t, "."), true)}
+	zone1 := &Zone{Zone: resolver.NewZone(nameWithString(t, "tessier-ashpool.net"), false)}
+	zone2 := &Zone{Zone: resolver.NewZone(nameWithString(t, "shoesinonehour.com"), false)}
+	zone3 := &Zone{Zone: resolver.NewZone(nameWithString(t, "horses.shoesinonehour.com"), false)}
 
 	zones := NewZones()
 
@@ -42,7 +42,7 @@ func TestZoneSearch(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		zone := zones.Find(newName(t, test.name))
+		zone := zones.Find(nameWithString(t, test.name))
 		if zone != test.zone {
 			var name dns.Name
 			if zone != nil {

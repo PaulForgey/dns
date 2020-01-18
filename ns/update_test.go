@@ -1,4 +1,4 @@
-package resolver
+package ns
 
 import (
 	"errors"
@@ -20,14 +20,6 @@ rr 	A 	127.0.0.1
 
 cr 	CNAME 	rr
 `
-
-func nameWithString(t *testing.T, s string) dns.Name {
-	name, err := dns.NameWithString(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return name
-}
 
 func recordWithString(t *testing.T, name dns.Name, data string) *dns.Record {
 	c := dns.NewTextReader(strings.NewReader(data), name)

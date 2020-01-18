@@ -51,7 +51,7 @@ func (l *updateLog) open(reading bool) error {
 	return err
 }
 
-func (l *updateLog) replay(z *resolver.Zone) (bool, error) {
+func (l *updateLog) replay(z *ns.Zone) (bool, error) {
 	z.UpdateLog = nil
 
 	if l.file == nil {
@@ -124,17 +124,17 @@ func (zone *Zone) create(ctx context.Context, conf *Conf, name string) error {
 
 	switch zone.Type {
 	case PrimaryType, HintType:
-		zone.zone = ns.NewZone(resolver.NewZone(n, zone.Type == HintType))
+		zone.zone = ns.NewZone(n, zone.Type == HintType)
 		if err := zone.load(); err != nil {
 			return err
 		}
 
 	case SecondaryType:
-		zone.zone = ns.NewZone(resolver.NewZone(n, false))
+		zone.zone = ns.NewZone(n, false)
 		zone.zone.Primary = zone.Primary
 
 	case CacheType: // this is builtin and name is '.' regardless of what the configuration says
-		zone.zone = ns.NewZone(cache)
+		zone.zone = cache
 
 	default:
 		return fmt.Errorf("no such type %s", zone.Type)
@@ -189,7 +189,7 @@ func (zone *Zone) load() error {
 	}
 
 	// replay will attach the updateLog to the zone after it replays
-	if updated, err := updateLog.replay(z.Zone); err != nil {
+	if updated, err := updateLog.replay(z); err != nil {
 		return err
 	} else {
 		if updated {
