@@ -434,9 +434,15 @@ func (z *Zone) Dump(serial uint32, rrclass dns.RRClass, next func(*dns.Record) e
 // If ixfr is false, the zone is cleared.
 // XXX this belongs in ns.Zone
 func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
+	var db nsdb.Db
+	abort := true
+
 	z.lk.RLock()
 
 	defer func() {
+		if db != nil {
+			db.EndUpdate(abort)
+		}
 		atomic.AddInt32(&z.xferlock, -1)
 		z.lk.RUnlock()
 	}()
@@ -460,6 +466,11 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 		soa = toSOA
 	}
 
+	if err := z.db.BeginUpdate(); err != nil {
+		return err
+	}
+	db = z.db
+
 	var del, add []*dns.Record
 	records := make([]*dns.Record, 0, 256)
 	for {
@@ -473,14 +484,19 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 					add = append(add, records...)
 					records = records[:0]
 
-					nsdb.Patch(z.db, del, add)
+					if _, err := nsdb.Patch(z.db, del, add); err != nil {
+						return err
+					}
+
 					del = nil
 					add = nil
 				}
 
 				if del == nil {
 					// any records here are normal xfer
-					nsdb.Load(z.db, time.Time{}, records)
+					if _, err := nsdb.Load(z.db, time.Time{}, records); err != nil {
+						return err
+					}
 					records = records[:0]
 
 					// if this soa is toSOA, we're done
@@ -515,7 +531,9 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 
 				if len(records) >= cap(records) && del == nil && add == nil {
 					// flush out the normal xfer records
-					nsdb.Load(z.db, time.Time{}, records)
+					if _, err := nsdb.Load(z.db, time.Time{}, records); err != nil {
+						return err
+					}
 					records = records[:0]
 				}
 			}
@@ -538,8 +556,12 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 		)
 	}
 
+	if err := z.db.Enter(soa.Name(), dns.SOAType, soa.Class(), &nsdb.RRSet{Records: []*dns.Record{soa}}); err != nil {
+		return err
+	}
+
 	// done!
-	z.db.Enter(soa.Name(), dns.SOAType, soa.Class(), &nsdb.RRSet{Records: []*dns.Record{soa}})
+	abort = false
 	z.soa = soa // XXX potential data race (read lock)
 	return nil
 }
@@ -569,7 +591,10 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 	if !ok {
 		db = z.db
 	}
-	db.BeginUpdate()
+	if err := db.BeginUpdate(); err != nil {
+		db = nil
+		return false, err
+	}
 
 	// process the prereq
 	for _, r := range prereq {

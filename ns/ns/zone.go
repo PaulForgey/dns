@@ -189,12 +189,14 @@ func (zone *Zone) load() error {
 	}
 
 	// replay will attach the updateLog to the zone after it replays
-	if _, err := updateLog.replay(z.Zone); err != nil {
+	if updated, err := updateLog.replay(z.Zone); err != nil {
 		return err
 	} else {
-		logger.Printf("%v: updated from %s", z.Name(), updateLog.filename)
-		if err := zone.save_locked(); err != nil {
-			return err
+		if updated {
+			logger.Printf("%v: updated from %s", z.Name(), updateLog.filename)
+			if err := zone.save_locked(); err != nil {
+				return err
+			}
 		}
 	}
 
