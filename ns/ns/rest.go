@@ -231,7 +231,7 @@ func (s *RestServer) doZoneData(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serial, _ := strconv.Atoi(r.FormValue("serial"))
-	key := r.FormValue("key")
+	//key := r.FormValue("key")
 
 	switch r.Method {
 	case http.MethodGet:
@@ -247,8 +247,13 @@ func (s *RestServer) doZoneData(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPut:
 		c := dns.NewTextReader(bufio.NewReader(r.Body), zone.Name())
-		err := zone.Decode(key, true, c)
-		if err != nil {
+		if err := zone.Xfer(false, func() (*dns.Record, error) {
+			r := &dns.Record{}
+			if err := c.Decode(r); err != nil {
+				return nil, err
+			}
+			return r, nil
+		}); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			fmt.Fprintf(w, "%v\r\n", err)
 			return

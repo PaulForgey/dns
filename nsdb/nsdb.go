@@ -17,9 +17,22 @@ type RRSet struct {
 	Records []*dns.Record
 }
 
+type DbFlags int
+
+const (
+	// Changes to data are immediately reflected, with no later call to Save() necessary
+	DbLiveUpdateFlag DbFlags = 1 << iota
+
+	// Retrievals are high latency and should be cached locally
+	DbShouldCacheFlag
+)
+
 // the Db interface defines an instance of a database back end.
 // After storing or retrieving an *RRset instance, use RRSet.Copy to make a mutable shallow copy if it will be modified.
 type Db interface {
+	// Flags returns information about the database instance.
+	Flags() DbFlags
+
 	// Lookup returns an RRSet. If not records exist for the name regardless of type, returns NXDomain. If the
 	// name exists but not of the type, no error is returned.
 	// Empty RRSets are never returned, so existence check is simply a check against nil.
@@ -35,7 +48,7 @@ type Db interface {
 	Enter(name dns.Name, rrtype dns.RRType, rrclass dns.RRClass, rrset *RRSet) error
 
 	// Snapshot snapshots the database at a given serial number. If not supported, Snapshot does nothing and
-	// returns no error
+	// returns no error. Snapshotting the same serial has no subsequent effect.
 	Snapshot(serial uint32) error
 
 	// Enumerate returns all records in the database. If starting serial is not found or backend does not
@@ -48,6 +61,11 @@ type Db interface {
 
 	// Commits the update transaction
 	EndUpdate(abort bool) error
+
+	// Save commits cached or in-memory changes to stable storage.
+	// name is typically the zone name and is used for backend specific context. e.g., the Text backend writes the
+	// SOA for this name first if one is present.
+	Save(name dns.Name) error
 
 	// Clear resets the database.
 	// XXX This method presumes populating from a zone file, which will ultimately be handled by the backend

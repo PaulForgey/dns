@@ -11,6 +11,7 @@ import (
 
 	"tessier-ashpool.net/dns"
 	"tessier-ashpool.net/dns/ns"
+	"tessier-ashpool.net/dns/nsdb"
 	"tessier-ashpool.net/dns/resolver"
 )
 
@@ -151,13 +152,21 @@ func (zone *Zone) create(ctx context.Context, conf *Conf, name string) error {
 
 func (zone *Zone) loadKey(key, dbfile string) error {
 	z := zone.zone
-	c, err := dns.NewTextFileReader(dbfile, z.Name())
-	if err != nil {
+	db := z.Db(key)
+	if db == nil {
+		db = nsdb.NewText(dbfile)
+		if err := z.Attach(key, db); err != nil {
+			return err
+		}
+	}
+	t, ok := db.(*nsdb.Text)
+	if !ok {
+		return nil
+	}
+	if err := t.Load(z.Name()); err != nil {
 		return err
 	}
-
-	err = z.Decode(key, true, c)
-	if err != nil {
+	if err := z.Attach(key, t); err != nil {
 		return err
 	}
 	logger.Printf("%v:%v: loaded from %s", z.Name(), key, dbfile)
@@ -166,12 +175,17 @@ func (zone *Zone) loadKey(key, dbfile string) error {
 }
 
 func (zone *Zone) load() error {
-	if zone.DbFile == "" {
-		return nil
-	}
 	z := zone.zone
 	z.HoldUpdates()
 	defer z.ReleaseUpdates()
+
+	if zone.DbFile == "" {
+		db := z.Db("")
+		if db == nil {
+			db = nsdb.NewMemory()
+		}
+		return z.Attach("", db)
+	}
 
 	if err := zone.loadKey("", zone.DbFile); err != nil {
 		return err
@@ -205,34 +219,7 @@ func (zone *Zone) load() error {
 
 func (zone *Zone) saveKey(key, dbfile string) error {
 	z := zone.zone
-	tmpfile := fmt.Sprintf("%s-%d", dbfile, os.Getpid())
-	out, err := os.Create(tmpfile)
-	if err != nil {
-		logger.Printf("%v: failed to create output db file %s: %v", z.Name(), tmpfile, err)
-		return nil
-	}
-
-	bw := bufio.NewWriter(out)
-	w := dns.NewTextWriter(bw)
-
-	err = z.Encode(key, w)
-	if err != nil {
-		out.Close()
-		return err // more than a warning, something is wrong
-	}
-	if err := bw.Flush(); err != nil {
-		out.Close()
-		return err
-	}
-	out.Sync()
-	out.Close()
-
-	err = os.Rename(tmpfile, dbfile)
-	if err != nil {
-		logger.Printf(
-			"%v: failed to rename %s->%s: %v", z.Name(), tmpfile, dbfile, err)
-	}
-	return nil
+	return z.Save(key)
 }
 
 func (zone *Zone) save() error {
@@ -266,7 +253,7 @@ func (zone *Zone) run(zones *ns.Zones, res *resolver.Resolver) {
 	zone.wg.Add(1)
 	go func() {
 		switch zone.Type {
-		case PrimaryType:
+		case PrimaryType, HintType:
 			zone.primaryZone(zones, res)
 
 		case SecondaryType:

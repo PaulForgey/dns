@@ -32,7 +32,9 @@ func (zone *Zone) primaryZone(zones *ns.Zones, res *resolver.Resolver) {
 
 		case <-notify.Fire():
 			notify.Reset()
-			s.SendNotify(ctx, z)
+			if zone.Type == PrimaryType {
+				s.SendNotify(ctx, z)
+			}
 		}
 	}
 	notify.Stop()

@@ -2,12 +2,15 @@ package ns
 
 import (
 	"context"
+	"errors"
 	"net"
 	"time"
 
 	"tessier-ashpool.net/dns"
 	"tessier-ashpool.net/dns/resolver"
 )
+
+var ErrNoSOA = errors.New("zone has no SOA record")
 
 // SendNotify sends Notify ops to all NS records in a zone, excluding NS records having the same MName in its SOA.
 // This is a best effort, and an error is returned only if something goes wrong locally to make the attempt impossible.

@@ -89,11 +89,7 @@ func checkSOA(t *testing.T, z *Zone, serial uint32) {
 func TestUpdate(t *testing.T) {
 	name := nameWithString(t, "shoesinonehour.com")
 	zone := NewZone(name, false)
-	c := dns.NewTextReader(strings.NewReader(updateZone), name)
-	err := zone.Decode("", false, c)
-	if err != nil {
-		t.Fatalf("cannot load zone %v: %v", name, err)
-	}
+	loadZoneText(t, zone, updateZone)
 
 	// simple case: add a resource record
 	update := []*dns.Record{
@@ -188,11 +184,7 @@ func TestUpdate(t *testing.T) {
 func TestPrereqUpdate(t *testing.T) {
 	name := nameWithString(t, "shoesinonehour.com")
 	zone := NewZone(name, false)
-	c := dns.NewTextReader(strings.NewReader(updateZone), name)
-	err := zone.Decode("", false, c)
-	if err != nil {
-		t.Fatalf("cannot load zone %v: %v", name, err)
-	}
+	loadZoneText(t, zone, updateZone)
 
 	// update if record not present (should add)
 	update := []*dns.Record{

@@ -162,11 +162,9 @@ func (zone *Zone) secondaryZone(zones *ns.Zones, res *resolver.Resolver) {
 	defer r.Close()
 
 	// try to load from cache if we have it
-	if zone.DbFile != "" {
-		if err = zone.load(); err == nil {
-			zones.Insert(z, true)
-			live = true
-		}
+	if err = zone.load(); err == nil {
+		zones.Insert(z, true)
+		live = true
 	}
 	if !live {
 		logger.Printf(

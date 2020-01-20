@@ -14,12 +14,16 @@ import (
 	"tessier-ashpool.net/dns/resolver"
 )
 
-var ErrSOA = errors.New("SOA records cannot be interface specific")
 var ErrIxfr = errors.New("SOA does not match for IXFR")
 var ErrAxfr = errors.New("Mismatched or unexpected SOA values")
-var ErrNoSOA = errors.New("zone has no SOA record")
-var ErrNoKey = errors.New("zone has no record with this key")
+var ErrNoKey = errors.New("zone has no database with this key")
 var ErrXferInProgress = errors.New("zone is already transferring")
+
+// the UpdateLog interface hooks zone updates.
+type UpdateLog interface {
+	// if Update returns an error, the update does not occur and the error is returned to the caller of the zone's update
+	Update(key string, update []*dns.Record) error
+}
 
 // the Zones type holds all the zones we know of
 type Zones struct {
@@ -30,6 +34,7 @@ type Zones struct {
 // the Zone type is a specialization of the resolver Zone with additional information needed by the server
 type Zone struct {
 	*resolver.Zone
+	UpdateLog     UpdateLog
 	Primary       string
 	AllowQuery    Access
 	AllowUpdate   Access
@@ -62,9 +67,7 @@ func (z *Zone) init() {
 	z.updateLock = &sync.Mutex{}
 	z.updateCond = sync.NewCond(z.updateLock)
 
-	z.db = nsdb.NewMemory() // XXX
 	z.keys = make(map[string]nsdb.Db)
-	z.keys[""] = z.db
 }
 
 // NewZone creates a new, empty zone for use by the server
@@ -85,75 +88,35 @@ func NewCacheZone(cache *resolver.Zone) *Zone {
 	return z
 }
 
-// Load loads in a series of records. If an SOA is found, the later in the sequence is used to update serial.
-// next returns nil, io.EOF on last record
-func (z *Zone) Load(key string, clear bool, next func() (*dns.Record, error)) error {
+// Attach associates a database with a zone or a zone's interface specific records.
+func (z *Zone) Attach(key string, db nsdb.Db) error {
 	z.Lock()
 	defer z.Unlock()
 
-	db, ok := z.keys[key]
-	if !ok {
-		db = nsdb.NewMemory()
-		z.keys[key] = db
-	}
-
-	if clear {
-		db.Clear()
-	}
-
-	records := make([]*dns.Record, 0, 256)
-	for {
-		rec, err := next()
-		if rec != nil {
-			if !rec.Name().HasSuffix(z.Name()) {
-				return fmt.Errorf("%w: name=%v, suffix=%v", dns.NotZone, rec.Name(), z.Name())
-			}
-			if rec.Type() == dns.SOAType {
-				if key != "" {
-					return ErrSOA
-				}
-				if _, ok := rec.D.(*dns.SOARecord); ok {
-					z.soa = rec
-				}
-			}
-			records = append(records, rec)
-			if len(records) == cap(records) {
-				if _, err := nsdb.Load(db, time.Time{}, records); err != nil {
-					return err
-				}
-				records = records[:0]
-			}
-		}
-
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
+	if key == "" {
+		rrset, err := db.Lookup(true, z.Name(), dns.SOAType, dns.AnyClass)
+		if err != nil && !errors.Is(err, dns.NXDomain) {
 			return err
 		}
-	}
-	if len(records) > 0 {
-		if _, err := nsdb.Load(db, time.Time{}, records); err != nil {
-			return err
+		if rrset != nil {
+			z.soa = rrset.Records[0]
 		}
+		z.db = db
 	}
-
+	z.keys[key] = db
 	return nil
 }
 
-// Decode calls Load using a codec as a convenience
-func (z *Zone) Decode(key string, clear bool, c dns.Codec) error {
-	return z.Load(key, clear, func() (*dns.Record, error) {
-		r := &dns.Record{}
-		if err := c.Decode(r); err != nil {
-			return nil, err
-		}
-		return r, nil
-	})
+// Db returns the database associated with a key, if any
+func (z *Zone) Db(key string) nsdb.Db {
+	z.RLock()
+	db, _ := z.keys[key]
+	z.RUnlock()
+	return db
 }
 
 // Save writes a shallow copy of the zone for the given key
-func (z *Zone) Save(key string, next func(r *dns.Record) error) error {
+func (z *Zone) Save(key string) error {
 	z.RLock()
 	soa := z.soa
 	if soa == nil {
@@ -175,32 +138,11 @@ func (z *Zone) Save(key string, next func(r *dns.Record) error) error {
 	}
 	z.RUnlock()
 
-	if soa != nil {
-		if err := next(soa); err != nil {
-			return err
-		}
-	}
-	if err := db.Enumerate(0, func(serial uint32, records []*dns.Record) error {
-		for _, r := range records {
-			if r.Type() != dns.SOAType {
-				if err := next(r); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}); err != nil {
-		return err
+	if (db.Flags() & nsdb.DbLiveUpdateFlag) != 0 {
+		return nil // nothing to do
 	}
 
-	return nil
-}
-
-// Encode calls Save using codec as convenience
-func (z *Zone) Encode(key string, c dns.Codec) error {
-	return z.Save(key, func(r *dns.Record) error {
-		return c.Encode(r)
-	})
+	return db.Save(z.Name())
 }
 
 func (z *Zone) soa_locked() *dns.Record {
@@ -265,10 +207,11 @@ func (z *Zone) Lookup(
 ) ([]*dns.Record, []*dns.Record, error) {
 	// check the cache
 	a, ns, err := z.Zone.Lookup(key, name, rrtype, rrclass)
-	if len(a) > 0 || (err != nil && !errors.Is(err, dns.NXDomain)) {
+	if z.db == nil || len(a) > 0 || (err != nil && !errors.Is(err, dns.NXDomain)) {
 		return a, ns, err
 	}
 
+	// database
 	z.RLock()
 	db, ok := z.keys[key]
 	if !ok {
@@ -276,7 +219,6 @@ func (z *Zone) Lookup(
 	}
 	z.RUnlock()
 
-	// database
 	a, ns2, err := z.LookupDb(db, name, rrtype, rrclass)
 	ns = append(ns, ns2...)
 	if db == z.db || len(a) > 0 || (err != nil && !errors.Is(err, dns.NXDomain)) {
@@ -311,6 +253,10 @@ func (z *Zone) Dump(serial uint32, rrclass dns.RRClass, next func(*dns.Record) e
 
 	z.Lock()
 
+	if z.db == nil {
+		z.Unlock()
+		return 0, ErrNoKey
+	}
 	soa := z.soa_locked()
 	if soa == nil {
 		z.Unlock()
@@ -362,7 +308,7 @@ func (z *Zone) Dump(serial uint32, rrclass dns.RRClass, next func(*dns.Record) e
 			toSOA = nil
 		}
 		for _, r := range records {
-			if r.Type() == dns.SOAType {
+			if r.Type() == dns.SOAType || !rrclass.Asks(r.Class()) {
 				continue
 			}
 			if err := next(r); err != nil {
@@ -402,6 +348,10 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 		return ErrXferInProgress
 	}
 
+	if z.db == nil {
+		return ErrNoKey
+	}
+
 	soa := z.soa
 	toSOA, err := nextRecord()
 	if err != nil {
@@ -421,6 +371,12 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 		return err
 	}
 	db = z.db
+
+	if !ixfr {
+		if err := db.Clear(); err != nil {
+			return err
+		}
+	}
 
 	var del, add []*dns.Record
 	records := make([]*dns.Record, 0, 256)
@@ -540,6 +496,9 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 	db, ok = z.keys[key]
 	if !ok {
 		db = z.db
+	}
+	if db == nil {
+		return false, ErrNoKey
 	}
 	if err := db.BeginUpdate(); err != nil {
 		db = nil

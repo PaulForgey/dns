@@ -73,6 +73,14 @@ func NewMemory() *Memory {
 	}
 }
 
+func (m *Memory) Save(name dns.Name) error {
+	return nil
+}
+
+func (m *Memory) Flags() DbFlags {
+	return DbLiveUpdateFlag
+}
+
 // Clear removes all records (snapshots are unaffected)
 func (m *Memory) Clear() error {
 	m.lk.Lock()

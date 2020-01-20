@@ -37,8 +37,6 @@ type UpdateLog interface {
 // Records in a zone may further be keyed by interface name.
 type Zone struct {
 	sync.RWMutex
-	UpdateLog UpdateLog
-
 	name  dns.Name
 	hint  bool
 	cache *nsdb.Cache
