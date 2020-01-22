@@ -35,7 +35,7 @@ func testUpdateCase(
 	t *testing.T,
 	z *Zone,
 	prereq, update []*dns.Record,
-	q *dns.Question,
+	q dns.Question,
 	results []*dns.Record,
 	expect error,
 	shouldUpdate bool,
@@ -51,7 +51,7 @@ func testUpdateCase(
 		return // expected error at this point
 	}
 
-	a, _, err := z.Lookup("", q.QName, q.QType, q.QClass)
+	a, _, err := z.Lookup("", q.Name(), q.Type(), q.Class())
 	if err != nil {
 		if !(errors.Is(err, dns.NXDomain) && len(results) == 0) {
 			t.Fatalf("%v: %v", q, err)
@@ -96,11 +96,7 @@ func TestUpdate(t *testing.T) {
 		recordWithString(t, name, "host 1h IN A 192.168.0.10"),
 	}
 
-	q := &dns.Question{
-		QName:  nameWithString(t, "host").Append(name),
-		QType:  dns.AType,
-		QClass: dns.INClass,
-	}
+	q := dns.NewDNSQuestion(nameWithString(t, "host").Append(name), dns.AType, dns.INClass)
 	testUpdateCase(t, zone, nil, update, q, update, nil, true)
 
 	// add to the same rrset
@@ -129,11 +125,7 @@ func TestUpdate(t *testing.T) {
 	testUpdateCase(t, zone, nil, update, q, nil, nil, true)
 
 	// try to update a CNAME with a non-CNAME
-	q = &dns.Question{
-		QName:  nameWithString(t, "cr").Append(name),
-		QType:  dns.AType,
-		QClass: dns.INClass,
-	}
+	q = dns.NewDNSQuestion(nameWithString(t, "cr").Append(name), dns.AType, dns.INClass)
 	update = []*dns.Record{
 		recordWithString(t, name, "cr 1h IN A 127.0.0.1"),
 	}
@@ -149,11 +141,7 @@ func TestUpdate(t *testing.T) {
 	testUpdateCase(t, zone, nil, update, q, update, nil, true)
 
 	// update record with same data
-	q = &dns.Question{
-		QName:  nameWithString(t, "ns2").Append(name),
-		QType:  dns.AType,
-		QClass: dns.INClass,
-	}
+	q = dns.NewDNSQuestion(nameWithString(t, "ns2").Append(name), dns.AType, dns.INClass)
 	update = []*dns.Record{
 		recordWithString(t, name, "ns2 5m IN A 192.168.0.2"),
 	}
@@ -172,11 +160,7 @@ func TestUpdate(t *testing.T) {
 	update = []*dns.Record{
 		recordWithString(t, name, "@ IN SOA ns1 hostmaster 10 24h 2h 1000h 5m"),
 	}
-	q = &dns.Question{
-		QName:  name,
-		QType:  dns.SOAType,
-		QClass: dns.INClass,
-	}
+	q = dns.NewDNSQuestion(name, dns.SOAType, dns.INClass)
 	testUpdateCase(t, zone, nil, update, q, update, nil, true)
 	checkSOA(t, zone, 10) // should still be 10 and not autoincremented
 }
@@ -194,11 +178,7 @@ func TestPrereqUpdate(t *testing.T) {
 		recordWithString(t, name, "shoes 1h NONE TXT"),
 	}
 
-	q := &dns.Question{
-		QName:  nameWithString(t, "shoes").Append(name),
-		QType:  dns.TXTType,
-		QClass: dns.INClass,
-	}
+	q := dns.NewDNSQuestion(nameWithString(t, "shoes").Append(name), dns.TXTType, dns.INClass)
 	testUpdateCase(t, zone, prereq, update, q, update, nil, true)
 
 	// same update again should fail YXRRset and original results
@@ -237,11 +217,7 @@ func TestPrereqUpdate(t *testing.T) {
 		recordWithString(t, name, "rr 5m IN A 127.0.0.1"),
 		recordWithString(t, name, "rr 1h IN A 127.0.0.10"),
 	}
-	q = &dns.Question{
-		QName:  nameWithString(t, "rr").Append(name),
-		QType:  dns.AType,
-		QClass: dns.INClass,
-	}
+	q = dns.NewDNSQuestion(nameWithString(t, "rr").Append(name), dns.AType, dns.INClass)
 	testUpdateCase(t, zone, prereq, update, q, results, nil, true)
 
 	// update if rrset with value exists, should fail with NXRRset

@@ -21,6 +21,7 @@ type WireCodec struct {
 	nc     Compressor
 	offset int
 	data   []byte
+	mdns   bool
 }
 
 // a Truncated type is returned from any Encode method which runs out of buffer space. The contents of the buffer
@@ -56,6 +57,11 @@ func NewWireCodecNoCompression(data []byte) *WireCodec {
 		data:   data,
 		offset: 0,
 	}
+}
+
+// MDNS sets MDNS specific wire decoding
+func (w *WireCodec) MDNS() {
+	w.mdns = true
 }
 
 // Reset resets the codec with the given buffer slice, resetting offset to 0 and emptying the name compressor
@@ -164,9 +170,6 @@ func (w *WireCodec) putRecord(r *Record) error {
 	start := w.Offset()
 
 	if r.D != nil {
-		if r.H.Type() != r.D.Type() {
-			panic("inconsistent type")
-		}
 		if err := w.Encode(r.D); err != nil {
 			return err
 		}
@@ -425,9 +428,10 @@ func (w *WireCodec) getRecord(r *Record) error {
 		return err
 	}
 
-	// XXX codec will need to know it is being used for MDNS
 	if d.Type() == EDNSType {
 		r.H = EDNSHeaderFromData(&d)
+	} else if w.mdns {
+		r.H = MDNSHeaderFromData(&d)
 	} else {
 		r.H = HeaderFromData(&d)
 	}
@@ -477,17 +481,21 @@ func (w *WireCodec) getMessage(m *Message) error {
 	m.Opcode = Opcode((status & 0x7800) >> 11)
 	m.RCode = RCode(status & 0xf)
 
-	m.Questions = make([]*Question, int(qdcount))
+	m.Questions = make([]Question, int(qdcount))
 	m.Answers = make([]*Record, int(ancount))
 	m.Authority = make([]*Record, int(nscount))
 	m.Additional = make([]*Record, 0, int(arcount))
 
 	for i := range m.Questions {
-		q := &Question{}
+		q := &QuestionData{}
 		if err := w.Decode(q); err != nil {
 			return err
 		}
-		m.Questions[i] = q
+		if w.mdns {
+			m.Questions[i] = MDNSQuestionFromData(q)
+		} else {
+			m.Questions[i] = DNSQuestionFromData(q)
+		}
 	}
 	for i := range m.Answers {
 		r := &Record{}

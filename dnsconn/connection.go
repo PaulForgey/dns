@@ -90,6 +90,7 @@ type PacketConn struct {
 	messages *message
 	msgChan  chan struct{}
 	err      error
+	mdns     bool
 }
 
 // the StreamConn type is a stream oriented Connection
@@ -367,6 +368,9 @@ func (p *PacketConn) readFrom() (*dns.Message, net.Addr, error) {
 	msgBuf = buffer[:r]
 
 	reader := dns.NewWireCodec(msgBuf)
+	if p.mdns {
+		reader.MDNS()
+	}
 	msg := &dns.Message{}
 	err = reader.Decode(msg)
 	return msg, from, err

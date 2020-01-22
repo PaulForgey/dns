@@ -777,9 +777,6 @@ func (c *TextCodec) putRecord(r *Record) error {
 			return err
 		}
 	} else if err := c.Encode(r.D); err != nil {
-		if r.D.Type() != r.H.Type() {
-			panic("inconsistent type")
-		}
 		return err
 	}
 	if _, err := fmt.Fprintf(c.w, "\n"); err != nil {
@@ -819,14 +816,14 @@ func (c *TextCodec) putRecords(r *Records) error {
 	return nil
 }
 
-func (c *TextCodec) putQuestion(q *Question) error {
+func (c *TextCodec) putQuestion(q Question) error {
 	if _, err := fmt.Fprintf(c.w, "; "); err != nil {
 		return err
 	}
-	if err := c.Encode(q.QName); err != nil {
+	if err := c.Encode(q.Name()); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(c.w, "%v %v\n", q.QType, q.QClass); err != nil {
+	if _, err := fmt.Fprintf(c.w, "%v %v\n", q.Type(), q.Class()); err != nil {
 		return err
 	}
 	return nil
@@ -998,7 +995,7 @@ func (c *TextCodec) Encode(i interface{}) error {
 			return err
 		}
 
-	case *Question:
+	case Question:
 		if err := c.putQuestion(t); err != nil {
 			return err
 		}

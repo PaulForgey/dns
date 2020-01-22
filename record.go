@@ -444,7 +444,6 @@ func (e *EDNSHeader) Flags() uint16 {
 type RecordData interface {
 	Encoder
 	Decoder
-	Type() RRType
 	// Less and Equal will panic if given different RecordData type
 	Less(RecordData) bool  // MDNS rules comparing binary data (with uncompressed names, of course)
 	Equal(RecordData) bool // faster than !(m.Less(n) || n.Less(m))
@@ -564,14 +563,7 @@ func RecordSets(records []*Record, set func(Name, RRType, RRClass, []*Record) er
 // The UnknownRecord type can store rdata of unknown resource records.
 // These records should not be blindly retransmitted. If they contain compressed names, their data will be meaningless.
 type UnknownRecord struct {
-	rrtype RRType
-	Data   []byte
-}
-
-func NewUnknownRecord(rrtype RRType) *UnknownRecord {
-	return &UnknownRecord{
-		rrtype: rrtype,
-	}
+	Data []byte
 }
 
 func (rr *UnknownRecord) MarshalCodec(c Codec) error {
@@ -581,8 +573,6 @@ func (rr *UnknownRecord) MarshalCodec(c Codec) error {
 func (rr *UnknownRecord) UnmarshalCodec(c Codec) error {
 	return c.Decode(&rr.Data)
 }
-
-func (rr *UnknownRecord) Type() RRType { return rr.rrtype }
 
 func (m *UnknownRecord) Equal(nn RecordData) bool {
 	return bytes.Compare(m.Data, nn.(*UnknownRecord).Data) == 0
@@ -812,7 +802,7 @@ func RecordFromType(rrtype RRType) RecordData {
 	case NSECType:
 		return &NSECRecord{}
 	}
-	return NewUnknownRecord(rrtype)
+	return &UnknownRecord{}
 }
 
 // ==========
@@ -820,8 +810,6 @@ func RecordFromType(rrtype RRType) RecordData {
 type CNAMERecord struct {
 	Name
 }
-
-func (rr *CNAMERecord) Type() RRType { return CNAMEType }
 
 func (m *CNAMERecord) Less(nn RecordData) bool {
 	return m.Name.Less(nn.(*CNAMERecord).Name)
@@ -837,8 +825,6 @@ type HINFORecord struct {
 	CPU string
 	OS  string
 }
-
-func (rr *HINFORecord) Type() RRType { return HINFOType }
 
 func (rr *HINFORecord) UnmarshalCodec(c Codec) error {
 	return DecodeSequence(c, &rr.CPU, &rr.OS)
@@ -864,8 +850,6 @@ type MBRecord struct {
 	Name
 }
 
-func (rr *MBRecord) Type() RRType { return MBType }
-
 func (m *MBRecord) Less(nn RecordData) bool {
 	return m.Name.Less(nn.(*MBRecord).Name)
 }
@@ -879,8 +863,6 @@ func (m *MBRecord) Equal(nn RecordData) bool {
 type MDRecord struct {
 	Name
 }
-
-func (rr *MDRecord) Type() RRType { return MDType }
 
 func (m *MDRecord) Less(nn RecordData) bool {
 	return m.Name.Less(nn.(*MDRecord).Name)
@@ -896,8 +878,6 @@ type MFRecord struct {
 	Name
 }
 
-func (rr *MFRecord) Type() RRType { return MFType }
-
 func (m *MFRecord) Less(nn RecordData) bool {
 	return m.Name.Less(nn.(*MFRecord).Name)
 }
@@ -911,8 +891,6 @@ func (m *MFRecord) Equal(nn RecordData) bool {
 type MGRecord struct {
 	Name
 }
-
-func (rr *MGRecord) Type() RRType { return MGType }
 
 func (m *MGRecord) Less(nn RecordData) bool {
 	return m.Name.Less(nn.(*MGRecord).Name)
@@ -928,8 +906,6 @@ type MINFORecord struct {
 	RMailbox Name
 	EMailbox Name
 }
-
-func (rr *MINFORecord) Type() RRType { return MINFOType }
 
 func (rr *MINFORecord) UnmarshalCodec(c Codec) error {
 	return DecodeSequence(c, &rr.RMailbox, &rr.EMailbox)
@@ -956,8 +932,6 @@ type MRRecord struct {
 	Name
 }
 
-func (rr *MRRecord) Type() RRType { return MRType }
-
 func (m *MRRecord) Less(nn RecordData) bool {
 	return m.Name.Less(nn.(*MRRecord).Name)
 }
@@ -972,8 +946,6 @@ type MXRecord struct {
 	Preference uint16
 	Name
 }
-
-func (rr *MXRecord) Type() RRType { return MXType }
 
 func (rr *MXRecord) UnmarshalCodec(c Codec) error {
 	return DecodeSequence(c, &rr.Preference, &rr.Name)
@@ -1000,8 +972,6 @@ type NULLRecord struct {
 	Data []byte
 }
 
-func (rr *NULLRecord) Type() RRType { return NULLType }
-
 func (rr *NULLRecord) UnmarshalCodec(c Codec) error {
 	return c.Decode(&rr.Data)
 }
@@ -1026,8 +996,7 @@ type NSRecord struct {
 	Name
 }
 
-func (rr *NSRecord) NS() Name     { return rr.Name }
-func (rr *NSRecord) Type() RRType { return NSType }
+func (rr *NSRecord) NS() Name { return rr.Name }
 
 func (m *NSRecord) Less(nn RecordData) bool {
 	return m.Name.Less(nn.(*NSRecord).Name)
@@ -1042,8 +1011,6 @@ func (m *NSRecord) Equal(nn RecordData) bool {
 type PTRRecord struct {
 	Name
 }
-
-func (rr *PTRRecord) Type() RRType { return PTRType }
 
 func (m *PTRRecord) Less(nn RecordData) bool {
 	return m.Name.Less(nn.(*PTRRecord).Name)
@@ -1065,9 +1032,8 @@ type SOARecord struct {
 	Minimum time.Duration
 }
 
-func (rr *SOARecord) NS() Name     { return rr.MName }
-func (rr *SOARecord) RName() Name  { return rr.MName }
-func (rr *SOARecord) Type() RRType { return SOAType }
+func (rr *SOARecord) NS() Name    { return rr.MName }
+func (rr *SOARecord) RName() Name { return rr.MName }
 
 func (rr *SOARecord) UnmarshalCodec(c Codec) error {
 	return DecodeSequence(
@@ -1123,8 +1089,6 @@ type TXTRecord struct {
 	Text []string
 }
 
-func (rr *TXTRecord) Type() RRType { return TXTType }
-
 func (rr *TXTRecord) UnmarshalCodec(c Codec) error {
 	return c.Decode(&rr.Text)
 }
@@ -1172,8 +1136,6 @@ type ARecord struct {
 	Address [4]byte
 }
 
-func (rr *ARecord) Type() RRType { return AType }
-
 func (rr *ARecord) UnmarshalCodec(c Codec) error {
 	return c.Decode(&rr.Address)
 }
@@ -1203,8 +1165,6 @@ type WKSRecord struct {
 	Bitmap   []byte
 }
 
-func (rr *WKSRecord) Type() RRType { return WKSType }
-
 func (rr *WKSRecord) UnmarshalCodec(c Codec) error {
 	return DecodeSequence(c, &rr.Address, &rr.Protocol, &rr.Bitmap)
 }
@@ -1232,8 +1192,6 @@ func (m *WKSRecord) Equal(nn RecordData) bool {
 type AAAARecord struct {
 	Address [16]byte
 }
-
-func (rr *AAAARecord) Type() RRType { return AAAAType }
 
 func (rr *AAAARecord) UnmarshalCodec(c Codec) error {
 	return c.Decode(&rr.Address)
@@ -1266,8 +1224,6 @@ type SRVRecord struct {
 	Name
 }
 
-func (rr *SRVRecord) Type() RRType { return SRVType }
-
 func (rr *SRVRecord) UnmarshalCodec(c Codec) error {
 	return DecodeSequence(c, &rr.Priority, &rr.Weight, &rr.Port, &rr.Name)
 }
@@ -1298,8 +1254,6 @@ type EDNSRecord struct {
 	Options
 }
 
-func (rr *EDNSRecord) Type() RRType { return EDNSType }
-
 func (rr *EDNSRecord) UnmarshalCodec(c Codec) error {
 	return c.Decode(&rr.Options)
 }
@@ -1323,8 +1277,6 @@ type NSECRecord struct {
 	Next  Name
 	Types Bitmap
 }
-
-func (rr *NSECRecord) Type() RRType { return NSECType }
 
 func (rr *NSECRecord) UnmarshalCodec(c Codec) error {
 	return DecodeSequence(c, &rr.Next, &rr.Types)

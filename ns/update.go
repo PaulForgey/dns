@@ -10,12 +10,12 @@ import (
 
 func (s *Server) update(ctx context.Context, msg *dns.Message, from net.Addr, zone *Zone) {
 	q := msg.Questions[0]
-	if q.QType != dns.SOAType {
+	if q.Type() != dns.SOAType {
 		s.answer(dns.FormError, true, msg, from)
 		return
 	}
-	if !q.QClass.Asks(zone.Class()) {
-		s.logger.Printf("%v: update qclass %v, zone is %v", zone.Name(), q.QClass, zone.Class())
+	if !q.Class().Asks(zone.Class()) {
+		s.logger.Printf("%v: update qclass %v, zone is %v", zone.Name(), q.Class(), zone.Class())
 		s.answer(dns.Refused, true, msg, from)
 		return
 	}

@@ -154,12 +154,8 @@ func (r *Resolver) Ask(
 	msg := &dns.Message{
 		Opcode: dns.StandardQuery,
 		RD:     r.rd,
-		Questions: []*dns.Question{
-			&dns.Question{
-				QName:  name,
-				QType:  rrtype,
-				QClass: rrclass,
-			},
+		Questions: []dns.Question{
+			dns.NewDNSQuestion(name, rrtype, rrclass),
 		},
 	}
 

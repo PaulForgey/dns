@@ -89,7 +89,7 @@ type Message struct {
 	RD         bool // recursion desired
 	RA         bool // resursion available
 	RCode      RCode
-	Questions  []*Question
+	Questions  []Question
 	Answers    []*Record
 	Authority  []*Record
 	Additional []*Record
@@ -97,39 +97,116 @@ type Message struct {
 	NoTC       bool // internal: do not try to recover from truncation
 }
 
-type Question struct {
-	QName  Name
-	QType  RRType
-	QClass RRClass
-	QU     bool // mdns
+type Question interface {
+	fmt.Stringer
+	Encoder
+	Decoder
+	Name() Name
+	Type() RRType
+	Class() RRClass
 }
 
-func (q *Question) String() string {
+type QuestionData struct {
+	name   Name
+	qtype  uint16
+	qclass uint16
+}
+
+func (d *QuestionData) MarshalCodec(c Codec) error {
+	return EncodeSequence(c, d.name, d.qtype, d.qclass)
+}
+
+func (d *QuestionData) UnmarshalCodec(c Codec) error {
+	return DecodeSequence(c, &d.name, &d.qtype, &d.qclass)
+}
+
+type DNSQuestion QuestionData
+
+func NewDNSQuestion(n Name, qtype RRType, qclass RRClass) *DNSQuestion {
+	return &DNSQuestion{
+		name:   n,
+		qtype:  uint16(qtype),
+		qclass: uint16(qclass),
+	}
+}
+
+func DNSQuestionFromData(d *QuestionData) *DNSQuestion {
+	return (*DNSQuestion)(d)
+}
+
+func (q *DNSQuestion) MarshalCodec(c Codec) error {
+	return (*QuestionData)(q).MarshalCodec(c)
+}
+
+func (q *DNSQuestion) UnmarshalCodec(c Codec) error {
+	return (*QuestionData)(q).UnmarshalCodec(c)
+}
+
+func (q *DNSQuestion) String() string {
+	return fmt.Sprintf("%v %v %v", q.Name(), q.Type(), q.Class())
+}
+
+func (q *DNSQuestion) Name() Name {
+	return q.name
+}
+
+func (q *DNSQuestion) Type() RRType {
+	return RRType(q.qtype)
+}
+
+func (q *DNSQuestion) Class() RRClass {
+	return RRClass(q.qclass)
+}
+
+type MDNSQuestion QuestionData
+
+func NewMDNSQuestion(n Name, qtype RRType, qclass RRClass, QU bool) *DNSQuestion {
+	c := uint16(qclass)
+	if QU {
+		c |= 0x8000
+	}
+
+	return &DNSQuestion{
+		name:   n,
+		qtype:  uint16(qtype),
+		qclass: c,
+	}
+}
+
+func MDNSQuestionFromData(d *QuestionData) *MDNSQuestion {
+	return (*MDNSQuestion)(d)
+}
+
+func (m *MDNSQuestion) MarshalCodec(c Codec) error {
+	return (*QuestionData)(m).MarshalCodec(c)
+}
+
+func (m *MDNSQuestion) UnmarshalCodec(c Codec) error {
+	return (*QuestionData)(m).UnmarshalCodec(c)
+}
+
+func (m *MDNSQuestion) String() string {
 	var s string
-	if q.QU {
+	if m.QU() {
 		s = "%v (QU) %v %v"
 	} else {
 		s = "%v %v %v"
 	}
-	return fmt.Sprintf(s, q.QName, q.QType, q.QClass)
+	return fmt.Sprintf(s, m.Name(), m.Type(), m.Class())
 }
 
-func (q *Question) MarshalCodec(c Codec) error {
-	return EncodeSequence(c, q.QName, uint16(q.QType), uint16(q.QClass))
+func (m *MDNSQuestion) Name() Name {
+	return m.name
 }
 
-func (q *Question) UnmarshalCodec(c Codec) error {
-	var qclass RRClass
-	err := DecodeSequence(c, &q.QName, (*uint16)(&q.QType), (*uint16)(&qclass))
-	if err != nil {
-		return err
-	}
-	if (qclass & 0x8000) != 0 {
-		q.QClass = qclass & 0x7fff
-		q.QU = true
-	} else {
-		q.QClass = qclass
-		q.QU = false
-	}
-	return nil
+func (m *MDNSQuestion) Type() RRType {
+	return RRType(m.qtype)
+}
+
+func (m *MDNSQuestion) Class() RRClass {
+	return RRClass(m.qclass & 0x7fff)
+}
+
+func (m *MDNSQuestion) QU() bool {
+	return (m.qclass & 0x8000) != 0
 }

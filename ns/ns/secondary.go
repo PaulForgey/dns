@@ -22,22 +22,10 @@ func transfer(ctx context.Context, zone *Zone, z *ns.Zone, soa *dns.Record, rrcl
 	}
 
 	if zone.Incremental && soa != nil {
-		msg.Questions = []*dns.Question{
-			&dns.Question{
-				QName:  z.Name(),
-				QType:  dns.IXFRType,
-				QClass: rrclass,
-			},
-		}
+		msg.Questions = []dns.Question{dns.NewDNSQuestion(z.Name(), dns.IXFRType, rrclass)}
 		msg.Authority = []*dns.Record{soa}
 	} else {
-		msg.Questions = []*dns.Question{
-			&dns.Question{
-				QName:  z.Name(),
-				QType:  dns.AXFRType,
-				QClass: rrclass,
-			},
-		}
+		msg.Questions = []dns.Question{dns.NewDNSQuestion(z.Name(), dns.AXFRType, rrclass)}
 	}
 
 	tctx, cancel := context.WithTimeout(ctx, time.Minute)

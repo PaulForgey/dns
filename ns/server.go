@@ -89,7 +89,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 		switch msg.Opcode {
 		case dns.Update, dns.Notify:
-			if zone = s.zones.Zone(q.QName); zone != nil {
+			if zone = s.zones.Zone(q.Name()); zone != nil {
 				switch msg.Opcode {
 				case dns.Update:
 					if zone.AllowUpdate == nil || !zone.AllowUpdate.Check(from, s.conn.Interface(), "") {
@@ -108,9 +108,9 @@ func (s *Server) Serve(ctx context.Context) error {
 			}
 
 		case dns.StandardQuery:
-			switch q.QType {
+			switch q.Type() {
 			case dns.AXFRType, dns.IXFRType:
-				if zone = s.zones.Zone(q.QName); zone != nil {
+				if zone = s.zones.Zone(q.Name()); zone != nil {
 					if zone.AllowTransfer == nil || !zone.AllowTransfer.Check(from, s.conn.Interface(), "") {
 						s.answer(dns.Refused, true, msg, from)
 						continue
@@ -119,7 +119,7 @@ func (s *Server) Serve(ctx context.Context) error {
 				}
 
 			default:
-				if zone, _ = s.zones.Find(q.QName).(*Zone); zone != nil {
+				if zone, _ = s.zones.Find(q.Name()).(*Zone); zone != nil {
 					if zone.AllowQuery == nil || !zone.AllowQuery.Check(from, s.conn.Interface(), "") {
 						s.answer(dns.Refused, true, msg, from)
 						continue

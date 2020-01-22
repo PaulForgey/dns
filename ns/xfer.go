@@ -32,25 +32,25 @@ func sendBatch(conn dnsconn.Conn, msg *dns.Message, to net.Addr, r []*dns.Record
 func (s *Server) ixfr(ctx context.Context, msg *dns.Message, to net.Addr, zone *Zone) error {
 	q := msg.Questions[0]
 
-	if zone.Hint() || !zone.Name().Equal(q.QName) {
+	if zone.Hint() || !zone.Name().Equal(q.Name()) {
 		// this is not us
 		return s.answer(dns.NotAuth, true, msg, to)
 	}
 
 	var serial uint32
-	if q.QType == dns.IXFRType {
+	if q.Type() == dns.IXFRType {
 		if len(msg.Authority) != 1 {
 			return s.answer(dns.FormError, true, msg, to)
 		}
 		r := msg.Authority[0]
 		soa, ok := r.D.(*dns.SOARecord)
-		if !ok || !r.Name().Equal(q.QName) {
+		if !ok || !r.Name().Equal(q.Name()) {
 			return s.answer(dns.FormError, true, msg, to)
 		}
 		serial = soa.Serial
 	}
 
-	s.logger.Printf("%v: %v %v @%d to %v", zone.Name(), q.QType, q.QClass, serial, to)
+	s.logger.Printf("%v: %v %v @%d to %v", zone.Name(), q.Type(), q.Class(), serial, to)
 
 	msg.Authority = nil
 	msg.Additional = nil
@@ -58,7 +58,7 @@ func (s *Server) ixfr(ctx context.Context, msg *dns.Message, to net.Addr, zone *
 	msg.AA = true
 
 	batch := make([]*dns.Record, 0, 64)
-	_, err := zone.Dump(serial, q.QClass, func(r *dns.Record) error {
+	_, err := zone.Dump(serial, q.Class(), func(r *dns.Record) error {
 		var err error
 		batch = append(batch, r)
 		if len(batch) == cap(batch) {
@@ -97,7 +97,7 @@ func (s *Server) notify(ctx context.Context, msg *dns.Message, to net.Addr, zone
 	msg.Authority = nil
 	msg.Additional = nil
 
-	if q.QType != dns.SOAType {
+	if q.Type() != dns.SOAType {
 		return s.answer(dns.FormError, true, msg, to)
 	}
 

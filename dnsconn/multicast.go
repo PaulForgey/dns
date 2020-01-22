@@ -70,8 +70,11 @@ func NewMulticast(network, address string, ifi *net.Interface) (*Multicast, erro
 		return nil, fmt.Errorf("%s: %w", network, ErrBadNetwork)
 	}
 
+	p := NewPacketConn(conn, network, ifi.Name)
+	p.mdns = true
+
 	return &Multicast{
-		PacketConn: NewPacketConn(conn, network, ifi.Name),
+		PacketConn: p,
 		gaddr:      gaddr,
 		msgSize:    msgSize,
 	}, nil

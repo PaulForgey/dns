@@ -47,14 +47,8 @@ func update(name dns.Name, r *resolver.Resolver) {
 
 	c := dns.NewTextReader(file, name)
 	msg := &dns.Message{
-		Opcode: dns.Update,
-		Questions: []*dns.Question{
-			&dns.Question{
-				QName:  name,
-				QType:  dns.SOAType,
-				QClass: rrclass,
-			},
-		},
+		Opcode:    dns.Update,
+		Questions: []dns.Question{dns.NewDNSQuestion(name, dns.SOAType, rrclass)},
 	}
 
 	for {
@@ -137,14 +131,8 @@ func main() {
 	switch rrtype {
 	case dns.AXFRType, dns.IXFRType:
 		msg := &dns.Message{
-			Opcode: dns.StandardQuery,
-			Questions: []*dns.Question{
-				&dns.Question{
-					QName:  name,
-					QType:  rrtype,
-					QClass: rrclass,
-				},
-			},
+			Opcode:    dns.StandardQuery,
+			Questions: []dns.Question{dns.NewDNSQuestion(name, rrtype, rrclass)},
 		}
 		if rrtype == dns.IXFRType {
 			msg.Authority = []*dns.Record{

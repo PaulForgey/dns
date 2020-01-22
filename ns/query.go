@@ -18,9 +18,9 @@ func (s *Server) query(ctx context.Context, msg *dns.Message, from net.Addr, zon
 	// try our own authority first
 	msg.Answers, msg.Authority, err = zone.Lookup(
 		s.conn.Interface(),
-		q.QName,
-		q.QType,
-		q.QClass,
+		q.Name(),
+		q.Type(),
+		q.Class(),
 	)
 
 	if err == nil && len(msg.Answers) == 0 && msg.RD && msg.RA {
@@ -31,9 +31,9 @@ func (s *Server) query(ctx context.Context, msg *dns.Message, from net.Addr, zon
 			msg.Answers, err = s.res.Resolve(
 				ctx,
 				s.conn.Interface(),
-				q.QName,
-				q.QType,
-				q.QClass,
+				q.Name(),
+				q.Type(),
+				q.Class(),
 			)
 		}
 	}
@@ -48,7 +48,7 @@ func (s *Server) query(ctx context.Context, msg *dns.Message, from net.Addr, zon
 	// fill in additionals
 	msg.Additional = nil
 	if err == nil {
-		s.zones.Additional(msg, s.conn.Interface(), q.QClass)
+		s.zones.Additional(msg, s.conn.Interface(), q.Class())
 	}
 
 	return s.answer(err, false, msg, from)

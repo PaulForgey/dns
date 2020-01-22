@@ -54,12 +54,8 @@ func (s *Server) SendNotify(ctx context.Context, z *Zone) error {
 			for _, ip := range ips {
 				msg := &dns.Message{
 					Opcode: dns.Notify,
-					Questions: []*dns.Question{
-						&dns.Question{
-							QName:  soa.Name(),
-							QType:  dns.SOAType,
-							QClass: soa.Class(),
-						},
+					Questions: []dns.Question{
+						dns.NewDNSQuestion(soa.Name(), dns.SOAType, soa.Class()),
 					},
 					Answers: []*dns.Record{soa},
 				}
