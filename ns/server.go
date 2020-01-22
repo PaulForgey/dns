@@ -22,7 +22,7 @@ type Access interface {
 
 type Server struct {
 	logger         *log.Logger
-	conn           *dnsconn.Connection
+	conn           dnsconn.Conn
 	zones          *Zones
 	res            *resolver.Resolver
 	allowRecursion Access
@@ -43,7 +43,7 @@ var NoAccess = allAccess(false)
 // NewServer creates a server instance
 func NewServer(
 	logger *log.Logger,
-	conn *dnsconn.Connection,
+	conn dnsconn.Conn,
 	zones *Zones,
 	res *resolver.Resolver,
 	allowRecursion Access,
@@ -57,7 +57,7 @@ func NewServer(
 	}
 }
 
-// Serve runs a unicast server answering queries for the zone set until the context is canceled or an error occurs on the conn
+// Serve runs a unicast server until the context is canceled.
 // It is safe and possible, although not necessarily beneficial, to have multiple Serve routines on the same Server instance
 func (s *Server) Serve(ctx context.Context) error {
 	if s.conn == nil {
@@ -83,7 +83,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		q := msg.Questions[0]
 		// XXX if qdcount > 1, we use the first and ignore the others
 
-		s.logger.Printf("%s:%v:%v: %v", s.conn.Interface, from, msg.Opcode, msg.Questions[0])
+		s.logger.Printf("%s:%v:%v: %v", s.conn.Interface(), from, msg.Opcode, msg.Questions[0])
 
 		var zone *Zone
 
@@ -92,14 +92,14 @@ func (s *Server) Serve(ctx context.Context) error {
 			if zone = s.zones.Zone(q.QName); zone != nil {
 				switch msg.Opcode {
 				case dns.Update:
-					if zone.AllowUpdate == nil || !zone.AllowUpdate.Check(from, s.conn.Interface, "") {
+					if zone.AllowUpdate == nil || !zone.AllowUpdate.Check(from, s.conn.Interface(), "") {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
 					s.update(ctx, msg, from, zone)
 
 				case dns.Notify:
-					if zone.AllowNotify == nil || !zone.AllowNotify.Check(from, s.conn.Interface, "") {
+					if zone.AllowNotify == nil || !zone.AllowNotify.Check(from, s.conn.Interface(), "") {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
@@ -111,7 +111,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			switch q.QType {
 			case dns.AXFRType, dns.IXFRType:
 				if zone = s.zones.Zone(q.QName); zone != nil {
-					if zone.AllowTransfer == nil || !zone.AllowTransfer.Check(from, s.conn.Interface, "") {
+					if zone.AllowTransfer == nil || !zone.AllowTransfer.Check(from, s.conn.Interface(), "") {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
@@ -120,7 +120,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 			default:
 				if zone, _ = s.zones.Find(q.QName).(*Zone); zone != nil {
-					if zone.AllowQuery == nil || !zone.AllowQuery.Check(from, s.conn.Interface, "") {
+					if zone.AllowQuery == nil || !zone.AllowQuery.Check(from, s.conn.Interface(), "") {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
@@ -141,8 +141,8 @@ func (s *Server) Serve(ctx context.Context) error {
 	return nil // unreached
 }
 
-func messageSize(conn *dnsconn.Connection, msg *dns.Message) int {
-	if conn.UDP {
+func messageSize(conn dnsconn.Conn, msg *dns.Message) int {
+	if _, ok := conn.(*dnsconn.PacketConn); ok {
 		msgSize := dnsconn.MinMessageSize
 		if msg.EDNS != nil {
 			msgSize = int(msg.EDNS.H.(*dns.EDNSHeader).MaxMessageSize())

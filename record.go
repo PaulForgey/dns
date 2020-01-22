@@ -515,7 +515,7 @@ func (r *Record) Less(n *Record) bool {
 	if !rn.Equal(nn) {
 		return false
 	}
-	if r.Type() < n.Type() || r.Type() == n.Type() && r.Class() < n.Class() {
+	if r.Type() < n.Type() || (r.Type() == n.Type() && r.Class() < n.Class()) {
 		return true
 	}
 	if r.Type() != n.Type() || r.Class() != n.Class() {
@@ -855,7 +855,7 @@ func (m *HINFORecord) Equal(nn RecordData) bool {
 
 func (m *HINFORecord) Less(nn RecordData) bool {
 	n := nn.(*HINFORecord)
-	return m.CPU < n.CPU || m.CPU == n.CPU && n.OS < m.OS
+	return m.CPU < n.CPU || (m.CPU == n.CPU && n.OS < m.OS)
 }
 
 // ==========
@@ -946,8 +946,8 @@ func (m *MINFORecord) Equal(nn RecordData) bool {
 
 func (m *MINFORecord) Less(nn RecordData) bool {
 	n := nn.(*MINFORecord)
-	return m.RMailbox.Less(n.RMailbox) || m.RMailbox.Equal(n.RMailbox) &&
-		m.EMailbox.Less(n.EMailbox)
+	return m.RMailbox.Less(n.RMailbox) || (m.RMailbox.Equal(n.RMailbox) &&
+		m.EMailbox.Less(n.EMailbox))
 }
 
 // ==========
@@ -990,8 +990,8 @@ func (m *MXRecord) Equal(nn RecordData) bool {
 
 func (m *MXRecord) Less(nn RecordData) bool {
 	n := nn.(*MXRecord)
-	return m.Preference < n.Preference || m.Preference == n.Preference &&
-		m.Name.Less(n.Name)
+	return m.Preference < n.Preference || (m.Preference == n.Preference &&
+		m.Name.Less(n.Name))
 }
 
 // ==========
@@ -1108,13 +1108,13 @@ func (m *SOARecord) Equal(nn RecordData) bool {
 
 func (m *SOARecord) Less(nn RecordData) bool {
 	n := nn.(*SOARecord)
-	return m.MName.Less(n.MName) || m.MName.Equal(n.MName) &&
-		m.ReName.Less(n.ReName) || m.ReName.Equal(n.ReName) &&
-		m.Serial < n.Serial || m.Serial == n.Serial &&
-		m.Refresh < n.Refresh || m.Refresh == n.Refresh &&
-		m.Retry < n.Retry || m.Retry == n.Retry &&
-		m.Expire < n.Expire || m.Expire == n.Expire &&
-		m.Minimum < n.Minimum
+	return m.MName.Less(n.MName) || (m.MName.Equal(n.MName) &&
+		m.ReName.Less(n.ReName) || (m.ReName.Equal(n.ReName) &&
+		m.Serial < n.Serial || (m.Serial == n.Serial &&
+		m.Refresh < n.Refresh || (m.Refresh == n.Refresh &&
+		m.Retry < n.Retry || (m.Retry == n.Retry &&
+		m.Expire < n.Expire || (m.Expire == n.Expire &&
+		m.Minimum < n.Minimum))))))
 }
 
 // ==========
@@ -1215,9 +1215,9 @@ func (rr *WKSRecord) MarshalCodec(c Codec) error {
 
 func (m *WKSRecord) Less(nn RecordData) bool {
 	n := nn.(*WKSRecord)
-	return bytes.Compare(m.Address[:], n.Address[:]) < 0 || bytes.Compare(m.Address[:], n.Address[:]) == 0 &&
-		m.Protocol < n.Protocol || m.Protocol == n.Protocol &&
-		bytes.Compare(m.Bitmap, n.Bitmap) < 0
+	return bytes.Compare(m.Address[:], n.Address[:]) < 0 || (bytes.Compare(m.Address[:], n.Address[:]) == 0 &&
+		m.Protocol < n.Protocol || (m.Protocol == n.Protocol &&
+		bytes.Compare(m.Bitmap, n.Bitmap) < 0))
 }
 
 func (m *WKSRecord) Equal(nn RecordData) bool {
@@ -1278,10 +1278,10 @@ func (rr *SRVRecord) MarshalCodec(c Codec) error {
 
 func (m *SRVRecord) Less(nn RecordData) bool {
 	n := nn.(*SRVRecord)
-	return m.Priority < n.Priority || m.Priority == n.Priority &&
-		m.Weight < n.Weight || m.Weight == n.Weight &&
-		m.Port < n.Port || m.Port == n.Port &&
-		m.Name.Less(n.Name)
+	return m.Priority < n.Priority || (m.Priority == n.Priority &&
+		m.Weight < n.Weight || (m.Weight == n.Weight &&
+		m.Port < n.Port || (m.Port == n.Port &&
+		m.Name.Less(n.Name))))
 }
 
 func (m *SRVRecord) Equal(nn RecordData) bool {

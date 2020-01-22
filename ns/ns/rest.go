@@ -231,7 +231,6 @@ func (s *RestServer) doZoneData(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serial, _ := strconv.Atoi(r.FormValue("serial"))
-	//key := r.FormValue("key")
 
 	switch r.Method {
 	case http.MethodGet:

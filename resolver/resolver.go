@@ -20,7 +20,7 @@ const qtimeout = 5 * time.Second
 
 type Resolver struct {
 	lk        *sync.Mutex
-	conn      *dnsconn.Connection
+	conn      dnsconn.Conn
 	auth      Authority
 	answer    chan struct{}
 	servers   []net.Addr
@@ -31,7 +31,7 @@ type Resolver struct {
 	debug     dns.Codec
 }
 
-func (r *Resolver) init(conn *dnsconn.Connection, auth Authority, network string) {
+func (r *Resolver) init(conn dnsconn.Conn, auth Authority, network string) {
 	r.lk = &sync.Mutex{}
 	r.auth = auth
 	r.conn = conn
@@ -73,7 +73,7 @@ func NewResolverClient(auth Authority, network string, host string, servers []ne
 	}
 
 	r := &Resolver{}
-	r.init(dnsconn.NewConnection(conn, network), auth, network)
+	r.init(dnsconn.NewConn(conn, network, ""), auth, network)
 	r.rd = rd
 	r.recursive = false
 	r.ra = true
@@ -88,9 +88,9 @@ func NewResolverClient(auth Authority, network string, host string, servers []ne
 
 // NewResolver a recursive/authoritative resolver.
 // If ra is false, recusion is disabled and only authoritative records will be returned
-func NewResolver(auth Authority, conn *dnsconn.Connection, ra bool) *Resolver {
+func NewResolver(auth Authority, conn dnsconn.Conn, ra bool) *Resolver {
 	r := &Resolver{}
-	r.init(conn, auth, conn.Network)
+	r.init(conn, auth, conn.Network())
 	r.recursive = true
 	r.ra = ra
 	return r
@@ -111,7 +111,7 @@ func (r *Resolver) Transact(ctx context.Context, dest net.Addr, msg *dns.Message
 	outSize := dnsconn.MinMessageSize
 	if msg.EDNS == nil {
 		msgSize := dnsconn.UDPMessageSize
-		if !r.conn.UDP {
+		if _, ok := r.conn.(*dnsconn.PacketConn); !ok {
 			msgSize = dnsconn.MaxMessageSize
 			outSize = dnsconn.MaxMessageSize
 		}

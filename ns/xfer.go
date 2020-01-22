@@ -9,7 +9,7 @@ import (
 	"tessier-ashpool.net/dns/dnsconn"
 )
 
-func sendBatch(conn *dnsconn.Connection, msg *dns.Message, to net.Addr, r []*dns.Record) error {
+func sendBatch(conn dnsconn.Conn, msg *dns.Message, to net.Addr, r []*dns.Record) error {
 	msg.Answers = r
 	msg.QR = true
 	msg.RCode = dns.NoError
@@ -18,7 +18,8 @@ func sendBatch(conn *dnsconn.Connection, msg *dns.Message, to net.Addr, r []*dns
 	err := conn.WriteTo(msg, to, msgSize)
 
 	var truncated *dns.Truncated
-	if !conn.UDP && errors.As(err, &truncated) && len(r) > 1 {
+	_, packet := conn.(*dnsconn.PacketConn)
+	if !packet && errors.As(err, &truncated) && len(r) > 1 {
 		n := len(r) >> 1
 		err = sendBatch(conn, msg, to, r[:n])
 		if err == nil {
@@ -61,7 +62,7 @@ func (s *Server) ixfr(ctx context.Context, msg *dns.Message, to net.Addr, zone *
 		var err error
 		batch = append(batch, r)
 		if len(batch) == cap(batch) {
-			if s.conn.UDP {
+			if _, ok := s.conn.(*dnsconn.PacketConn); ok {
 				err = &dns.Truncated{}
 			} else {
 				err = sendBatch(s.conn, msg, to, batch)
@@ -78,7 +79,8 @@ func (s *Server) ixfr(ctx context.Context, msg *dns.Message, to net.Addr, zone *
 	}
 
 	var truncated *dns.Truncated
-	if s.conn.UDP && errors.As(err, &truncated) {
+	_, packet := s.conn.(*dnsconn.PacketConn)
+	if packet && errors.As(err, &truncated) {
 		msg.TC = true
 		msg.Answers = []*dns.Record{zone.SOA()}
 		s.logger.Printf("%v: sending @%d to %v: retry TCP", zone.Name(), serial, to)
@@ -101,7 +103,7 @@ func (s *Server) notify(ctx context.Context, msg *dns.Message, to net.Addr, zone
 
 	var found bool
 	for _, r := range msg.Answers {
-		a, _, err := zone.Lookup(s.conn.Interface, r.Name(), r.Type(), r.Class())
+		a, _, err := zone.Lookup(s.conn.Interface(), r.Name(), r.Type(), r.Class())
 		if err != nil {
 			break
 		}

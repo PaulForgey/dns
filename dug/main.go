@@ -116,7 +116,7 @@ func main() {
 		}
 		r = resolver.NewResolver(
 			resolver.RootCache,
-			dnsconn.NewConnection(conn, network),
+			dnsconn.NewConn(conn, network, ""),
 			true,
 		)
 	}

@@ -37,7 +37,7 @@ func (s *Server) update(ctx context.Context, msg *dns.Message, from net.Addr, zo
 	}
 
 	zone.EnterUpdateFence()
-	updated, err := zone.Update(s.conn.Interface, msg.Answers, msg.Authority)
+	updated, err := zone.Update(s.conn.Interface(), msg.Answers, msg.Authority)
 	zone.LeaveUpdateFence()
 	s.answer(err, true, msg, from)
 

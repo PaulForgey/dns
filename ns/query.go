@@ -12,12 +12,12 @@ func (s *Server) query(ctx context.Context, msg *dns.Message, from net.Addr, zon
 	var err error
 	q := msg.Questions[0]
 
-	msg.RA = (s.res != nil) && s.allowRecursion.Check(from, s.conn.Interface, "")
+	msg.RA = (s.res != nil) && s.allowRecursion.Check(from, s.conn.Interface(), "")
 	msg.AA = !zone.Hint()
 
 	// try our own authority first
 	msg.Answers, msg.Authority, err = zone.Lookup(
-		s.conn.Interface,
+		s.conn.Interface(),
 		q.QName,
 		q.QType,
 		q.QClass,
@@ -30,7 +30,7 @@ func (s *Server) query(ctx context.Context, msg *dns.Message, from net.Addr, zon
 			msg.Authority = nil
 			msg.Answers, err = s.res.Resolve(
 				ctx,
-				s.conn.Interface,
+				s.conn.Interface(),
 				q.QName,
 				q.QType,
 				q.QClass,
@@ -48,7 +48,7 @@ func (s *Server) query(ctx context.Context, msg *dns.Message, from net.Addr, zon
 	// fill in additionals
 	msg.Additional = nil
 	if err == nil {
-		s.zones.Additional(msg, s.conn.Interface, q.QClass)
+		s.zones.Additional(msg, s.conn.Interface(), q.QClass)
 	}
 
 	return s.answer(err, false, msg, from)
