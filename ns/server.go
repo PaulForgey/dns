@@ -59,6 +59,7 @@ func NewServer(
 
 // Serve runs a unicast server until the context is canceled.
 // It is safe and possible, although not necessarily beneficial, to have multiple Serve routines on the same Server instance
+// if the underlying connection is packet based.
 func (s *Server) Serve(ctx context.Context) error {
 	if s.conn == nil {
 		return ErrNoConnection
@@ -150,7 +151,7 @@ func messageSize(conn dnsconn.Conn, msg *dns.Message) int {
 				msgSize = dnsconn.MinMessageSize
 			}
 			msg.EDNS = &dns.Record{
-				H: dns.NewEDNSHeader(dnsconn.UDPMessageSize, 0, 0, 0),
+				H: dns.NewEDNSHeader(uint16(dnsconn.UDPMessageSize), 0, 0, 0),
 				D: &dns.EDNSRecord{},
 			}
 		}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
@@ -22,19 +23,24 @@ type Multicast struct {
 var ErrBadNetwork = errors.New("bad network name")
 var ErrBadAddress = errors.New("not parsable IP address")
 
+var mdnsPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 9000)
+	},
+}
+
 // NewMulticast returns a Connection joined to the mdns multicast group
 func NewMulticast(network, address string, ifi *net.Interface) (*Multicast, error) {
 	var conn *net.UDPConn
 	var msgSize int
 	var err error
 
-	gaddr := &net.UDPAddr{Port: 5353}
-	gaddr.IP = net.ParseIP(address)
-	gaddr.Zone = ifi.Name
-
-	if gaddr.IP == nil {
-		return nil, fmt.Errorf("%s: %w", address, ErrBadAddress)
+	gaddr, err := net.ResolveUDPAddr(network, address)
+	if err != nil {
+		return nil, err
 	}
+
+	gaddr.Zone = ifi.Name
 
 	// multicast groups and message sizes from RFC-6762
 	switch network {
@@ -71,7 +77,7 @@ func NewMulticast(network, address string, ifi *net.Interface) (*Multicast, erro
 	}
 
 	p := NewPacketConn(conn, network, ifi.Name)
-	p.mdns = true
+	p.MDNS(&mdnsPool)
 
 	return &Multicast{
 		PacketConn: p,

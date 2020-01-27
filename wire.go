@@ -170,7 +170,14 @@ func (w *WireCodec) putRecord(r *Record) error {
 	start := w.Offset()
 
 	if r.D != nil {
-		if err := w.Encode(r.D); err != nil {
+		nc := w.nc
+		// do not compress unicast SRV
+		if !w.mdns && r.Type() == SRVType {
+			w.nc = nil
+		}
+		err = r.D.MarshalCodec(w)
+		w.nc = nc
+		if err != nil {
 			return err
 		}
 	}

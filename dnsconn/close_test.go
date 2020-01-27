@@ -25,7 +25,6 @@ func TestClose(t *testing.T) {
 		})
 		wg.Done()
 	}()
-
 	c.Close()
 
 	wg.Wait()
@@ -50,6 +49,6 @@ func TestClose(t *testing.T) {
 		t.Fatalf("error is %v, not context.Canceled", err)
 	}
 	t.Logf("expected error after cancel: %v\n", err)
-
 	c.Close()
+	conn.Close()
 }

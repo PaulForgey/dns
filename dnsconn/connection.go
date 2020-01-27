@@ -16,18 +16,20 @@ import (
 
 const (
 	MaxMessageSize = 65535 // 16 bit size field
-	UDPMessageSize = 8192  // peferred message size
 	MinMessageSize = 512   // bsd BUFSIZ used in ancient times
 )
 
+var UDPMessageSize = 8192 // preferred message size. may be changed at runtime
 var ErrClosed = errors.New("closed")
 var ErrNotConn = errors.New("not connected")
+var ErrIsConn = errors.New("connected")
 
-var bufferPool = sync.Pool{
+var maxBufferPool = sync.Pool{
 	New: func() interface{} {
-		return make([]byte, MaxMessageSize+2)
+		return make([]byte, 65535)
 	},
 }
+var bufferPool = sync.Pool{}
 
 type message struct {
 	msg        *dns.Message
@@ -80,6 +82,7 @@ type conn struct {
 	network string
 	iface   string
 	xid     uint32
+	pool    *sync.Pool
 }
 
 // the PacketConn type is a packet oriented Connection
@@ -110,6 +113,7 @@ func NewPacketConn(c net.PacketConn, network, iface string) *PacketConn {
 		conn: &conn{
 			network: network,
 			iface:   iface,
+			pool:    &bufferPool,
 		},
 		c:        c,
 		lk:       &sync.Mutex{},
@@ -147,12 +151,19 @@ func NewPacketConn(c net.PacketConn, network, iface string) *PacketConn {
 	return p
 }
 
+// MDNS sets MDNS specific wire decoding
+func (p *PacketConn) MDNS(pool *sync.Pool) {
+	p.mdns = true
+	p.conn.pool = pool
+}
+
 // NewStreamConn creates a stream oriented connection from a net.Conn
 func NewStreamConn(c net.Conn, network, iface string) *StreamConn {
 	s := &StreamConn{
 		conn: &conn{
 			network: network,
 			iface:   iface,
+			pool:    &maxBufferPool,
 		},
 		c: c,
 	}
@@ -197,8 +208,13 @@ func (p *PacketConn) WriteTo(msg *dns.Message, addr net.Addr, msgSize int) error
 		panic("rediculous msgSize")
 	}
 
-	buffer := bufferPool.Get().([]byte)
-	defer bufferPool.Put(buffer)
+	buffer, _ := p.conn.pool.Get().([]byte)
+	if len(buffer) < msgSize {
+		// be opportunistic sending, but do not put every random crazy ass size back in the pool
+		buffer = make([]byte, msgSize)
+	} else {
+		defer p.conn.pool.Put(buffer)
+	}
 
 	msgBuf = buffer[:msgSize]
 
@@ -257,11 +273,14 @@ func (s *StreamConn) WriteTo(msg *dns.Message, addr net.Addr, msgSize int) error
 	if msgSize < MinMessageSize || msgSize > MaxMessageSize {
 		panic("rediculous msgSize")
 	}
+	if addr != nil {
+		return ErrIsConn
+	}
 
-	buffer := bufferPool.Get().([]byte)
-	defer bufferPool.Put(buffer)
+	buffer := s.conn.pool.Get().([]byte)
+	defer s.conn.pool.Put(buffer)
 
-	msgBuf = buffer[2 : 2+msgSize]
+	msgBuf = buffer[:msgSize]
 
 	if !msg.QR && msg.ID == 0 {
 		msg.ID = uint16(atomic.AddUint32(&s.conn.xid, 1))
@@ -273,13 +292,19 @@ func (s *StreamConn) WriteTo(msg *dns.Message, addr net.Addr, msgSize int) error
 		return err
 	}
 
+	var hdr [2]byte
 	msgBuf = msgBuf[:writer.Offset()]
-	s.c.SetWriteDeadline(time.Now().Add(5 * time.Minute))
-	binary.BigEndian.PutUint16(buffer, uint16(len(msgBuf)))
-	msgBuf = buffer[0 : writer.Offset()+2]
-	_, err = s.c.Write(msgBuf)
+	binary.BigEndian.PutUint16(hdr[:], uint16(len(msgBuf)))
 
-	return err
+	s.c.SetWriteDeadline(time.Now().Add(5 * time.Minute))
+	if _, err := s.c.Write(hdr[:]); err != nil {
+		return err
+	}
+	if _, err := s.c.Write(msgBuf); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // ReadFromIf receives a *dns.Message, returning the message and, if unconnected, the source address.
@@ -293,7 +318,7 @@ func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 
 		// first check unclaimed baggage
 		for m := p.messages.next; m != p.messages; m = m.next {
-			if match(m.msg) {
+			if match == nil || match(m.msg) {
 				m.remove()
 				p.lk.Unlock()
 
@@ -322,17 +347,18 @@ func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 
 func (s *StreamConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bool) (*dns.Message, net.Addr, error) {
 	var msgBuf []byte
+	var hdr [2]byte
 	var err error
 
-	buffer := bufferPool.Get().([]byte)
-	defer bufferPool.Put(buffer)
+	buffer := s.conn.pool.Get().([]byte)
+	defer s.conn.pool.Put(buffer)
 
 	for {
 		s.c.SetReadDeadline(time.Now().Add(5 * time.Minute))
-		if _, err = io.ReadFull(s.c, buffer[:2]); err != nil {
+		if _, err = io.ReadFull(s.c, hdr[:]); err != nil {
 			return nil, nil, err
 		}
-		length := int(binary.BigEndian.Uint16(buffer))
+		length := int(binary.BigEndian.Uint16(hdr[:]))
 		if length > len(buffer) {
 			// we create buffers of a size which fit 16 bit lengths..
 			panic("short buffer put back in pool?")
@@ -357,8 +383,12 @@ func (p *PacketConn) readFrom() (*dns.Message, net.Addr, error) {
 	var from net.Addr
 	var err error
 
-	buffer := bufferPool.Get().([]byte)
-	defer bufferPool.Put(buffer)
+	buffer, _ := p.conn.pool.Get().([]byte)
+	if len(buffer) < UDPMessageSize {
+		// no buffer or drop shorter buffer, always put appropriate buffer back in
+		buffer = make([]byte, UDPMessageSize)
+	}
+	defer p.conn.pool.Put(buffer)
 
 	var r int
 	r, from, err = p.c.ReadFrom(buffer)

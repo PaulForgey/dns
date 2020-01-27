@@ -190,6 +190,7 @@ func (l *Listener) runMDNS(ctx context.Context, zones *ns.Zones) {
 		logger.Printf("%s: %v", l.InterfaceName, err)
 		return
 	}
+	logger.Printf("%s: MDNS %v", l.InterfaceName, l.Address)
 	s := ns.NewServer(logger, conn, zones, nil, ns.AllAccess)
 	s.ServeMDNS(ctx)
 	conn.Close()
