@@ -16,7 +16,10 @@
 		"AllowPOST": [ "ALL" ],
 		"AllowPATCH": [ "ALL" ]
 	},
-	"Resolver": "udp",
+	"Resolver": {
+		"Network": "udp4",
+		"Address": ":53"
+	},
 	"Zones":{
 		".": {
 			"Type": "cache",

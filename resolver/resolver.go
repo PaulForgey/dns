@@ -100,6 +100,11 @@ func NewResolver(auth Authority, conn dnsconn.Conn, ra bool) *Resolver {
 	return r
 }
 
+// Conn returns the underlying connection
+func (r *Resolver) Conn() dnsconn.Conn {
+	return r.conn
+}
+
 // Close closes the underlying connection
 func (r *Resolver) Close() error {
 	return r.conn.Close()

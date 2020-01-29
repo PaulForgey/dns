@@ -105,7 +105,7 @@ type Conf struct {
 	ACLs              map[string]ACL   // ACLs by name
 	Zones             map[string]*Zone // unicast zones
 	MDNSZones         map[string]*Zone // MDNS zones
-	Resolver          string           `json:",omitempty"` // udp,udp4,udp6
+	Resolver          *Listener        `json:",omitempty"` // outgoing queries. Must be udp/udp4/udp6
 	REST              *REST            `json:",omitempty"` // REST server; omit or set to null to disable
 	Listeners         []Listener       `json:",omitmepty"` // additional or specific listeners
 	AutoListeners     bool             // true to automatically discover all interfaces to listen on
@@ -167,16 +167,22 @@ func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zone
 			}
 		}
 	} else {
-		c, err := net.ListenPacket(l.Network, l.Address)
-		if err != nil {
-			logger.Println(err)
-			return
+		var conn dnsconn.Conn
+		if conf.Resolver != nil && conf.Resolver.Network == l.Network && conf.Resolver.Address == l.Address {
+			conn = res.Conn()
+		} else {
+			c, err := net.ListenPacket(l.Network, l.Address)
+			if err != nil {
+				logger.Println(err)
+				return
+			}
+			conn = dnsconn.NewPacketConn(c, l.Network, l.InterfaceName)
+			defer conn.Close()
 		}
+
 		logger.Printf("%s: listening %s %v", l.InterfaceName, l.Network, l.Address)
-		conn := dnsconn.NewPacketConn(c, l.Network, l.InterfaceName)
 		s := ns.NewServer(logger, conn, zones, res, allowRecursion)
 		s.Serve(ctx)
-		conn.Close()
 	}
 }
 
@@ -232,12 +238,12 @@ func main() {
 	zones := ns.NewZones()
 	mzones := ns.NewZones()
 
-	if conf.Resolver != "" {
-		rc, err := net.ListenUDP(conf.Resolver, &net.UDPAddr{})
+	if conf.Resolver != nil {
+		c, err := net.ListenPacket(conf.Resolver.Network, conf.Resolver.Address)
 		if err != nil {
 			logger.Fatalf("unable to create resolver socket: %v", err)
 		}
-		res = resolver.NewResolver(zones, dnsconn.NewConn(rc, conf.Resolver, ""), true)
+		res = resolver.NewResolver(zones, dnsconn.NewPacketConn(c, conf.Resolver.Network, ""), true)
 	}
 
 	// load all data before running
