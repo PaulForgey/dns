@@ -180,17 +180,12 @@ func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zone
 }
 
 func (l *Listener) runMDNS(ctx context.Context, zones *ns.Zones) {
-	ifi, err := net.InterfaceByName(l.InterfaceName)
+	conn, err := dnsconn.NewMulticast(l.Network, l.Address, l.InterfaceName)
 	if err != nil {
-		logger.Printf("%s: %v", l.InterfaceName, err)
+		logger.Printf("multicast %s/%s: %v", l.Network, l.Address, err)
 		return
 	}
-	conn, err := dnsconn.NewMulticast(l.Network, l.Address, ifi)
-	if err != nil {
-		logger.Printf("%s: %v", l.InterfaceName, err)
-		return
-	}
-	logger.Printf("%s: MDNS %v", l.InterfaceName, l.Address)
+	logger.Printf("MDNS listening %s %v", l.Network, l.Address)
 	s := ns.NewServer(logger, conn, zones, nil, ns.AllAccess)
 	s.ServeMDNS(ctx)
 	conn.Close()
@@ -285,119 +280,43 @@ func main() {
 		}()
 	}
 
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		logger.Fatalf("cannot enumerate interfaces: %v", err)
+	if conf.AutoListeners {
+		conf.Listeners = append(conf.Listeners,
+			Listener{
+				Network: "udp4",
+				Address: ":53",
+				VC:      false,
+			},
+			Listener{
+				Network: "udp6",
+				Address: ":53",
+				VC:      false,
+			},
+			Listener{
+				Network: "tcp4",
+				Address: ":53",
+				VC:      true,
+			},
+			Listener{
+				Network: "tcp6",
+				Address: ":53",
+				VC:      true,
+			},
+		)
+	}
+	if conf.AutoMDNSListeners {
+		conf.MDNSListeners = append(conf.MDNSListeners,
+			Listener{
+				Network: "udp4",
+				Address: ":5353",
+			},
+			Listener{
+				Network: "udp6",
+				Address: ":5353",
+			},
+		)
 	}
 
-	for _, ifi := range ifaces {
-		if (ifi.Flags & net.FlagUp) == 0 {
-			continue
-		}
-
-		addrs, err := ifi.Addrs()
-		if err != nil {
-			logger.Printf("unable to enumerate addresses for interface %s: %v; skipping", ifi.Name, err)
-			continue
-		}
-
-		var firstGlobal4, firstLocal4, firstGlobal6, firstLocal6 net.IP
-
-		for _, addr := range addrs {
-			if addr.Network() != "ip+net" {
-				continue
-			}
-
-			ip, _, err := net.ParseCIDR(addr.String())
-			if err != nil {
-				logger.Printf("bad interface address %s: %v; skipping", addr.String(), err)
-				continue // this really should not happen
-			}
-
-			v4 := ip.To4() != nil
-
-			if ip.IsGlobalUnicast() || ((ifi.Flags&net.FlagLoopback) != 0 && ip.IsLoopback()) {
-				if v4 {
-					if firstGlobal4 == nil {
-						firstGlobal4 = ip
-					}
-				} else {
-					if firstGlobal6 == nil {
-						firstGlobal6 = ip
-					}
-				}
-			}
-			if (ifi.Flags&net.FlagLoopback) == 0 && ip.IsLinkLocalUnicast() {
-				if v4 {
-					if firstLocal4 == nil {
-						firstLocal4 = ip
-					}
-				} else {
-					if firstLocal6 == nil {
-						firstLocal6 = ip
-					}
-				}
-			}
-
-			if conf.AutoListeners && (ip.IsLoopback() || ip.IsGlobalUnicast()) {
-				udp, tcp := "udp", "tcp"
-				if v4 {
-					udp, tcp = "udp4", "tcp4"
-				}
-				address := net.JoinHostPort(ip.String(), "53")
-				conf.Listeners = append(conf.Listeners,
-					Listener{
-						Network:       udp,
-						Address:       address,
-						InterfaceName: ifi.Name,
-						VC:            false,
-					},
-					Listener{
-						Network:       tcp,
-						Address:       address,
-						InterfaceName: ifi.Name,
-						VC:            true,
-					},
-				)
-			}
-		}
-
-		if (ifi.Flags & net.FlagMulticast) != 0 {
-			if conf.AutoMDNSListeners {
-				var ip4, ip6 net.IP
-
-				if firstLocal4 != nil {
-					ip4 = firstLocal4
-				} else if firstGlobal4 != nil {
-					ip4 = firstGlobal4
-				}
-				if firstLocal6 != nil {
-					ip6 = firstLocal6
-				} else if firstGlobal6 != nil {
-					ip6 = firstGlobal6
-				}
-
-				if ip4 != nil {
-					conf.MDNSListeners = append(conf.MDNSListeners,
-						Listener{
-							Network:       "udp4",
-							Address:       net.JoinHostPort(ip4.String(), "5353"),
-							InterfaceName: ifi.Name,
-						},
-					)
-				}
-				if ip6 != nil {
-					conf.MDNSListeners = append(conf.MDNSListeners,
-						Listener{
-							Network:       "udp6",
-							Address:       net.JoinHostPort(ip6.String(), "5353"),
-							InterfaceName: ifi.Name,
-						},
-					)
-				}
-			}
-		}
-	}
 	for _, l := range conf.Listeners {
 		wg.Add(1)
 		go func(l Listener) {

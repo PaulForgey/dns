@@ -8,33 +8,22 @@ import (
 	"tessier-ashpool.net/dns"
 )
 
-func (s *Server) query(ctx context.Context, msg *dns.Message, from net.Addr, zone *Zone) error {
+func (s *Server) query(ctx context.Context, msg *dns.Message, iface string, from net.Addr, zone *Zone) error {
 	var err error
 	q := msg.Questions[0]
 
-	msg.RA = (s.res != nil) && s.allowRecursion.Check(from, s.conn.Interface(), "")
+	msg.RA = (s.res != nil) && s.allowRecursion.Check(from, iface, "")
 	msg.AA = !zone.Hint()
 
 	// try our own authority first
-	msg.Answers, msg.Authority, err = zone.Lookup(
-		s.conn.Interface(),
-		q.Name(),
-		q.Type(),
-		q.Class(),
-	)
+	msg.Answers, msg.Authority, err = zone.Lookup(iface, q.Name(), q.Type(), q.Class())
 
 	if err == nil && len(msg.Answers) == 0 && msg.RD && msg.RA {
 		// go ahead and recurse if this is a hint zone or we have a delegation
 		if zone.Hint() || len(msg.Authority) > 0 {
 			msg.AA = false
 			msg.Authority = nil
-			msg.Answers, err = s.res.Resolve(
-				ctx,
-				s.conn.Interface(),
-				q.Name(),
-				q.Type(),
-				q.Class(),
-			)
+			msg.Answers, err = s.res.Resolve(ctx, iface, q.Name(), q.Type(), q.Class())
 		}
 	}
 
@@ -48,7 +37,7 @@ func (s *Server) query(ctx context.Context, msg *dns.Message, from net.Addr, zon
 	// fill in additionals
 	msg.Additional = nil
 	if err == nil {
-		s.zones.Additional(msg, s.conn.Interface(), q.Class())
+		s.zones.Additional(msg, iface, q.Class())
 	}
 
 	return s.answer(err, false, msg, from)

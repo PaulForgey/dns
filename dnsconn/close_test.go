@@ -20,7 +20,7 @@ func TestClose(t *testing.T) {
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
-		_, _, err = c.ReadFromIf(context.Background(), func(m *dns.Message) bool {
+		_, _, _, err = c.ReadFromIf(context.Background(), func(m *dns.Message) bool {
 			return false
 		})
 		wg.Done()
@@ -38,7 +38,7 @@ func TestClose(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	wg.Add(1)
 	go func() {
-		_, _, err = c.ReadFromIf(ctx, func(m *dns.Message) bool {
+		_, _, _, err = c.ReadFromIf(ctx, func(m *dns.Message) bool {
 			return false
 		})
 		wg.Done()

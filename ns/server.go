@@ -65,7 +65,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		return ErrNoConnection
 	}
 	for {
-		msg, from, err := s.conn.ReadFromIf(ctx, func(*dns.Message) bool {
+		msg, iface, from, err := s.conn.ReadFromIf(ctx, func(*dns.Message) bool {
 			return true // we are the only consumer
 		})
 		if err != nil {
@@ -76,15 +76,14 @@ func (s *Server) Serve(ctx context.Context) error {
 			continue // only questions
 		}
 
-		if len(msg.Questions) == 0 {
-			// XXX this needs to change if we ever support an op with no Q section
+		if len(msg.Questions) != 1 {
+			// XXX this needs to change if we ever support an op with no Q section or multiple questions
 			s.answer(dns.FormError, true, msg, from)
 			continue
 		}
 		q := msg.Questions[0]
-		// XXX if qdcount > 1, we use the first and ignore the others
 
-		s.logger.Printf("%s:%v:%v: %v", s.conn.Interface(), from, msg.Opcode, msg.Questions[0])
+		s.logger.Printf("%s:%v:%v: %v", iface, from, msg.Opcode, msg.Questions[0])
 
 		var zone *Zone
 
@@ -93,18 +92,18 @@ func (s *Server) Serve(ctx context.Context) error {
 			if zone = s.zones.Zone(q.Name()); zone != nil {
 				switch msg.Opcode {
 				case dns.Update:
-					if zone.AllowUpdate == nil || !zone.AllowUpdate.Check(from, s.conn.Interface(), "") {
+					if zone.AllowUpdate == nil || !zone.AllowUpdate.Check(from, iface, "") {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
-					s.update(ctx, msg, from, zone)
+					s.update(ctx, iface, msg, from, zone)
 
 				case dns.Notify:
-					if zone.AllowNotify == nil || !zone.AllowNotify.Check(from, s.conn.Interface(), "") {
+					if zone.AllowNotify == nil || !zone.AllowNotify.Check(from, iface, "") {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
-					s.notify(ctx, msg, from, zone)
+					s.notify(ctx, iface, msg, from, zone)
 				}
 			}
 
@@ -112,7 +111,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			switch q.Type() {
 			case dns.AXFRType, dns.IXFRType:
 				if zone = s.zones.Zone(q.Name()); zone != nil {
-					if zone.AllowTransfer == nil || !zone.AllowTransfer.Check(from, s.conn.Interface(), "") {
+					if zone.AllowTransfer == nil || !zone.AllowTransfer.Check(from, iface, "") {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
@@ -121,11 +120,11 @@ func (s *Server) Serve(ctx context.Context) error {
 
 			default:
 				if zone, _ = s.zones.Find(q.Name()).(*Zone); zone != nil {
-					if zone.AllowQuery == nil || !zone.AllowQuery.Check(from, s.conn.Interface(), "") {
+					if zone.AllowQuery == nil || !zone.AllowQuery.Check(from, iface, "") {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
-					s.query(ctx, msg, from, zone)
+					s.query(ctx, msg, iface, from, zone)
 				}
 			}
 
@@ -178,5 +177,5 @@ func (s *Server) answer(err error, clear bool, msg *dns.Message, to net.Addr) er
 	}
 
 	msgSize := messageSize(s.conn, msg)
-	return s.conn.WriteTo(msg, to, msgSize)
+	return s.conn.WriteTo(msg, "", to, msgSize)
 }

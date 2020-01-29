@@ -15,7 +15,7 @@ func sendBatch(conn dnsconn.Conn, msg *dns.Message, to net.Addr, r []*dns.Record
 	msg.RCode = dns.NoError
 
 	msgSize := messageSize(conn, msg)
-	err := conn.WriteTo(msg, to, msgSize)
+	err := conn.WriteTo(msg, "", to, msgSize)
 
 	var truncated *dns.Truncated
 	_, packet := conn.(*dnsconn.PacketConn)
@@ -92,7 +92,7 @@ func (s *Server) ixfr(ctx context.Context, msg *dns.Message, to net.Addr, zone *
 	return nil
 }
 
-func (s *Server) notify(ctx context.Context, msg *dns.Message, to net.Addr, zone *Zone) error {
+func (s *Server) notify(ctx context.Context, iface string, msg *dns.Message, to net.Addr, zone *Zone) error {
 	q := msg.Questions[0]
 	msg.Authority = nil
 	msg.Additional = nil
@@ -103,7 +103,7 @@ func (s *Server) notify(ctx context.Context, msg *dns.Message, to net.Addr, zone
 
 	var found bool
 	for _, r := range msg.Answers {
-		a, _, err := zone.Lookup(s.conn.Interface(), r.Name(), r.Type(), r.Class())
+		a, _, err := zone.Lookup(iface, r.Name(), r.Type(), r.Class())
 		if err != nil {
 			break
 		}

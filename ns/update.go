@@ -8,7 +8,7 @@ import (
 	"tessier-ashpool.net/dns/resolver"
 )
 
-func (s *Server) update(ctx context.Context, msg *dns.Message, from net.Addr, zone *Zone) {
+func (s *Server) update(ctx context.Context, iface string, msg *dns.Message, from net.Addr, zone *Zone) {
 	q := msg.Questions[0]
 	if q.Type() != dns.SOAType {
 		s.answer(dns.FormError, true, msg, from)
@@ -37,7 +37,7 @@ func (s *Server) update(ctx context.Context, msg *dns.Message, from net.Addr, zo
 	}
 
 	zone.EnterUpdateFence()
-	updated, err := zone.Update(s.conn.Interface(), msg.Answers, msg.Authority)
+	updated, err := zone.Update(iface, msg.Answers, msg.Authority)
 	zone.LeaveUpdateFence()
 	s.answer(err, true, msg, from)
 

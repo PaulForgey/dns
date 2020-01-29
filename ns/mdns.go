@@ -12,23 +12,23 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 		return ErrNoConnection
 	}
 	for {
-		msg, from, err := s.conn.ReadFromIf(ctx, nil)
+		msg, iface, from, err := s.conn.ReadFromIf(ctx, nil)
 		if err != nil {
 			return err
 		}
 
 		// XXX
 		for _, q := range msg.Questions {
-			s.logger.Printf("%s:%v: Q: %v\n", s.conn.Interface(), from, q)
+			s.logger.Printf("%s:%v: Q: %v\n", iface, from, q)
 		}
 		for _, a := range msg.Answers {
-			s.logger.Printf("%s:%v: AN: %v\n", s.conn.Interface(), from, a)
+			s.logger.Printf("%s:%v: AN: %v\n", iface, from, a)
 		}
 		for _, a := range msg.Authority {
-			s.logger.Printf("%s:%v: AU: %v\n", s.conn.Interface(), from, a)
+			s.logger.Printf("%s:%v: AU: %v\n", iface, from, a)
 		}
 		for _, a := range msg.Additional {
-			s.logger.Printf("%s:%v: AD: %v\n", s.conn.Interface(), from, a)
+			s.logger.Printf("%s:%v: AD: %v\n", iface, from, a)
 		}
 	}
 
