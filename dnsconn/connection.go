@@ -105,8 +105,8 @@ type PacketConn struct {
 	p4       *ipv4.PacketConn
 	p6       *ipv6.PacketConn
 	lk       *sync.Mutex
+	cond     *sync.Cond
 	messages *message
-	msgChan  chan struct{}
 	err      error
 	mdns     bool
 }
@@ -124,6 +124,7 @@ func NewPacketConn(c net.PacketConn, network, iface string) *PacketConn {
 	messages.next = messages
 	messages.prev = messages
 
+	lk := &sync.Mutex{}
 	p := &PacketConn{
 		conn: &conn{
 			network: network,
@@ -131,9 +132,9 @@ func NewPacketConn(c net.PacketConn, network, iface string) *PacketConn {
 			pool:    &bufferPool,
 		},
 		c:        c,
-		lk:       &sync.Mutex{},
+		lk:       lk,
+		cond:     sync.NewCond(lk),
 		messages: messages,
-		msgChan:  make(chan struct{}, 1),
 	}
 
 	switch network {
@@ -164,15 +165,10 @@ func NewPacketConn(c net.PacketConn, network, iface string) *PacketConn {
 				err = nil
 				continue
 			}
+
+			p.cond.Broadcast()
 			p.lk.Unlock()
-
-			// block sending to this channel for the following reasons:
-			// - need a guarantee we can safely read from channel to poll for changed state
-			// - back pressure if we are not keeping up with incoming messages
-			p.msgChan <- struct{}{}
 		}
-
-		close(p.msgChan)
 	}(p)
 
 	return p
@@ -372,12 +368,24 @@ func (s *StreamConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgS
 // ReadFromIf receives a *dns.Message, returning the message and, if unconnected, the source address.
 // match should be quick. The connection is locked during its call.
 func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bool) (*dns.Message, string, net.Addr, error) {
+	var ctxFired bool
 	var err error
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			p.lk.Lock()
+			ctxFired = true
+			p.cond.Broadcast()
+			p.lk.Unlock()
+		case <-done:
+		}
+	}()
 
 	p.lk.Lock()
 	for err == nil {
-		err = p.err
-
 		backlog := 0
 		// first check unclaimed baggage
 		for m := p.messages.next; m != p.messages; m = m.next {
@@ -398,19 +406,16 @@ func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 			}
 		}
 
-		// wait for new message or error
-		for p.messages.empty() && err == nil {
-			p.lk.Unlock()
-
-			select {
-			case <-ctx.Done():
-				return nil, "", nil, ctx.Err()
-			case <-p.msgChan:
-			}
-
-			p.lk.Lock()
+		if ctxFired {
+			err = ctx.Err()
+		} else {
 			err = p.err
 		}
+		if err != nil {
+			break
+		}
+
+		p.cond.Wait()
 	}
 	p.lk.Unlock()
 
@@ -534,12 +539,7 @@ func (p *PacketConn) readFrom() (*dns.Message, string, net.Addr, error) {
 
 // Close closes the underlying conn
 func (p *PacketConn) Close() error {
-	err := p.c.Close()
-	for _ = range p.msgChan {
-		// bleed it out until closed
-		// (allows producer to proceed and ultimately close channel, also releasing blocked readers)
-	}
-	return err
+	return p.c.Close()
 }
 
 func (s *StreamConn) Close() error {

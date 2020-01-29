@@ -168,7 +168,9 @@ func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zone
 		}
 	} else {
 		var conn dnsconn.Conn
-		if conf.Resolver != nil && conf.Resolver.Network == l.Network && conf.Resolver.Address == l.Address {
+		if conf.Resolver != nil &&
+			netname(conf.Resolver.Network) == netname(l.Network) &&
+			conf.Resolver.Address == l.Address {
 			conn = res.Conn()
 		} else {
 			c, err := net.ListenPacket(l.Network, l.Address)
@@ -196,6 +198,17 @@ func (l *Listener) runMDNS(ctx context.Context, zones *ns.Zones) {
 	s := ns.NewServer(logger, conn, zones, nil, ns.AllAccess)
 	s.ServeMDNS(ctx)
 	conn.Close()
+}
+
+func netname(network string) string {
+	if len(network) > 0 {
+		l := len(network) - 1
+		n := network[l]
+		if n == '4' || n == '6' {
+			return network[:l]
+		}
+	}
+	return network
 }
 
 func main() {
