@@ -12,7 +12,6 @@ import (
 	"tessier-ashpool.net/dns"
 	"tessier-ashpool.net/dns/ns"
 	"tessier-ashpool.net/dns/nsdb"
-	"tessier-ashpool.net/dns/resolver"
 )
 
 type updateLog struct {
@@ -249,15 +248,15 @@ func (zone *Zone) save_locked() error {
 	return nil
 }
 
-func (zone *Zone) run(zones *ns.Zones, res *resolver.Resolver) {
+func (zone *Zone) run(zones *ns.Zones) {
 	zone.wg.Add(1)
 	go func() {
 		switch zone.Type {
 		case PrimaryType, HintType:
-			zone.primaryZone(zones, res)
+			zone.primaryZone(zones)
 
 		case SecondaryType:
-			zone.secondaryZone(zones, res)
+			zone.secondaryZone(zones)
 
 		default:
 			<-zone.ctx.Done()

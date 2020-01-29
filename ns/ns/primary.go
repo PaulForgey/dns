@@ -2,10 +2,9 @@ package main
 
 import (
 	"tessier-ashpool.net/dns/ns"
-	"tessier-ashpool.net/dns/resolver"
 )
 
-func (zone *Zone) primaryZone(zones *ns.Zones, res *resolver.Resolver) {
+func (zone *Zone) primaryZone(zones *ns.Zones) {
 	var err error
 
 	ctx := zone.ctx

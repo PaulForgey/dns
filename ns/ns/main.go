@@ -105,8 +105,8 @@ type Conf struct {
 	ACLs              map[string]ACL   // ACLs by name
 	Zones             map[string]*Zone // unicast zones
 	MDNSZones         map[string]*Zone // MDNS zones
-	Resolver          string           // udp,udp4,udp6 empty for no recursive resolver
-	REST              *REST            `json:",omitmepyt"` // REST server; omit or set to null to disable
+	Resolver          string           `json:",omitempty"` // udp,udp4,udp6
+	REST              *REST            `json:",omitempty"` // REST server; omit or set to null to disable
 	Listeners         []Listener       `json:",omitmepty"` // additional or specific listeners
 	AutoListeners     bool             // true to automatically discover all interfaces to listen on
 	MDNSListeners     []Listener       `json:",omitempty"` // additional or specific MDNS listeners
@@ -121,8 +121,9 @@ var logStderr bool
 var confFile string
 var cache = ns.NewCacheZone(resolver.NewRootZone())
 var logger *log.Logger
+var res *resolver.Resolver
 
-func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zones *ns.Zones, res *resolver.Resolver) {
+func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zones *ns.Zones) {
 	allowRecursion := conf.Access(&conf.AllowRecursion)
 	if l.VC {
 		c, err := net.Listen(l.Network, l.Address)
@@ -230,7 +231,6 @@ func main() {
 	wg := &sync.WaitGroup{}
 	zones := ns.NewZones()
 	mzones := ns.NewZones()
-	var res *resolver.Resolver
 
 	if conf.Resolver != "" {
 		rc, err := net.ListenUDP(conf.Resolver, &net.UDPAddr{})
@@ -257,10 +257,10 @@ func main() {
 	}
 
 	for _, c := range conf.Zones {
-		c.run(zones, res)
+		c.run(zones)
 	}
 	for _, c := range conf.MDNSZones {
-		c.run(mzones, nil)
+		c.run(mzones)
 	}
 
 	if conf.REST != nil {
@@ -272,7 +272,6 @@ func main() {
 				},
 				Conf:           &conf,
 				Zones:          zones,
-				Res:            res,
 				ShutdownServer: cancel,
 			}
 			s.Serve(ctx)
@@ -320,7 +319,7 @@ func main() {
 	for _, l := range conf.Listeners {
 		wg.Add(1)
 		go func(l Listener) {
-			l.run(ctx, wg, &conf, zones, res)
+			l.run(ctx, wg, &conf, zones)
 			wg.Done()
 		}(l)
 	}

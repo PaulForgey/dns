@@ -138,7 +138,7 @@ func pollSecondary(ctx context.Context, zone *Zone, z *ns.Zone, r *resolver.Reso
 	return true, refresh
 }
 
-func (zone *Zone) secondaryZone(zones *ns.Zones, res *resolver.Resolver) {
+func (zone *Zone) secondaryZone(zones *ns.Zones) {
 	ctx := zone.ctx
 	z := zone.zone
 	live := false

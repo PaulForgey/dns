@@ -18,8 +18,7 @@ func sendBatch(conn dnsconn.Conn, msg *dns.Message, to net.Addr, r []*dns.Record
 	err := conn.WriteTo(msg, "", to, msgSize)
 
 	var truncated *dns.Truncated
-	_, packet := conn.(*dnsconn.PacketConn)
-	if !packet && errors.As(err, &truncated) && len(r) > 1 {
+	if !conn.VC() && errors.As(err, &truncated) && len(r) > 1 {
 		n := len(r) >> 1
 		err = sendBatch(conn, msg, to, r[:n])
 		if err == nil {
@@ -62,7 +61,7 @@ func (s *Server) ixfr(ctx context.Context, msg *dns.Message, to net.Addr, zone *
 		var err error
 		batch = append(batch, r)
 		if len(batch) == cap(batch) {
-			if _, ok := s.conn.(*dnsconn.PacketConn); ok {
+			if !s.conn.VC() {
 				err = &dns.Truncated{}
 			} else {
 				err = sendBatch(s.conn, msg, to, batch)
@@ -79,8 +78,7 @@ func (s *Server) ixfr(ctx context.Context, msg *dns.Message, to net.Addr, zone *
 	}
 
 	var truncated *dns.Truncated
-	_, packet := s.conn.(*dnsconn.PacketConn)
-	if packet && errors.As(err, &truncated) {
+	if !s.conn.VC() && errors.As(err, &truncated) {
 		msg.TC = true
 		msg.Answers = []*dns.Record{zone.SOA()}
 		s.logger.Printf("%v: sending @%d to %v: retry TCP", zone.Name(), serial, to)

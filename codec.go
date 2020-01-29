@@ -12,6 +12,7 @@ import (
 type Codec interface {
 	Encode(interface{}) error
 	Decode(interface{}) error
+	Debug(string)
 }
 
 // The Encoder type supports marshalling to any codec
@@ -28,6 +29,7 @@ type nullCodec struct{}
 
 func (n *nullCodec) Encode(_ interface{}) error { return nil }
 func (n *nullCodec) Decode(_ interface{}) error { return io.EOF }
+func (n *nullCodec) Debug(_ string)             {}
 
 // The NullCodec discards anything written to it and returns io.EOF if read
 var NullCodec = &nullCodec{}

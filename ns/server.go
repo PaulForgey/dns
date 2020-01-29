@@ -65,15 +65,12 @@ func (s *Server) Serve(ctx context.Context) error {
 		return ErrNoConnection
 	}
 	for {
-		msg, iface, from, err := s.conn.ReadFromIf(ctx, func(*dns.Message) bool {
-			return true // we are the only consumer
+		msg, iface, from, err := s.conn.ReadFromIf(ctx, func(msg *dns.Message) bool {
+			return !msg.QR // only questions
 		})
 		if err != nil {
 			s.logger.Printf("listener %v exiting: %v", s.conn, err)
 			return err
-		}
-		if msg.QR {
-			continue // only questions
 		}
 
 		if len(msg.Questions) != 1 {
@@ -142,8 +139,10 @@ func (s *Server) Serve(ctx context.Context) error {
 }
 
 func messageSize(conn dnsconn.Conn, msg *dns.Message) int {
-	if _, ok := conn.(*dnsconn.PacketConn); ok {
-		msgSize := dnsconn.MinMessageSize
+	msgSize := dnsconn.MinMessageSize
+	if conn.VC() {
+		msgSize = dnsconn.MaxMessageSize
+	} else {
 		if msg.EDNS != nil {
 			msgSize = int(msg.EDNS.H.(*dns.EDNSHeader).MaxMessageSize())
 			if msgSize < dnsconn.MinMessageSize {
@@ -154,9 +153,8 @@ func messageSize(conn dnsconn.Conn, msg *dns.Message) int {
 				D: &dns.EDNSRecord{},
 			}
 		}
-		return msgSize
 	}
-	return dnsconn.MaxMessageSize
+	return msgSize
 }
 
 func (s *Server) answer(err error, clear bool, msg *dns.Message, to net.Addr) error {

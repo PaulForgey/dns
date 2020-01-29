@@ -107,6 +107,11 @@ func NewTextWriter(w io.Writer) *TextCodec {
 	}
 }
 
+// Emit commented debug output
+func (c *TextCodec) Debug(output string) {
+	fmt.Fprintf(c.w, "; %s\n", output)
+}
+
 // push an included filename
 func (c *TextCodec) push(filename string) error {
 	var dir, name string

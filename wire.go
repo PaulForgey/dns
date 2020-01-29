@@ -59,6 +59,10 @@ func NewWireCodecNoCompression(data []byte) *WireCodec {
 	}
 }
 
+// does nothing
+// XXX could attach a logger
+func (w *WireCodec) Debug(_ string) {}
+
 // MDNS sets MDNS specific wire decoding
 func (w *WireCodec) MDNS() {
 	w.mdns = true

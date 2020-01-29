@@ -14,7 +14,6 @@ import (
 
 	"tessier-ashpool.net/dns"
 	"tessier-ashpool.net/dns/ns"
-	"tessier-ashpool.net/dns/resolver"
 )
 
 const (
@@ -35,7 +34,6 @@ type RestServer struct {
 
 	Conf           *Conf
 	Zones          *ns.Zones
-	Res            *resolver.Resolver
 	ShutdownServer context.CancelFunc
 }
 
@@ -205,7 +203,7 @@ func (s *RestServer) doZoneConf(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.Zones.Insert(c.zone, true)
-		c.run(s.Zones, s.Res)
+		c.run(s.Zones)
 
 		w.WriteHeader(http.StatusNoContent)
 

@@ -22,6 +22,10 @@ const (
 	MinMessageSize = 512   // bsd BUFSIZ used in ancient times
 )
 
+const (
+	MaxBacklog = 20 // maximum number of unclaimed messages over packet connections
+)
+
 var UDPMessageSize = 8192 // preferred message size. may be changed at runtime
 
 var ErrClosed = errors.New("closed")
@@ -82,6 +86,9 @@ type Conn interface {
 	// Close closes the underyling connection and allows any blocking ReadFromIf or WriteTo operations to immediately
 	// fail.
 	Close() error
+
+	// VC returns true if the underlying transport is stream oriented
+	VC() bool
 }
 
 type conn struct {
@@ -177,6 +184,11 @@ func (p *PacketConn) MDNS(pool *sync.Pool) {
 	p.conn.pool = pool
 }
 
+// VC returns false a PacketConn is never stream oriented
+func (p *PacketConn) VC() bool {
+	return false
+}
+
 // NewStreamConn creates a stream oriented connection from a net.Conn
 func NewStreamConn(c net.Conn, network, iface string) *StreamConn {
 	s := &StreamConn{
@@ -193,6 +205,12 @@ func NewStreamConn(c net.Conn, network, iface string) *StreamConn {
 
 func (s *StreamConn) String() string {
 	return s.c.LocalAddr().String()
+}
+
+// VC returns true if the underlying connection is stream oriented. (A StreamConn may use a connected net.PacketConn)
+func (s *StreamConn) VC() bool {
+	_, ok := s.c.(net.PacketConn)
+	return !ok
 }
 
 // NewConnection creates a new Conn instance with a net.Conn or net.PacketConn
@@ -339,8 +357,10 @@ func (s *StreamConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgS
 	binary.BigEndian.PutUint16(hdr[:], uint16(len(msgBuf)))
 
 	s.c.SetWriteDeadline(time.Now().Add(5 * time.Minute))
-	if _, err := s.c.Write(hdr[:]); err != nil {
-		return err
+	if _, ok := s.c.(net.PacketConn); !ok {
+		if _, err := s.c.Write(hdr[:]); err != nil {
+			return err
+		}
 	}
 	if _, err := s.c.Write(msgBuf); err != nil {
 		return err
@@ -358,6 +378,7 @@ func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 	for err == nil {
 		err = p.err
 
+		backlog := 0
 		// first check unclaimed baggage
 		for m := p.messages.next; m != p.messages; m = m.next {
 			if match == nil || match(m.msg) {
@@ -365,6 +386,15 @@ func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 				p.lk.Unlock()
 
 				return m.msg, m.iface, m.source, nil
+			}
+			backlog++
+		}
+
+		// clear out excessive backlog
+		if backlog > MaxBacklog*2 {
+			for backlog > MaxBacklog {
+				p.messages.next.remove()
+				backlog--
 			}
 		}
 
@@ -397,17 +427,25 @@ func (s *StreamConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 
 	for {
 		s.c.SetReadDeadline(time.Now().Add(5 * time.Minute))
-		if _, err = io.ReadFull(s.c, hdr[:]); err != nil {
-			return nil, "", nil, err
-		}
-		length := int(binary.BigEndian.Uint16(hdr[:]))
-		if length > len(buffer) {
-			// we create buffers of a size which fit 16 bit lengths..
-			panic("short buffer put back in pool?")
-		}
-		msgBuf = buffer[:length]
-		if _, err = io.ReadFull(s.c, msgBuf); err != nil {
-			return nil, "", nil, err
+		if pc, ok := s.c.(net.PacketConn); ok {
+			length, _, err := pc.ReadFrom(buffer)
+			if err != nil {
+				return nil, "", nil, err
+			}
+			msgBuf = buffer[:length]
+		} else {
+			if _, err = io.ReadFull(s.c, hdr[:]); err != nil {
+				return nil, "", nil, err
+			}
+			length := int(binary.BigEndian.Uint16(hdr[:]))
+			if length > len(buffer) {
+				// we create buffers of a size which fit 16 bit lengths..
+				panic("short buffer put back in pool?")
+			}
+			msgBuf = buffer[:length]
+			if _, err = io.ReadFull(s.c, msgBuf); err != nil {
+				return nil, "", nil, err
+			}
 		}
 
 		reader := dns.NewWireCodec(msgBuf)

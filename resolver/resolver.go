@@ -53,27 +53,31 @@ func (r *Resolver) init(conn dnsconn.Conn, auth Authority, network string) {
 // root zone to cache results in.
 // if rd is false, the client will ask questions without the RD flag. This flag is normally set.
 func NewResolverClient(auth Authority, network string, host string, servers []net.Addr, rd bool) (*Resolver, error) {
-	var conn net.Conn
+	var conn dnsconn.Conn
 	var err error
 
 	if network == "" {
 		network = "udp"
 	}
 	if host != "" {
-		if conn, err = net.Dial(network, host); err != nil {
+		c, err := net.Dial(network, host)
+		if err != nil {
 			return nil, err
 		}
+		conn = dnsconn.NewStreamConn(c, network, "") // even for packet based to save demux overhead
 	} else {
-		if conn, err = net.ListenUDP(network, nil); err != nil {
+		c, err := net.ListenPacket(network, "")
+		if err != nil {
 			return nil, err
 		}
+		conn = dnsconn.NewPacketConn(c, network, "")
 	}
 	if err != nil {
 		return nil, err
 	}
 
 	r := &Resolver{}
-	r.init(dnsconn.NewConn(conn, network, ""), auth, network)
+	r.init(conn, auth, network)
 	r.rd = rd
 	r.recursive = false
 	r.ra = true
@@ -109,15 +113,14 @@ func (r *Resolver) Debug(c dns.Codec) {
 // Transact sends and receives a DNS query to dest, filling in msg.EDNS as necessary
 func (r *Resolver) Transact(ctx context.Context, dest net.Addr, msg *dns.Message) (*dns.Message, error) {
 	outSize := dnsconn.MinMessageSize
-	if msg.EDNS == nil {
-		msgSize := dnsconn.UDPMessageSize
-		if _, ok := r.conn.(*dnsconn.PacketConn); !ok {
-			msgSize = dnsconn.MaxMessageSize
-			outSize = dnsconn.MaxMessageSize
-		}
-		msg.EDNS = &dns.Record{
-			H: dns.NewEDNSHeader(uint16(msgSize), 0, 0, 0),
-			D: &dns.EDNSRecord{},
+	if r.conn.VC() {
+		outSize = dnsconn.MaxMessageSize
+	} else {
+		if msg.EDNS == nil {
+			msg.EDNS = &dns.Record{
+				H: dns.NewEDNSHeader(uint16(dnsconn.UDPMessageSize), 0, 0, 0),
+				D: &dns.EDNSRecord{},
+			}
 		}
 	}
 	if err := r.conn.WriteTo(msg, "", dest, outSize); err != nil {
@@ -138,6 +141,8 @@ func (r *Resolver) Receive(ctx context.Context, id uint16) (*dns.Message, error)
 		if msg.RCode != dns.NoError {
 			err = msg.RCode
 		}
+	} else if r.debug != nil && err != nil {
+		r.debug.Debug(err.Error())
 	}
 	return msg, err
 }

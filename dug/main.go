@@ -108,11 +108,7 @@ func main() {
 		if err != nil {
 			exitErrorf("cannot create resolver socket: %v", err)
 		}
-		r = resolver.NewResolver(
-			resolver.RootCache,
-			dnsconn.NewConn(conn, network, ""),
-			true,
-		)
+		r = resolver.NewResolver(resolver.RootCache, dnsconn.NewConn(conn, network, ""), true)
 	}
 	if err != nil {
 		exitErrorf("cannot create resolver: %v", err)
