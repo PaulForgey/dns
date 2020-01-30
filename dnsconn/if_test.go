@@ -28,12 +28,11 @@ func testNetwork(t *testing.T, network string) error {
 	c := NewConn(conn, network, "")
 
 	var iface string
-	var from net.Addr
 
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
-		_, iface, from, err = c.ReadFromIf(context.Background(), nil)
+		_, iface, _, err = c.ReadFromIf(context.Background(), nil)
 		wg.Done()
 	}()
 
@@ -48,12 +47,11 @@ func testNetwork(t *testing.T, network string) error {
 	if iface == "" {
 		return errors.New("no interface name")
 	}
-	ifi, err := net.InterfaceByName(iface)
+	_, err = net.InterfaceByName(iface)
 	if err != nil {
 		return err
 	}
 
-	t.Logf("%s: %+v %v", network, *ifi, from)
 	return nil
 }
 

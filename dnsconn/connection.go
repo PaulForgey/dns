@@ -107,6 +107,7 @@ type PacketConn struct {
 	lk       *sync.Mutex
 	cond     *sync.Cond
 	messages *message
+	backlog  int
 	err      error
 	mdns     bool
 }
@@ -115,6 +116,46 @@ type PacketConn struct {
 type StreamConn struct {
 	*conn
 	c net.Conn
+}
+
+func ifname(ifindex int) string {
+	entry, ok := ifindexes.Load(ifindex)
+	if !ok {
+		ifi, err := net.InterfaceByIndex(ifindex)
+		if err != nil || ifi == nil {
+			return ""
+		}
+		ifindexes.Store(ifindex, ifi.Name)
+		return ifi.Name
+	}
+	return entry.(string)
+}
+
+func ifbyname(iface string) int {
+	entry, ok := ifnames.Load(iface)
+	if !ok {
+		ifi, err := net.InterfaceByName(iface)
+		if err != nil || ifi == nil {
+			return 0
+		}
+		ifnames.Store(iface, ifi.Index)
+		return ifi.Index
+	}
+	return entry.(int)
+}
+
+// NewConnection creates a new Conn instance with a net.Conn or net.PacketConn
+func NewConn(conn net.Conn, network, iface string) Conn {
+	if p, ok := conn.(net.PacketConn); ok {
+		return NewPacketConn(p, network, iface)
+	} else {
+		return NewStreamConn(conn, network, iface)
+	}
+}
+
+// Network returns the network this connection was created with
+func (c *conn) Network() string {
+	return c.network
 }
 
 // NewPacketConn creates a packet oriented connection from a net.PacketConn
@@ -161,9 +202,15 @@ func NewPacketConn(c net.PacketConn, network, iface string) *PacketConn {
 				p.err = err // connection error
 			} else if err == nil {
 				p.messages.insertTail(&message{msg: msg, iface: iface, source: source})
+				p.backlog++
 			} else {
 				err = nil
 				continue
+			}
+
+			if p.backlog == MaxBacklog {
+				p.messages.next.remove()
+				p.backlog--
 			}
 
 			p.cond.Broadcast()
@@ -180,56 +227,13 @@ func (p *PacketConn) MDNS(pool *sync.Pool) {
 	p.conn.pool = pool
 }
 
-// VC returns false a PacketConn is never stream oriented
+// VC always returns false as a PacketConn is never stream oriented
 func (p *PacketConn) VC() bool {
 	return false
 }
 
-// NewStreamConn creates a stream oriented connection from a net.Conn
-func NewStreamConn(c net.Conn, network, iface string) *StreamConn {
-	s := &StreamConn{
-		conn: &conn{
-			network: network,
-			iface:   iface,
-			pool:    &maxBufferPool,
-		},
-		c: c,
-	}
-
-	return s
-}
-
-func (s *StreamConn) String() string {
-	return s.c.LocalAddr().String()
-}
-
-// VC returns true if the underlying connection is stream oriented. (A StreamConn may use a connected net.PacketConn)
-func (s *StreamConn) VC() bool {
-	_, ok := s.c.(net.PacketConn)
-	return !ok
-}
-
-// NewConnection creates a new Conn instance with a net.Conn or net.PacketConn
-func NewConn(conn net.Conn, network, iface string) Conn {
-	if p, ok := conn.(net.PacketConn); ok {
-		return NewPacketConn(p, network, iface)
-	} else {
-		return NewStreamConn(conn, network, iface)
-	}
-}
-
 func (p *PacketConn) String() string {
 	return p.c.LocalAddr().String()
-}
-
-// Interface returns the interface name given
-func (c *conn) Interface() string {
-	return c.iface
-}
-
-// Network returns the network this connection was created with
-func (c *conn) Network() string {
-	return c.network
 }
 
 // WriteTo sends a *dns.Message. If the message could not fit but could stil be validly sent with reduced extra records,
@@ -322,49 +326,6 @@ func (p *PacketConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgS
 	return err
 }
 
-// addr must be nil. msgSize should be MaxMessageSize
-func (s *StreamConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgSize int) error {
-	var msgBuf []byte
-
-	if msgSize < MinMessageSize || msgSize > MaxMessageSize {
-		panic("rediculous msgSize")
-	}
-	if addr != nil {
-		return ErrIsConn
-	}
-
-	buffer := s.conn.pool.Get().([]byte)
-	defer s.conn.pool.Put(buffer)
-
-	msgBuf = buffer[:msgSize]
-
-	if !msg.QR && msg.ID == 0 {
-		msg.ID = uint16(atomic.AddUint32(&s.conn.xid, 1))
-	}
-
-	writer := dns.NewWireCodec(msgBuf)
-	err := writer.Encode(msg)
-	if err != nil {
-		return err
-	}
-
-	var hdr [2]byte
-	msgBuf = msgBuf[:writer.Offset()]
-	binary.BigEndian.PutUint16(hdr[:], uint16(len(msgBuf)))
-
-	s.c.SetWriteDeadline(time.Now().Add(5 * time.Minute))
-	if _, ok := s.c.(net.PacketConn); !ok {
-		if _, err := s.c.Write(hdr[:]); err != nil {
-			return err
-		}
-	}
-	if _, err := s.c.Write(msgBuf); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 // ReadFromIf receives a *dns.Message, returning the message and, if unconnected, the source address.
 // match should be quick. The connection is locked during its call.
 func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bool) (*dns.Message, string, net.Addr, error) {
@@ -386,23 +347,14 @@ func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 
 	p.lk.Lock()
 	for err == nil {
-		backlog := 0
 		// first check unclaimed baggage
 		for m := p.messages.next; m != p.messages; m = m.next {
 			if match == nil || match(m.msg) {
 				m.remove()
+				p.backlog--
 				p.lk.Unlock()
 
 				return m.msg, m.iface, m.source, nil
-			}
-			backlog++
-		}
-
-		// clear out excessive backlog
-		if backlog > MaxBacklog*2 {
-			for backlog > MaxBacklog {
-				p.messages.next.remove()
-				backlog--
 			}
 		}
 
@@ -420,73 +372,6 @@ func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 	p.lk.Unlock()
 
 	return nil, "", nil, err
-}
-
-func (s *StreamConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bool) (*dns.Message, string, net.Addr, error) {
-	var msgBuf []byte
-	var hdr [2]byte
-	var err error
-
-	buffer := s.conn.pool.Get().([]byte)
-	defer s.conn.pool.Put(buffer)
-
-	for {
-		s.c.SetReadDeadline(time.Now().Add(5 * time.Minute))
-		if pc, ok := s.c.(net.PacketConn); ok {
-			length, _, err := pc.ReadFrom(buffer)
-			if err != nil {
-				return nil, "", nil, err
-			}
-			msgBuf = buffer[:length]
-		} else {
-			if _, err = io.ReadFull(s.c, hdr[:]); err != nil {
-				return nil, "", nil, err
-			}
-			length := int(binary.BigEndian.Uint16(hdr[:]))
-			if length > len(buffer) {
-				// we create buffers of a size which fit 16 bit lengths..
-				panic("short buffer put back in pool?")
-			}
-			msgBuf = buffer[:length]
-			if _, err = io.ReadFull(s.c, msgBuf); err != nil {
-				return nil, "", nil, err
-			}
-		}
-
-		reader := dns.NewWireCodec(msgBuf)
-		msg := &dns.Message{}
-		err = reader.Decode(msg)
-
-		if err != nil || match == nil || match(msg) {
-			return msg, s.iface, nil, err
-		}
-	}
-}
-
-func ifname(ifindex int) string {
-	entry, ok := ifindexes.Load(ifindex)
-	if !ok {
-		ifi, err := net.InterfaceByIndex(ifindex)
-		if err != nil || ifi == nil {
-			return ""
-		}
-		ifindexes.Store(ifindex, ifi.Name)
-		return ifi.Name
-	}
-	return entry.(string)
-}
-
-func ifbyname(iface string) int {
-	entry, ok := ifnames.Load(iface)
-	if !ok {
-		ifi, err := net.InterfaceByName(iface)
-		if err != nil || ifi == nil {
-			return 0
-		}
-		ifnames.Store(iface, ifi.Index)
-		return ifi.Index
-	}
-	return entry.(int)
 }
 
 func (p *PacketConn) readFrom() (*dns.Message, string, net.Addr, error) {
@@ -540,6 +425,114 @@ func (p *PacketConn) readFrom() (*dns.Message, string, net.Addr, error) {
 // Close closes the underlying conn
 func (p *PacketConn) Close() error {
 	return p.c.Close()
+}
+
+// NewStreamConn creates a stream oriented connection from a net.Conn
+func NewStreamConn(c net.Conn, network, iface string) *StreamConn {
+	s := &StreamConn{
+		conn: &conn{
+			network: network,
+			iface:   iface,
+			pool:    &maxBufferPool,
+		},
+		c: c,
+	}
+
+	return s
+}
+
+func (s *StreamConn) String() string {
+	return s.c.LocalAddr().String()
+}
+
+// VC returns true if the underlying connection is stream oriented. (A StreamConn may use a connected net.PacketConn)
+func (s *StreamConn) VC() bool {
+	_, ok := s.c.(net.PacketConn)
+	return !ok
+}
+
+// addr must be nil. msgSize should be MaxMessageSize
+func (s *StreamConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgSize int) error {
+	var msgBuf []byte
+
+	if msgSize < MinMessageSize || msgSize > MaxMessageSize {
+		panic("rediculous msgSize")
+	}
+	if addr != nil {
+		return ErrIsConn
+	}
+
+	buffer := s.conn.pool.Get().([]byte)
+	defer s.conn.pool.Put(buffer)
+
+	msgBuf = buffer[:msgSize]
+
+	if !msg.QR && msg.ID == 0 {
+		msg.ID = uint16(atomic.AddUint32(&s.conn.xid, 1))
+	}
+
+	writer := dns.NewWireCodec(msgBuf)
+	err := writer.Encode(msg)
+	if err != nil {
+		return err
+	}
+
+	var hdr [2]byte
+	msgBuf = msgBuf[:writer.Offset()]
+	binary.BigEndian.PutUint16(hdr[:], uint16(len(msgBuf)))
+
+	s.c.SetWriteDeadline(time.Now().Add(5 * time.Minute))
+	if _, ok := s.c.(net.PacketConn); !ok {
+		if _, err := s.c.Write(hdr[:]); err != nil {
+			return err
+		}
+	}
+	if _, err := s.c.Write(msgBuf); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *StreamConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bool) (*dns.Message, string, net.Addr, error) {
+	var msgBuf []byte
+	var hdr [2]byte
+	var err error
+
+	buffer := s.conn.pool.Get().([]byte)
+	defer s.conn.pool.Put(buffer)
+
+	for {
+		s.c.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		if pc, ok := s.c.(net.PacketConn); ok {
+			length, _, err := pc.ReadFrom(buffer)
+			if err != nil {
+				return nil, "", nil, err
+			}
+			msgBuf = buffer[:length]
+		} else {
+			if _, err = io.ReadFull(s.c, hdr[:]); err != nil {
+				return nil, "", nil, err
+			}
+			length := int(binary.BigEndian.Uint16(hdr[:]))
+			if length > len(buffer) {
+				// we create buffers of a size which fit 16 bit lengths..
+				panic("short buffer put back in pool?")
+			}
+			msgBuf = buffer[:length]
+			if _, err = io.ReadFull(s.c, msgBuf); err != nil {
+				return nil, "", nil, err
+			}
+		}
+
+		reader := dns.NewWireCodec(msgBuf)
+		msg := &dns.Message{}
+		err = reader.Decode(msg)
+
+		if err != nil || match == nil || match(msg) {
+			return msg, s.iface, nil, err
+		}
+	}
 }
 
 func (s *StreamConn) Close() error {

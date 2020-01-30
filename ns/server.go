@@ -112,7 +112,7 @@ func (s *Server) Serve(ctx context.Context) error {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
-					s.ixfr(ctx, msg, from, zone)
+					go s.ixfr(ctx, msg, from, zone)
 				}
 
 			default:
@@ -121,7 +121,7 @@ func (s *Server) Serve(ctx context.Context) error {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
-					s.query(ctx, msg, iface, from, zone)
+					go s.query(ctx, msg, iface, from, zone)
 				}
 			}
 
