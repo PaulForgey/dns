@@ -194,7 +194,7 @@ host IN AAAA ::1
 	}
 
 	for i, l := range lookups {
-		rrset, err := m.Lookup(false, l.name, l.rrtype, l.rrclass)
+		rrset, err := Lookup(m, false, l.name, l.rrtype, l.rrclass)
 		if err != nil {
 			t.Fatalf("case %d: %v", i, err)
 		}

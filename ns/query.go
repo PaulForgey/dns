@@ -37,7 +37,7 @@ func (s *Server) query(ctx context.Context, msg *dns.Message, iface string, from
 	// fill in additionals
 	msg.Additional = nil
 	if err == nil {
-		s.zones.Additional(msg, iface, q.Class())
+		s.zones.Additional(false, iface, msg)
 	}
 
 	return s.answer(err, false, msg, from)

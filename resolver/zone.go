@@ -13,12 +13,14 @@ import (
 type ZoneAuthority interface {
 	// Lookup retrieves authoritative records for the zone, or cached entries if they were entered
 	Lookup(key string, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (a []*dns.Record, ns []*dns.Record, err error)
+	// MLookup is Lookup with MDNS semantics
+	MLookup(key string, authoritative bool, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) ([]*dns.Record, bool, error)
 	// Hint returns true if this is a hint zone
 	Hint() bool
 	// Name returns the name of the zone
 	Name() dns.Name
-	// Enter enters recors into the cache (usually only makes sense with hint zones)
-	Enter(now time.Time, records []*dns.Record) error
+	// Enter enters recors into the cache.
+	Enter(now time.Time, key string, records []*dns.Record) error
 }
 
 // the Authority interface defines a container finding closest a matching ZoneAuthority for a given Name
@@ -40,6 +42,7 @@ type Zone struct {
 	name  dns.Name
 	hint  bool
 	cache *nsdb.Cache
+	keys  map[string]*nsdb.Cache
 }
 
 // NewZone creates a new zone with a given name
@@ -47,8 +50,10 @@ func NewZone(name dns.Name, hint bool) *Zone {
 	zone := &Zone{
 		name: name,
 		hint: hint,
+		keys: make(map[string]*nsdb.Cache),
 	}
 	zone.cache = nsdb.NewCache()
+	zone.keys[""] = zone.cache
 	return zone
 }
 
@@ -60,10 +65,41 @@ func (z *Zone) Name() dns.Name {
 	return z.name
 }
 
+// Lookup a name within a zone with MDNS semantics
+func (z *Zone) MLookup(
+	key string,
+	authoritative bool, // ignored - this _is_ the cache
+	name dns.Name,
+	rrtype dns.RRType,
+	rrclass dns.RRClass,
+) ([]*dns.Record, bool, error) {
+	z.RLock()
+	db, ok := z.keys[key]
+	if !ok {
+		db = z.cache
+	}
+	z.RUnlock()
+	for db != nil {
+		rrset, err := nsdb.Lookup(db, true, name, rrtype, rrclass)
+		if err != nil && !errors.Is(err, dns.NXDomain) {
+			return nil, false, err
+		}
+		if rrset != nil {
+			return rrset.Records, false, nil
+		}
+		if db != z.cache {
+			db = z.cache
+		} else {
+			db = nil
+		}
+	}
+	return nil, false, nil
+}
+
 // Lookup a name within a zone, or a delegation above it.
 func (z *Zone) Lookup(
-	key string,
-	name dns.Name, // ignored at this level
+	key string, // ignored; only "" searched
+	name dns.Name,
 	rrtype dns.RRType,
 	rrclass dns.RRClass,
 ) ([]*dns.Record, []*dns.Record, error) {
@@ -76,7 +112,7 @@ func (z *Zone) LookupDb(
 	rrtype dns.RRType,
 	rrclass dns.RRClass,
 ) ([]*dns.Record, []*dns.Record, error) {
-	rrset, err := db.Lookup(false, name, rrtype, rrclass)
+	rrset, err := nsdb.Lookup(db, false, name, rrtype, rrclass)
 	if rrset != nil {
 		return rrset.Records, nil, nil
 	}
@@ -113,8 +149,17 @@ func (z *Zone) LookupDb(
 }
 
 // Enter loads items into the cache. If now is zero value, these are permanent and non-overwritable entries.
+// If a key is specified, it will only be seen with MLookup()
 // XXX do not cache pseduo records
-func (z *Zone) Enter(now time.Time, records []*dns.Record) error {
-	_, err := nsdb.Load(z.cache, now, records)
+func (z *Zone) Enter(now time.Time, key string, records []*dns.Record) error {
+	var db *nsdb.Cache
+	z.Lock()
+	db, ok := z.keys[key]
+	if !ok {
+		db = nsdb.NewCache()
+		z.keys[key] = db
+	}
+	z.Unlock()
+	_, err := nsdb.Load(db, now, records)
 	return err
 }

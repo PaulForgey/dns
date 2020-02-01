@@ -14,13 +14,15 @@ import (
 // the Text type is an in memory implementation of Db backed by a textual zone file
 type Text struct {
 	*Memory
+	name     dns.Name
 	pathname string
 }
 
 // NewText creates an instance of Text but does not load contents. Call Load to do that.
-func NewText(pathname string) *Text {
+func NewText(pathname string, name dns.Name) *Text {
 	return &Text{
 		Memory:   NewMemory(),
+		name:     name,
 		pathname: pathname,
 	}
 }
@@ -30,7 +32,7 @@ func (t *Text) Flags() DbFlags {
 }
 
 // Load parses the zone file
-func (t *Text) Load(name dns.Name) error {
+func (t *Text) Load() error {
 	if err := t.BeginUpdate(); err != nil {
 		return err
 	}
@@ -39,7 +41,7 @@ func (t *Text) Load(name dns.Name) error {
 		t.EndUpdate(abort)
 	}()
 
-	c, err := dns.NewTextFileReader(t.pathname, name)
+	c, err := dns.NewTextFileReader(t.pathname, t.name)
 	if err != nil {
 		return err
 	}
@@ -76,7 +78,7 @@ func (t *Text) Load(name dns.Name) error {
 	return nil
 }
 
-func (t *Text) Save(name dns.Name) error {
+func (t *Text) Save() error {
 	tmpfile := fmt.Sprintf("%s-%d", t.pathname, os.Getpid())
 	out, err := os.Create(tmpfile)
 	if err != nil {
@@ -86,7 +88,12 @@ func (t *Text) Save(name dns.Name) error {
 	bw := bufio.NewWriter(out)
 	w := dns.NewTextWriter(bw)
 
-	soa, _ := t.Lookup(true, name, dns.SOAType, dns.AnyClass)
+	values, err := t.Lookup(t.name)
+	var soa *RRSet
+	if err == nil {
+		soa = values.Lookup(true, dns.SOAType, dns.AnyClass)
+	}
+
 	if soa != nil {
 		for _, r := range soa.Records {
 			if err := w.Encode(r); err != nil {
@@ -96,7 +103,7 @@ func (t *Text) Save(name dns.Name) error {
 	}
 	if err := t.Enumerate(0, func(serial uint32, records []*dns.Record) error {
 		for _, r := range records {
-			if r.Type() == dns.SOAType && name.Equal(r.Name()) {
+			if r.Type() == dns.SOAType && t.name.Equal(r.Name()) {
 				continue
 			}
 			if err := w.Encode(r); err != nil {

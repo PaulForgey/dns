@@ -354,10 +354,11 @@ func (h *Header) TTL() time.Duration {
 // the MHeader type is an MDNS resource record header
 type MDNSHeader struct {
 	*Header
+	originalTTL time.Duration
 }
 
 func NewMDNSHeader(name Name, rrtype RRType, rrclass RRClass, ttl time.Duration, cacheFlush bool) *MDNSHeader {
-	m := &MDNSHeader{NewHeader(name, rrtype, rrclass, ttl)}
+	m := &MDNSHeader{NewHeader(name, rrtype, rrclass, ttl), ttl}
 	if cacheFlush {
 		m.rrclass |= 0x8000
 	}
@@ -365,7 +366,17 @@ func NewMDNSHeader(name Name, rrtype RRType, rrclass RRClass, ttl time.Duration,
 }
 
 func MDNSHeaderFromData(d *HeaderData) *MDNSHeader {
-	return &MDNSHeader{HeaderFromData(d)}
+	m := &MDNSHeader{HeaderFromData(d), 0}
+	m.originalTTL = m.TTL()
+	return m
+}
+
+func (m *MDNSHeader) SetCacheFlush(f bool) {
+	if f {
+		m.rrclass |= 0x8000
+	} else {
+		m.rrclass &^= 0x7fff
+	}
 }
 
 func (m *MDNSHeader) CacheFlush() bool {
@@ -374,6 +385,11 @@ func (m *MDNSHeader) CacheFlush() bool {
 
 func (m *MDNSHeader) Class() RRClass {
 	return RRClass(m.rrclass & 0x7fff)
+}
+
+// returns true if the current TTL is more than half the original
+func (m *MDNSHeader) Fresh() bool {
+	return m.TTL()>>1 > m.originalTTL
 }
 
 type EDNSHeader HeaderData
@@ -532,27 +548,25 @@ func (r *Record) Less(n *Record) bool {
 // RecordSets sorts through a slice of functions, calling set for each unique name, type, and class with the subset
 // of matching records.
 // records will be sorted as a side effect.
-func RecordSets(records []*Record, set func(Name, RRType, RRClass, []*Record) error) error {
-	sort.Slice(records, func(i, j int) bool { return records[i].Less(records[j]) })
+func RecordSets(records []*Record, set func(Name, []*Record) error) error {
+	sort.Slice(records, func(i, j int) bool { return records[i].H.Name().Less(records[j].H.Name()) })
 
 	var name Name
-	var rrtype RRType
-	var rrclass RRClass
 
 	j := 0
 	for i, r := range records {
-		if !name.Equal(r.Name()) || rrtype != r.Type() || rrclass != r.Class() {
+		if !name.Equal(r.Name()) {
 			if i > 0 {
-				if err := set(name, rrtype, rrclass, records[j:i]); err != nil {
+				if err := set(name, records[j:i]); err != nil {
 					return err
 				}
 			}
 			j = i
-			name, rrtype, rrclass = r.Name(), r.Type(), r.Class()
+			name = r.Name()
 		}
 	}
 	if j < len(records) {
-		if err := set(name, rrtype, rrclass, records[j:]); err != nil {
+		if err := set(name, records[j:]); err != nil {
 			return err
 		}
 	}

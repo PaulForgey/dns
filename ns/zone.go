@@ -94,7 +94,7 @@ func (z *Zone) Attach(key string, db nsdb.Db) error {
 	defer z.Unlock()
 
 	if key == "" {
-		rrset, err := db.Lookup(true, z.Name(), dns.SOAType, dns.AnyClass)
+		rrset, err := nsdb.Lookup(db, true, z.Name(), dns.SOAType, dns.AnyClass)
 		if err != nil && !errors.Is(err, dns.NXDomain) {
 			return err
 		}
@@ -115,7 +115,7 @@ func (z *Zone) Db(key string) nsdb.Db {
 	return db
 }
 
-// Save writes a shallow copy of the zone for the given key
+// Save syncs the db behind the given key to stable storage, if applicable
 func (z *Zone) Save(key string) error {
 	z.RLock()
 	soa := z.soa
@@ -132,17 +132,16 @@ func (z *Zone) Save(key string) error {
 		z.RLock()
 	}
 	db, ok := z.keys[key]
+	z.RUnlock()
 	if !ok {
-		z.RUnlock()
 		return ErrNoKey // this is a shallow operation, so wrong key is an error
 	}
-	z.RUnlock()
 
 	if (db.Flags() & nsdb.DbLiveUpdateFlag) != 0 {
 		return nil // nothing to do
 	}
 
-	return db.Save(z.Name())
+	return db.Save()
 }
 
 func (z *Zone) soa_locked() *dns.Record {
@@ -162,7 +161,7 @@ func (z *Zone) soa_locked() *dns.Record {
 		z.soa = r
 
 		update := &nsdb.RRSet{Records: []*dns.Record{r}}
-		z.db.Enter(r.Name(), r.Type(), r.Class(), update)
+		nsdb.Enter(z.db, r.Name(), r.Type(), r.Class(), update)
 		if z.UpdateLog != nil {
 			z.UpdateLog.Update("", update.Records)
 		}
@@ -199,6 +198,62 @@ func (z *Zone) Class() dns.RRClass {
 	return rrclass
 }
 
+// MLookup is like resolver.Zone.MLookup, but potentially combine our authority with the cache.
+// if authoritative is true, return only our authority.
+func (z *Zone) MLookup(
+	key string,
+	authoritative bool,
+	name dns.Name,
+	rrtype dns.RRType,
+	rrclass dns.RRClass,
+) ([]*dns.Record, bool, error) {
+	z.RLock()
+	db, ok := z.keys[key]
+	if !ok {
+		db = z.db
+	}
+	z.RUnlock()
+
+	var err error
+	var rrset1 *nsdb.RRSet
+
+	// check our authority first, then the underlying cache
+	for rrset1 == nil && db != nil {
+		rrset1, err = nsdb.Lookup(db, true, name, rrtype, rrclass)
+		if err != nil && !errors.Is(err, dns.NXDomain) {
+			return nil, false, err
+		}
+
+		if db != z.db {
+			db = z.db
+		} else {
+			db = nil
+		}
+	}
+
+	if !(authoritative || rrset1.Exclusive) {
+		rrset2, _, err := z.Zone.MLookup(key, false, name, rrtype, rrclass)
+		if err != nil && !errors.Is(err, dns.NXDomain) {
+			return nil, false, err
+		}
+
+		if rrset2 != nil {
+			if rrset1 != nil {
+				rrset1 = rrset1.Copy()
+				rrset1.Merge(rrset2)
+			} else {
+				return rrset2, false, nil
+			}
+		}
+	}
+
+	if rrset1 == nil {
+		return nil, false, nil
+	}
+
+	return rrset1.Records, rrset1.Exclusive, nil
+}
+
 func (z *Zone) Lookup(
 	key string,
 	name dns.Name,
@@ -206,7 +261,7 @@ func (z *Zone) Lookup(
 	rrclass dns.RRClass,
 ) ([]*dns.Record, []*dns.Record, error) {
 	// check the cache
-	a, ns, err := z.Zone.Lookup(key, name, rrtype, rrclass)
+	a, ns, err := z.Zone.Lookup("", name, rrtype, rrclass)
 	if z.db == nil || len(a) > 0 || (err != nil && !errors.Is(err, dns.NXDomain)) {
 		return a, ns, err
 	}
@@ -463,7 +518,7 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 		)
 	}
 
-	if err := z.db.Enter(soa.Name(), dns.SOAType, soa.Class(), &nsdb.RRSet{Records: []*dns.Record{soa}}); err != nil {
+	if err := nsdb.Enter(z.db, soa.Name(), dns.SOAType, soa.Class(), &nsdb.RRSet{Records: []*dns.Record{soa}}); err != nil {
 		return err
 	}
 
@@ -519,7 +574,7 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 			return false, dns.FormError
 		}
 
-		rrset, _ := db.Lookup(false, r.Name(), rrtype, rrclass)
+		rrset, _ := nsdb.Lookup(db, false, r.Name(), rrtype, rrclass)
 		match := rrset != nil
 		if match && r.D != nil {
 			match = false
@@ -603,7 +658,7 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 				rrclass = soa.Class()
 			}
 
-			rrset, err := db.Lookup(false, name, rrtype, rrclass)
+			rrset, err := nsdb.Lookup(db, false, name, rrtype, rrclass)
 			if err != nil && !errors.Is(err, dns.NXDomain) {
 				return false, err
 			}
@@ -665,7 +720,7 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 				continue
 			}
 			update.Records = append(update.Records, r)
-			if err := db.Enter(name, rrtype, rrclass, update); err != nil {
+			if err := nsdb.Enter(db, name, rrtype, rrclass, update); err != nil {
 				return false, err
 			}
 			updated = true
@@ -815,7 +870,7 @@ func (zs *Zones) Zone(n dns.Name) *Zone {
 }
 
 // Additional fills in the additional section if it can from either cache or authority
-func (zs *Zones) Additional(msg *dns.Message, key string, rrclass dns.RRClass) {
+func (zs *Zones) Additional(mdns bool, key string, msg *dns.Message) {
 	records := make([]*dns.Record, len(msg.Authority), len(msg.Authority)+len(msg.Answers))
 	copy(records, msg.Authority)
 	records = append(records, msg.Answers...)
@@ -873,7 +928,12 @@ func (zs *Zones) Additional(msg *dns.Message, key string, rrclass dns.RRClass) {
 		}
 
 		// find it from cache
-		answers, _, _ := zone.Lookup(key, name, rrtype, rrclass)
+		var answers []*dns.Record
+		if mdns {
+			answers, _, _ = zone.MLookup(key, true, name, rrtype, rec.H.Class())
+		} else {
+			answers, _, _ = zone.Lookup(key, name, rrtype, rec.H.Class())
+		}
 		if len(answers) == 0 {
 			return
 		}

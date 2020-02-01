@@ -105,14 +105,14 @@ func TestDelete(t *testing.T) {
 	}
 
 	hostName := makeName(t, "host")
-	if err := db.Enter(hostName, dns.AType, dns.INClass, nil); err != nil {
+	if err := Enter(db, hostName, dns.AType, dns.INClass, nil); err != nil {
 		t.Fatal(err)
 	}
-	rrset, err := db.Lookup(true, hostName, dns.AType, dns.INClass)
+	rrset, err := Lookup(db, true, hostName, dns.AType, dns.INClass)
 	if rrset != nil || err != nil {
 		t.Fatalf("expected no error no records, got %v or records", err)
 	}
-	rrset, err = db.Lookup(false, hostName, dns.AnyType, dns.INClass)
+	rrset, err = Lookup(db, false, hostName, dns.AnyType, dns.INClass)
 	if rrset == nil || err != nil {
 		t.Fatalf("got error %v or no records", err)
 	}
@@ -120,10 +120,10 @@ func TestDelete(t *testing.T) {
 	expected := parseText(t, "host 1h IN AAAA ::1")
 	compareRecords(t, "remaining AAAA", expected, rrset.Records)
 
-	if err := db.Enter(hostName, dns.AnyType, dns.AnyClass, nil); err != nil {
+	if err := Enter(db, hostName, dns.AnyType, dns.AnyClass, nil); err != nil {
 		t.Fatal(err)
 	}
-	rrset, err = db.Lookup(true, hostName, dns.AAAAType, dns.INClass)
+	rrset, err = Lookup(db, true, hostName, dns.AAAAType, dns.INClass)
 	if rrset != nil || !errors.Is(err, dns.NXDomain) {
 		t.Fatalf("expected %v, got %v or records", dns.NXDomain, err)
 	}

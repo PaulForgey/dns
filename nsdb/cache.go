@@ -20,21 +20,20 @@ func NewCache() *Cache {
 	}
 }
 
-func (c *Cache) Lookup(exact bool, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (*RRSet, error) {
+func (c *Cache) Lookup(name dns.Name) (RRMap, error) {
 	now := time.Now()
 
 	c.lk.Lock()
 	defer c.lk.Unlock()
 
-	rr, err := c.Memory.Lookup(exact, name, rrtype, rrclass)
+	value, err := c.Memory.Lookup(name)
 	if err != nil {
 		return nil, err
 	}
-
-	if rr != nil && rr.Expire(now) {
-		rr = nil
-		c.Memory.Enter(name, rrtype, rrclass, nil)
+	value.Expire(now)
+	if len(value) == 0 {
+		return nil, dns.NXDomain
 	}
 
-	return rr, nil
+	return value, nil
 }

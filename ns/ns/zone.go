@@ -153,7 +153,7 @@ func (zone *Zone) loadKey(key, dbfile string) error {
 	z := zone.zone
 	db := z.Db(key)
 	if db == nil {
-		db = nsdb.NewText(dbfile)
+		db = nsdb.NewText(dbfile, z.Name())
 		if err := z.Attach(key, db); err != nil {
 			return err
 		}
@@ -162,7 +162,7 @@ func (zone *Zone) loadKey(key, dbfile string) error {
 	if !ok {
 		return nil
 	}
-	if err := t.Load(z.Name()); err != nil {
+	if err := t.Load(); err != nil {
 		return err
 	}
 	if err := z.Attach(key, t); err != nil {

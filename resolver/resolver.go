@@ -176,9 +176,9 @@ func (r *Resolver) Ask(
 	if msg != nil {
 		if zone != nil && msg.RCode == dns.NoError {
 			now := time.Now()
-			zone.Enter(now, msg.Answers)
-			zone.Enter(now, msg.Authority)
-			zone.Enter(now, msg.Additional)
+			zone.Enter(now, "", msg.Answers)
+			zone.Enter(now, "", msg.Authority)
+			zone.Enter(now, "", msg.Additional)
 		}
 
 		if r.debug != nil {
