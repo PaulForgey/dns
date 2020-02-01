@@ -345,7 +345,7 @@ func main() {
 	for _, l := range conf.MDNSListeners {
 		wg.Add(1)
 		go func(l Listener) {
-			l.runMDNS(ctx, zones)
+			l.runMDNS(ctx, mzones)
 			wg.Done()
 		}(l)
 	}
