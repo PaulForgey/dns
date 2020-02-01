@@ -387,7 +387,7 @@ func (w *WireCodec) getName() (Name, error) {
 
 	if (b1 & 0xc0) == 0xc0 {
 		if w.nc == nil {
-			return nil, fmt.Errorf("%w: compreseed name with compression disabled", FormError)
+			return nil, fmt.Errorf("%w: compressed name with compression disabled", FormError)
 		}
 
 		b2, err := w.getByte()
@@ -398,8 +398,10 @@ func (w *WireCodec) getName() (Name, error) {
 		noffset := int(b1&0x3f)<<8 + int(b2)
 		name, ok := w.nc[noffset]
 		if !ok {
-			return nil, fmt.Errorf("%w: bad name compression pointer", FormError)
+			return nil, fmt.Errorf("%w: bad name compression pointer 0x%04x at offset 0x%04x",
+				FormError, noffset, offset)
 		}
+		w.nc[offset] = name
 		return name, nil
 	}
 
@@ -408,6 +410,7 @@ func (w *WireCodec) getName() (Name, error) {
 	}
 
 	if b1 == 0 {
+		w.nc[offset] = nil
 		return nil, nil
 	}
 
