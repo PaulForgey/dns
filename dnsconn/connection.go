@@ -205,6 +205,7 @@ func NewPacketConn(c net.PacketConn, network, iface string) *PacketConn {
 				p.backlog++
 			} else {
 				err = nil
+				p.lk.Unlock()
 				continue
 			}
 
@@ -329,7 +330,6 @@ func (p *PacketConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgS
 // ReadFromIf receives a *dns.Message, returning the message and, if unconnected, the source address.
 // match should be quick. The connection is locked during its call.
 func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bool) (*dns.Message, string, net.Addr, error) {
-	var ctxFired bool
 	var err error
 
 	done := make(chan struct{})
@@ -338,7 +338,6 @@ func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 		select {
 		case <-ctx.Done():
 			p.lk.Lock()
-			ctxFired = true
 			p.cond.Broadcast()
 			p.lk.Unlock()
 		case <-done:
@@ -358,9 +357,8 @@ func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 			}
 		}
 
-		if ctxFired {
-			err = ctx.Err()
-		} else {
+		err = ctx.Err()
+		if err == nil {
 			err = p.err
 		}
 		if err != nil {
