@@ -93,7 +93,7 @@ type Message struct {
 	Answers    []*Record
 	Authority  []*Record
 	Additional []*Record
-	EDNS       *Record
+	EDNS       *EDNS
 	NoTC       bool // internal: do not try to recover from truncation
 }
 

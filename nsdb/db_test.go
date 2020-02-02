@@ -11,13 +11,16 @@ import (
 	"tessier-ashpool.net/dns"
 )
 
-func compareRecords(t *testing.T, description string, rs1, rs2 []*dns.Record) {
+func compareRecords(t *testing.T, description string, ttl bool, rs1, rs2 []*dns.Record) {
 	sort.Slice(rs1, func(i, j int) bool { return rs1[i].Less(rs1[j]) })
 	sort.Slice(rs2, func(i, j int) bool { return rs2[i].Less(rs2[j]) })
 
 	equal := len(rs1) == len(rs2)
 	for i := 0; i < len(rs1) && equal; i++ {
 		equal = rs1[i].Equal(rs2[i])
+		if ttl && equal {
+			equal = rs1[i].H.TTL() == rs2[i].H.TTL()
+		}
 	}
 
 	if !equal {
@@ -95,7 +98,7 @@ ns1 A 192.168.0.1
 		t.Fatal(err)
 	}
 
-	compareRecords(t, "result", result, records)
+	compareRecords(t, "result", false, result, records)
 }
 
 func TestDelete(t *testing.T) {
@@ -118,7 +121,7 @@ func TestDelete(t *testing.T) {
 	}
 
 	expected := parseText(t, "host 1h IN AAAA ::1")
-	compareRecords(t, "remaining AAAA", expected, rrset.Records)
+	compareRecords(t, "remaining AAAA", false, expected, rrset.Records)
 
 	if err := Enter(db, hostName, dns.AnyType, dns.AnyClass, nil); err != nil {
 		t.Fatal(err)

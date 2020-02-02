@@ -21,8 +21,10 @@ func NewCache() *Cache {
 }
 
 func (c *Cache) Lookup(name dns.Name) (RRMap, error) {
-	now := time.Now()
+	return c.lookup(name, time.Now())
+}
 
+func (c *Cache) lookup(name dns.Name, now time.Time) (RRMap, error) {
 	c.lk.Lock()
 	defer c.lk.Unlock()
 

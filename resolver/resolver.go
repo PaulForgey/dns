@@ -122,10 +122,7 @@ func (r *Resolver) Transact(ctx context.Context, dest net.Addr, msg *dns.Message
 		outSize = dnsconn.MaxMessageSize
 	} else {
 		if msg.EDNS == nil {
-			msg.EDNS = &dns.Record{
-				H: dns.NewEDNSHeader(uint16(dnsconn.UDPMessageSize), 0, 0, 0),
-				D: &dns.EDNSRecord{},
-			}
+			msg.EDNS = dns.NewEDNS(uint16(dnsconn.UDPMessageSize), 0, 0, 0)
 		}
 	}
 	if err := r.conn.WriteTo(msg, "", dest, outSize); err != nil {

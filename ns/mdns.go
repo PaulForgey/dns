@@ -2,6 +2,7 @@ package ns
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"net"
 	"sync"
@@ -65,8 +66,8 @@ func (t *flowTable) createFlow(key string, d time.Duration, response []*dns.Reco
 	f.t = time.AfterFunc(d, func() {
 		expire(f)
 
-		// remove (if not since superceded)
 		t.Lock()
+		// remove (if not since superceded)
 		v, ok := t.flows[key]
 		if ok && v == f {
 			delete(t.flows, key)
@@ -103,9 +104,46 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 			s.mdnsEnter(now, iface, msg.Additional)
 		} else if msg.ID != 0 && len(msg.Questions) == 1 {
 			// legacy unicast query
-			auth := s.zones.Find(msg.Questions[0].Name())
-			if auth != nil {
-				s.query(ctx, msg, iface, from, auth.(*Zone))
+			q := msg.Questions[0]
+			z := s.zones.Find(q.Name())
+			if z != nil {
+				msg.QR = true
+				response, _, err := z.MLookup(iface, true, q.Name(), q.Type(), q.Class())
+				if err != nil && !errors.Is(err, dns.NXDomain) {
+					s.logger.Printf("mdns lookup error %s:%v %v %v: %v",
+						iface, q.Name(), q.Class(), q.Type(), err)
+					continue
+				}
+				if len(response) == 0 {
+					continue
+				}
+
+				msg.Answers = nil
+				msg.Authority = nil
+				msg.Additional = nil
+				for _, r := range response {
+					// sanitize records for legacy query:
+					// - cap TTL to 10 seconds
+					// - do not return mdns specifics in header format
+					ttl := r.H.TTL()
+					if ttl > time.Second*10 {
+						ttl = time.Second * 10
+					}
+					msg.Answers = append(msg.Answers,
+						&dns.Record{
+							H: dns.NewHeader(
+								r.H.Name(),
+								r.H.Type(),
+								r.H.Class(),
+								r.H.TTL(),
+							),
+							D: r.D,
+						},
+					)
+				}
+
+				s.zones.Additional(true, iface, msg)
+				s.conn.WriteTo(msg, iface, from, messageSize(s.conn, msg))
 			}
 		} else {
 			// mcast question
@@ -135,7 +173,7 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 				response, _, err := z.MLookup(iface, true, q.Name(), q.Type(), q.Class())
 				if err != nil {
 					s.logger.Printf("mdns lookup error %s:%v %v %v: %v",
-						iface, q.Name(), q.Type(), q.Class(), err)
+						iface, q.Name(), q.Class(), q.Type(), err)
 					continue
 				}
 

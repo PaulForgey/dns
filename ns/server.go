@@ -144,14 +144,11 @@ func messageSize(conn dnsconn.Conn, msg *dns.Message) int {
 		msgSize = dnsconn.MaxMessageSize
 	} else {
 		if msg.EDNS != nil {
-			msgSize = int(msg.EDNS.H.(*dns.EDNSHeader).MaxMessageSize())
+			msgSize = int(msg.EDNS.MaxMessageSize())
 			if msgSize < dnsconn.MinMessageSize {
 				msgSize = dnsconn.MinMessageSize
 			}
-			msg.EDNS = &dns.Record{
-				H: dns.NewEDNSHeader(uint16(dnsconn.UDPMessageSize), 0, 0, 0),
-				D: &dns.EDNSRecord{},
-			}
+			msg.EDNS = dns.NewEDNS(uint16(dnsconn.UDPMessageSize), 0, 0, 0)
 		}
 	}
 	return msgSize

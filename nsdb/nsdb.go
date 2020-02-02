@@ -295,6 +295,7 @@ func (r RRMap) Subtract(records []*dns.Record) bool {
 }
 
 // Load enters a series of records into the map
+// entries with TTL 0 will be modified to TTL 1
 func (r RRMap) Load(entered time.Time, records []*dns.Record) {
 	n := make(RRMap)
 	for _, r := range records {
@@ -306,6 +307,9 @@ func (r RRMap) Load(entered time.Time, records []*dns.Record) {
 				rrset.Exclusive = true
 			}
 			n[key] = rrset
+		}
+		if r.H.TTL() < time.Second {
+			r.H.SetTTL(time.Second)
 		}
 		rrset.Records = append(rrset.Records, r)
 	}
@@ -344,12 +348,10 @@ func (rs *RRSet) Expire(now time.Time) bool {
 		if !now.Before(expires) { // now >= expires
 			continue
 		}
+		// add the surviving record back in after adjusting
+		r.H.SetTTL(r.H.TTL() - since.Round(time.Second))
 
-		// add the adjusted record back in to the replacement list
-		records = append(records, &dns.Record{
-			H: dns.NewHeader(r.H.Name(), r.H.Type(), r.H.Class(), r.H.TTL()-since),
-			D: r.D,
-		})
+		records = append(records, r)
 	}
 	rs.Entered = now
 	rs.Records = records
@@ -358,7 +360,9 @@ func (rs *RRSet) Expire(now time.Time) bool {
 
 // Merge combines two sets of records excluding duplicates
 func (rs *RRSet) Merge(records []*dns.Record) {
-	rs.Records = append(rs.Records, rs.Exclude(records)...)
+	// favor the new records in duplicates to update TTL
+	rs.Subtract(records)
+	rs.Records = append(rs.Records, records...)
 }
 
 // Exclude returns records not in rs

@@ -86,7 +86,7 @@ func TestLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	compareRecords(t, "zone contents", expected, records)
+	compareRecords(t, "zone contents", false, expected, records)
 }
 
 func TestDelta(t *testing.T) {
@@ -120,8 +120,8 @@ func TestDelta(t *testing.T) {
 		expectedRemove := parseText(t, deltas[i].remove)
 		expectedAdd := parseText(t, deltas[i].add)
 
-		compareRecords(t, fmt.Sprintf("remove from %d", i), expectedRemove, remove)
-		compareRecords(t, fmt.Sprintf("add from %d:", i), expectedAdd, add)
+		compareRecords(t, fmt.Sprintf("remove from %d", i), false, expectedRemove, remove)
+		compareRecords(t, fmt.Sprintf("add from %d:", i), false, expectedAdd, add)
 
 		if err := m.Snapshot(uint32(i + 1)); err != nil {
 			t.Fatal(err)
@@ -132,7 +132,7 @@ func TestDelta(t *testing.T) {
 func makeName(t *testing.T, s string) dns.Name {
 	name, err := dns.NameWithString(s)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("unhappy makeName(%s): %v", s, err)
 	}
 	return name
 }
@@ -201,6 +201,6 @@ host IN AAAA ::1
 		if rrset == nil {
 			t.Fatalf("case %d: no records", i)
 		}
-		compareRecords(t, fmt.Sprintf("case %d", i), rrset.Records, l.expect)
+		compareRecords(t, fmt.Sprintf("case %d", i), false, rrset.Records, l.expect)
 	}
 }

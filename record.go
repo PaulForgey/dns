@@ -284,6 +284,7 @@ type RecordHeader interface {
 	Type() RRType
 	Class() RRClass
 	TTL() time.Duration
+	SetTTL(time.Duration)
 	Equal(RecordHeader) bool
 }
 
@@ -351,6 +352,10 @@ func (h *Header) TTL() time.Duration {
 	return time.Duration(h.ttl) * time.Second
 }
 
+func (h *Header) SetTTL(ttl time.Duration) {
+	h.ttl = uint32(ttl / time.Second)
+}
+
 // the MHeader type is an MDNS resource record header
 type MDNSHeader struct {
 	*Header
@@ -395,7 +400,7 @@ func (m *MDNSHeader) Fresh() bool {
 type EDNSHeader HeaderData
 
 // the EDNSHeader is an EDNS additional record header
-func NewEDNSHeader(maxMessageSize uint16, extRCode uint8, version uint8, flags uint16) *EDNSHeader {
+func NewEDNSHeader(maxMessageSize uint16, extRCode, version uint8, flags uint16) *EDNSHeader {
 	return &EDNSHeader{
 		name:    nil,
 		rrtype:  uint16(EDNSType),
@@ -432,9 +437,9 @@ func (e *EDNSHeader) Class() RRClass {
 	return InvalidClass
 }
 
-func (e *EDNSHeader) TTL() time.Duration {
-	return 0
-}
+// TTL and SetTTL are not applicable to EDNS records
+func (e *EDNSHeader) TTL() time.Duration   { return 0 }
+func (e *EDNSHeader) SetTTL(time.Duration) {}
 
 func (e *EDNSHeader) MaxMessageSize() uint16 {
 	return e.rrclass
@@ -1283,6 +1288,16 @@ func (m *EDNSRecord) Less(n RecordData) bool {
 
 func (m *EDNSRecord) Equal(n RecordData) bool {
 	return false
+}
+
+// EDNS data covers both header and rdata sections, so make a single type from both for conveninece
+type EDNS struct {
+	*EDNSHeader
+	*EDNSRecord
+}
+
+func NewEDNS(maxMessageSize uint16, extRCode, version uint8, flags uint16) *EDNS {
+	return &EDNS{NewEDNSHeader(maxMessageSize, extRCode, version, flags), &EDNSRecord{}}
 }
 
 // ==========

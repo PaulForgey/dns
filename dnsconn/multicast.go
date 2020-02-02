@@ -126,21 +126,24 @@ func NewMulticast(network, address, iface string) (*Multicast, error) {
 	return m, nil
 }
 
-func (m *Multicast) WriteTo(msg *dns.Message, iface string, addr net.Addr, _ int) error {
+func (m *Multicast) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgSize int) error {
 	if addr == nil {
 		addr = m.gaddr
 	}
 
 	msg.TC = false
+	if msg.ID == 0 {
+		msgSize = m.msgSize
+	}
 
 	for {
 		answers := msg.Answers
 
-		if err := m.PacketConn.WriteTo(msg, iface, addr, m.msgSize); err != nil {
+		if err := m.PacketConn.WriteTo(msg, iface, addr, msgSize); err != nil {
 			return err
 		}
 
-		if !msg.TC {
+		if !msg.TC || msg.ID != 0 {
 			break
 		}
 

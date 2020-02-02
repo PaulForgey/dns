@@ -856,13 +856,12 @@ func (c *TextCodec) putMessage(m *Message) error {
 	}
 
 	if m.EDNS != nil {
-		eh := m.EDNS.H.(*EDNSHeader)
 		if _, err := fmt.Fprintf(
 			c.w,
 			";; EDNS: version=%d, msgSize=%d, flags=%04x\n",
-			eh.Version(),
-			eh.MaxMessageSize(),
-			eh.Flags(),
+			m.EDNS.Version(),
+			m.EDNS.MaxMessageSize(),
+			m.EDNS.Flags(),
 		); err != nil {
 			return err
 		}

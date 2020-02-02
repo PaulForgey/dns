@@ -98,12 +98,34 @@ func (z *Zone) MLookup(
 
 // Lookup a name within a zone, or a delegation above it.
 func (z *Zone) Lookup(
-	key string, // ignored; only "" searched
+	key string,
 	name dns.Name,
 	rrtype dns.RRType,
 	rrclass dns.RRClass,
 ) ([]*dns.Record, []*dns.Record, error) {
-	return z.LookupDb(z.cache, name, rrtype, rrclass)
+	z.RLock()
+	db, ok := z.keys[key]
+	z.RUnlock()
+	if !ok {
+		db = z.cache
+	}
+
+	var a, ns []*dns.Record
+	var err error
+
+	for db != nil {
+		a, ns, err = z.LookupDb(db, name, rrtype, rrclass)
+		if errors.Is(err, dns.NXDomain) {
+			if db != z.cache {
+				db = z.cache
+			} else {
+				db = nil
+			}
+		} else {
+			break
+		}
+	}
+	return a, ns, err
 }
 
 func (z *Zone) LookupDb(
@@ -149,7 +171,6 @@ func (z *Zone) LookupDb(
 }
 
 // Enter loads items into the cache. If now is zero value, these are permanent and non-overwritable entries.
-// If a key is specified, it will only be seen with MLookup()
 // XXX do not cache pseduo records
 func (z *Zone) Enter(now time.Time, key string, records []*dns.Record) error {
 	var db *nsdb.Cache

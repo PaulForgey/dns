@@ -221,7 +221,7 @@ func (w *WireCodec) putMessage(m *Message) error {
 
 	adLen := uint16(len(m.Additional))
 	if m.EDNS != nil {
-		m.EDNS.H.(*EDNSHeader).SetExtRCode(uint8(m.RCode&0xff0) >> 4)
+		m.EDNS.SetExtRCode(uint8(m.RCode&0xff0) >> 4)
 		adLen++
 	}
 
@@ -358,6 +358,11 @@ func (w *WireCodec) Encode(i interface{}) error {
 
 	case *Record:
 		if err := w.putRecord(t); err != nil {
+			return err
+		}
+
+	case *EDNS:
+		if err := w.putRecord(&Record{t.EDNSHeader, t.EDNSRecord}); err != nil {
 			return err
 		}
 
@@ -537,18 +542,17 @@ func (w *WireCodec) getMessage(m *Message) error {
 			if m.EDNS != nil {
 				return fmt.Errorf("%w: multiple EDNS records", FormError)
 			}
-			m.EDNS = r
+			m.EDNS = &EDNS{r.H.(*EDNSHeader), r.D.(*EDNSRecord)}
 		} else {
 			m.Additional = append(m.Additional, r)
 		}
 	}
 
 	if m.EDNS != nil {
-		eh := m.EDNS.H.(*EDNSHeader)
-		if eh.Version() > 0 {
+		if m.EDNS.Version() > 0 {
 			return fmt.Errorf("%w: highest supported version is 0", BadVersion)
 		}
-		m.RCode |= RCode(eh.ExtRCode()) << 4
+		m.RCode |= RCode(m.EDNS.ExtRCode()) << 4
 	}
 
 	return nil
