@@ -187,6 +187,11 @@ func NewPacketConn(c net.PacketConn, network, iface string) *PacketConn {
 		p.p4.SetControlMessage(ipv4.FlagInterface, true)
 	}
 
+	var port int
+	if u, ok := c.LocalAddr().(*net.UDPAddr); ok {
+		port = u.Port
+	}
+
 	go func(p *PacketConn) {
 		var msg *dns.Message
 		var source net.Addr
@@ -194,6 +199,13 @@ func NewPacketConn(c net.PacketConn, network, iface string) *PacketConn {
 
 		for err == nil {
 			msg, iface, source, err = p.readFrom()
+			if source != nil && port != 0 {
+				if u, ok := source.(*net.UDPAddr); ok {
+					if u.Port != port {
+						msg.ClientPort = true
+					}
+				}
+			}
 
 			p.lk.Lock()
 			// XXX ignore malformed message, although there should be a way for the server

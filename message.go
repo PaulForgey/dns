@@ -95,6 +95,7 @@ type Message struct {
 	Additional []*Record
 	EDNS       *EDNS
 	NoTC       bool // internal: do not try to recover from truncation
+	ClientPort bool // internal: udp message source port was not listening port
 }
 
 type Question interface {

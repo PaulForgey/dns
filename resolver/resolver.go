@@ -177,10 +177,6 @@ func (r *Resolver) Ask(
 			zone.Enter(now, "", msg.Authority)
 			zone.Enter(now, "", msg.Additional)
 		}
-
-		if r.debug != nil {
-			r.debug.Encode(msg)
-		}
 	}
 
 	return msg, err
@@ -390,7 +386,7 @@ func (r *Resolver) Resolve(
 				}
 			}
 
-			// ideally, cnames should have 0 or 1 entries unless the domain has a bofh
+			// ideally, cnames should have 0 or 1 entries
 			names = append(names, cnames...)
 		}
 	}
@@ -535,7 +531,7 @@ func (r *Resolver) resolve(
 				// do not ask for the others if CNAME'd
 				cname := false
 				for _, ar := range a {
-					_, cname = ar.D.(*dns.CNAMERecord)
+					cname = (ar.H.Type() == dns.CNAMEType)
 					if cname {
 						// ..ffs, could have answered _that_ instead in the first place.
 						// see section 4.2 of RFC8482

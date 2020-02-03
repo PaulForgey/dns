@@ -99,10 +99,15 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 
 		if msg.QR {
 			// answer
+			if msg.ClientPort {
+				s.logger.Printf("%s:mdns response from invalid source %v", iface, from)
+				continue
+			}
+
 			now := time.Now()
 			s.mdnsEnter(now, iface, msg.Answers)
 			s.mdnsEnter(now, iface, msg.Additional)
-		} else if msg.ID != 0 && len(msg.Questions) == 1 {
+		} else if msg.ClientPort && len(msg.Questions) == 1 {
 			// legacy unicast query
 			q := msg.Questions[0]
 			z := s.zones.Find(q.Name())
@@ -225,5 +230,5 @@ func (s *Server) mdnsEnter(now time.Time, iface string, records []*dns.Record) {
 func (s *Server) respond(iface string, to net.Addr, response []*dns.Record) error {
 	msg := &dns.Message{QR: true, Answers: response}
 	s.zones.Additional(true, iface, msg)
-	return s.conn.WriteTo(msg, iface, to, 0 /*ignored*/)
+	return s.conn.WriteTo(msg, iface, to, 0)
 }
