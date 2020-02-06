@@ -25,7 +25,7 @@ type WireCodec struct {
 }
 
 // a Truncated type is returned from any Encode method which runs out of buffer space. The contents of the buffer
-// are invalid at this point.
+// are invalid.
 type Truncated struct {
 	err       error
 	At, Total int

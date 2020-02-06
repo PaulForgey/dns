@@ -21,11 +21,15 @@ type Access interface {
 }
 
 type Server struct {
-	logger         *log.Logger
-	conn           dnsconn.Conn
-	zones          *Zones
+	zones  *Zones
+	logger *log.Logger
+	conn   dnsconn.Conn
+
+	// unicast dns
 	res            *resolver.Resolver
 	allowRecursion Access
+
+	// mDNS
 }
 
 type allAccess bool

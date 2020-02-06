@@ -22,7 +22,7 @@ func (s *Server) update(ctx context.Context, iface string, msg *dns.Message, fro
 
 	if zone.Primary != "" {
 		// forward the update query to the primary ns
-		r, err := resolver.NewResolverClient(nil, "udp", zone.Primary, nil, false)
+		r, err := resolver.NewResolverClient(nil, s.conn.Network(), zone.Primary, nil, false)
 		if err != nil {
 			s.logger.Printf("%v: cannot create resolver to primary: %v", zone.Name(), err)
 			s.answer(dns.ServerFailure, true, msg, from)

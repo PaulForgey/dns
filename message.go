@@ -107,6 +107,13 @@ type Question interface {
 	Class() RRClass
 }
 
+// Asks returns true if q would ask for r
+func Asks(q Question, r *Record) bool {
+	return q.Name().Equal(r.Name()) &&
+		q.Type().Asks(r.Type()) &&
+		q.Class().Asks(r.Class())
+}
+
 type QuestionData struct {
 	name   Name
 	qtype  uint16

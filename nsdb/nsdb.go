@@ -116,8 +116,9 @@ func Load(db Db, entered time.Time, records []*dns.Record) (bool, error) {
 			} else {
 				value = value.Copy()
 			}
-			value.Load(entered, records)
-			added = true
+			if value.Load(entered, records) {
+				added = true
+			}
 			return db.Enter(name, value)
 		},
 	)
@@ -220,6 +221,11 @@ func (r RRMap) Lookup(exact bool, rrtype dns.RRType, rrclass dns.RRClass) *RRSet
 		rrset = &RRSet{}
 		for t, rs := range r {
 			if t.Match(exact, rrtype, rrclass) {
+				if rrset.Records == nil {
+					rrset.Exclusive = rs.Exclusive
+				} else {
+					rrset.Exclusive = rrset.Exclusive && rs.Exclusive
+				}
 				rrset.Records = append(rrset.Records, rs.Records...)
 			}
 		}
@@ -265,15 +271,13 @@ func (r RRMap) Subtract(records []*dns.Record) bool {
 			if !ok {
 				continue
 			}
-			var nr []*dns.Record
-			for _, rr := range rrset.Records {
-				if !rr.Equal(d) {
-					nr = append(nr, rr)
-				} else {
-					mutated = true
-				}
+			olen := len(rrset.Records)
+			nr := dns.Subtract(rrset.Records, records)
+			nlen := len(nr)
+			if nlen != olen {
+				mutated = true
 			}
-			if len(nr) == 0 {
+			if nlen == 0 {
 				delete(r, key)
 			} else {
 				r[key] = &RRSet{
@@ -296,20 +300,27 @@ func (r RRMap) Subtract(records []*dns.Record) bool {
 
 // Load enters a series of records into the map
 // entries with TTL 0 will be modified to TTL 1
-func (r RRMap) Load(entered time.Time, records []*dns.Record) {
+func (r RRMap) Load(entered time.Time, records []*dns.Record) bool {
+	added := false
 	n := make(RRMap)
 	for _, r := range records {
 		key := RRKey{r.H.Type(), r.H.Class()}
 		rrset, ok := n[key]
 		if !ok {
 			rrset = &RRSet{Entered: entered}
-			if mh, ok := r.H.(*dns.MDNSHeader); ok && mh.CacheFlush() {
-				rrset.Exclusive = true
-			}
 			n[key] = rrset
 		}
 		if r.H.TTL() < time.Second {
 			r.H.SetTTL(time.Second)
+		}
+		if dns.CacheFlush(r.H) != rrset.Exclusive {
+			// discard non exclusive records if exclusive ones are present
+			if !rrset.Exclusive {
+				rrset.Exclusive = true
+				rrset.Records = nil
+			} else {
+				continue
+			}
 		}
 		rrset.Records = append(rrset.Records, r)
 	}
@@ -317,18 +328,20 @@ func (r RRMap) Load(entered time.Time, records []*dns.Record) {
 		rrset, ok := r[k]
 		if !ok {
 			r[k] = v
+			added = true
 		} else {
 			if rrset.Entered.IsZero() && !entered.IsZero() {
 				continue
 			}
-
 			if v.Exclusive {
 				r[k] = v
 			} else {
 				rrset.Merge(v.Records)
 			}
+			added = true
 		}
 	}
+	return added
 }
 
 // Expire updates an RRSet backdating the TTLs and removing expired records
@@ -361,8 +374,7 @@ func (rs *RRSet) Expire(now time.Time) bool {
 // Merge combines two sets of records excluding duplicates
 func (rs *RRSet) Merge(records []*dns.Record) {
 	// favor the new records in duplicates to update TTL
-	rs.Subtract(records)
-	rs.Records = append(rs.Records, records...)
+	rs.Records = dns.Merge(rs.Records, records)
 }
 
 // Exclude returns records not in rs
@@ -391,22 +403,8 @@ func (rs *RRSet) Exclude(records []*dns.Record) []*dns.Record {
 // Subtract removes records from rs.
 // returns true if the operation completely clears the rrset
 func (rs *RRSet) Subtract(records []*dns.Record) bool {
-	var nr []*dns.Record
-
-	for _, or := range rs.Records {
-		found := false
-		for _, rr := range records {
-			if rr.D == nil || or.D.Equal(rr.D) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			nr = append(nr, or)
-		}
-	}
-	rs.Records = nr
-	return len(nr) == 0
+	rs.Records = dns.Subtract(rs.Records, records)
+	return len(rs.Records) == 0
 }
 
 // Copy creates a new RRSet shallow copy randomly rotated

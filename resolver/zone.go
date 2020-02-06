@@ -9,12 +9,19 @@ import (
 	"tessier-ashpool.net/dns/nsdb"
 )
 
+const (
+	InCache uint = 1 << iota
+	InAuth
+
+	InAny = InCache | InAuth
+)
+
 // the ZoneAuthority interface tells a resolver how to look up authoritative records or delegations
 type ZoneAuthority interface {
 	// Lookup retrieves authoritative records for the zone, or cached entries if they were entered
 	Lookup(key string, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (a []*dns.Record, ns []*dns.Record, err error)
 	// MLookup is Lookup with MDNS semantics
-	MLookup(key string, authoritative bool, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) ([]*dns.Record, bool, error)
+	MLookup(key string, where uint, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (a, ex []*dns.Record, err error)
 	// Hint returns true if this is a hint zone
 	Hint() bool
 	// Name returns the name of the zone
@@ -68,11 +75,15 @@ func (z *Zone) Name() dns.Name {
 // Lookup a name within a zone with MDNS semantics
 func (z *Zone) MLookup(
 	key string,
-	authoritative bool, // ignored - this _is_ the cache
+	where uint,
 	name dns.Name,
 	rrtype dns.RRType,
 	rrclass dns.RRClass,
-) ([]*dns.Record, bool, error) {
+) (a []*dns.Record, ex []*dns.Record, err error) {
+	if (where & InCache) == 0 {
+		return
+	}
+
 	z.RLock()
 	db, ok := z.keys[key]
 	if !ok {
@@ -80,12 +91,29 @@ func (z *Zone) MLookup(
 	}
 	z.RUnlock()
 	for db != nil {
-		rrset, err := nsdb.Lookup(db, true, name, rrtype, rrclass)
+		var rrset *nsdb.RRSet
+		rrset, err = nsdb.Lookup(db, true, name, rrtype, rrclass)
 		if err != nil && !errors.Is(err, dns.NXDomain) {
-			return nil, false, err
+			return
 		}
 		if rrset != nil {
-			return rrset.Records, false, nil
+			if rrtype == dns.AnyType || rrclass == dns.AnyClass {
+				for _, r := range rrset.Records {
+					if dns.CacheFlush(r.H) {
+						ex = append(ex, r)
+					} else {
+						a = append(a, r)
+					}
+				}
+			} else {
+				rrset = rrset.Copy()
+				if rrset.Exclusive {
+					ex = rrset.Records
+				} else {
+					a = rrset.Records
+				}
+			}
+			return
 		}
 		if db != z.cache {
 			db = z.cache
@@ -93,7 +121,9 @@ func (z *Zone) MLookup(
 			db = nil
 		}
 	}
-	return nil, false, nil
+
+	err = nil
+	return
 }
 
 // Lookup a name within a zone, or a delegation above it.

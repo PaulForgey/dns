@@ -271,7 +271,7 @@ func (t RRType) Match(n RRType) bool {
 	return t == AnyType || n == AnyType || t == n
 }
 
-// Ask returns true if t == n, t is AnyType, or t is a CNAME. That is, does t ask for n?
+// Asks returns true if t == n, t is AnyType, or t is a CNAME. That is, does t ask for n?
 func (t RRType) Asks(n RRType) bool {
 	return t == AnyType || t == n || n == CNAMEType
 }
@@ -286,6 +286,7 @@ type RecordHeader interface {
 	TTL() time.Duration
 	SetTTL(time.Duration)
 	Equal(RecordHeader) bool
+	Fresh() bool
 }
 
 // the HeaderData type contains uninterpreted header data
@@ -294,6 +295,7 @@ type HeaderData struct {
 	rrtype  uint16
 	rrclass uint16
 	ttl     uint32
+	origTTL uint32
 }
 
 func (h *HeaderData) MarshalCodec(c Codec) error {
@@ -301,23 +303,33 @@ func (h *HeaderData) MarshalCodec(c Codec) error {
 }
 
 func (h *HeaderData) UnmarshalCodec(c Codec) error {
-	return DecodeSequence(c, &h.name, &h.rrtype, &h.rrclass, &h.ttl)
+	if err := DecodeSequence(c, &h.name, &h.rrtype, &h.rrclass, &h.ttl); err != nil {
+		return err
+	}
+	h.origTTL = h.ttl
+	return nil
 }
 
 func (h *HeaderData) Type() RRType {
 	return RRType(h.rrtype)
 }
 
+func (h *HeaderData) Fresh() bool {
+	return (h.ttl >> 1) >= h.origTTL
+}
+
 // the Header type is a standard unicast resource record header
 type Header HeaderData
 
 func NewHeader(name Name, rrtype RRType, rrclass RRClass, ttl time.Duration) *Header {
-	return &Header{
+	h := &Header{
 		name:    name,
 		rrtype:  uint16(rrtype),
 		rrclass: uint16(rrclass),
 		ttl:     uint32(ttl / time.Second),
 	}
+	h.origTTL = h.ttl
+	return h
 }
 
 func (h *Header) MarshalCodec(c Codec) error {
@@ -334,6 +346,10 @@ func HeaderFromData(d *HeaderData) *Header {
 
 func (h *Header) Equal(m RecordHeader) bool {
 	return h.Name().Equal(m.Name()) && h.Type() == m.Type() && h.Class() == m.Class()
+}
+
+func (h *Header) Fresh() bool {
+	return (*HeaderData)(h).Fresh()
 }
 
 func (h *Header) Name() Name {
@@ -357,23 +373,32 @@ func (h *Header) SetTTL(ttl time.Duration) {
 }
 
 // the MHeader type is an MDNS resource record header
-type MDNSHeader struct {
-	*Header
-	originalTTL time.Duration
-}
+type MDNSHeader HeaderData
 
 func NewMDNSHeader(name Name, rrtype RRType, rrclass RRClass, ttl time.Duration, cacheFlush bool) *MDNSHeader {
-	m := &MDNSHeader{NewHeader(name, rrtype, rrclass, ttl), ttl}
+	m := &MDNSHeader{
+		name:    name,
+		rrtype:  uint16(rrtype),
+		rrclass: uint16(rrclass),
+		ttl:     uint32(ttl / time.Second),
+	}
+	m.origTTL = m.ttl
 	if cacheFlush {
 		m.rrclass |= 0x8000
 	}
 	return m
 }
 
+func (m *MDNSHeader) MarshalCodec(c Codec) error {
+	return (*HeaderData)(m).MarshalCodec(c)
+}
+
+func (m *MDNSHeader) UnmarshalCodec(c Codec) error {
+	return (*HeaderData)(m).UnmarshalCodec(c)
+}
+
 func MDNSHeaderFromData(d *HeaderData) *MDNSHeader {
-	m := &MDNSHeader{HeaderFromData(d), 0}
-	m.originalTTL = m.TTL()
-	return m
+	return (*MDNSHeader)(d)
 }
 
 func (m *MDNSHeader) SetCacheFlush(f bool) {
@@ -388,13 +413,40 @@ func (m *MDNSHeader) CacheFlush() bool {
 	return (m.rrclass & 0x8000) != 0
 }
 
+func (m *MDNSHeader) Equal(n RecordHeader) bool {
+	return m.Name().Equal(n.Name()) && m.Type() == n.Type() && m.Class() == n.Class()
+}
+
+func (m *MDNSHeader) Fresh() bool {
+	return (*HeaderData)(m).Fresh()
+}
+
+func (m *MDNSHeader) Name() Name {
+	return m.name
+}
+
+func (m *MDNSHeader) Type() RRType {
+	return RRType(m.rrtype)
+}
+
 func (m *MDNSHeader) Class() RRClass {
 	return RRClass(m.rrclass & 0x7fff)
 }
 
-// returns true if the current TTL is more than half the original
-func (m *MDNSHeader) Fresh() bool {
-	return m.TTL()>>1 > m.originalTTL
+func (m *MDNSHeader) TTL() time.Duration {
+	return time.Duration(m.ttl) * time.Second
+}
+
+func (m *MDNSHeader) SetTTL(ttl time.Duration) {
+	m.ttl = uint32(ttl / time.Second)
+}
+
+// CacheFlush is convenience function for MDNSHeader instances with CacheFlush set
+func CacheFlush(h RecordHeader) bool {
+	if mh, ok := h.(*MDNSHeader); ok && mh.CacheFlush() {
+		return true
+	}
+	return false
 }
 
 type EDNSHeader HeaderData
@@ -421,10 +473,6 @@ func (e *EDNSHeader) UnmarshalCodec(c Codec) error {
 	return (*HeaderData)(e).UnmarshalCodec(c)
 }
 
-func (e *EDNSHeader) Equal(m RecordHeader) bool {
-	return false
-}
-
 func (e *EDNSHeader) Name() Name {
 	return nil
 }
@@ -437,9 +485,13 @@ func (e *EDNSHeader) Class() RRClass {
 	return InvalidClass
 }
 
-// TTL and SetTTL are not applicable to EDNS records
-func (e *EDNSHeader) TTL() time.Duration   { return 0 }
-func (e *EDNSHeader) SetTTL(time.Duration) {}
+// Not applicable methods
+func (e *EDNSHeader) TTL() time.Duration        { return 0 }
+func (e *EDNSHeader) SetTTL(time.Duration)      {}
+func (e *EDNSHeader) Equal(m RecordHeader) bool { return false }
+func (e *EDNSHeader) Fresh() bool               { return false }
+
+// EDNS specific methods
 
 func (e *EDNSHeader) MaxMessageSize() uint16 {
 	return e.rrclass
@@ -474,6 +526,34 @@ type RecordData interface {
 type Record struct {
 	H RecordHeader
 	D RecordData
+}
+
+// Merge combines two sets of records, superceding duplicates with those from n
+func Merge(r, n []*Record) []*Record {
+	return append(Subtract(r, n), n...)
+}
+
+// Subract removes records present in n from r
+func Subtract(r, n []*Record) []*Record {
+	if len(n) == 0 {
+		return r
+	}
+
+	var result []*Record
+
+	for _, i := range r {
+		found := false
+		for _, j := range n {
+			if i.Match(j) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			result = append(result, i)
+		}
+	}
+	return result
 }
 
 func (r *Record) String() string {

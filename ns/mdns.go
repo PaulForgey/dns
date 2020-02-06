@@ -80,8 +80,8 @@ func (t *flowTable) createFlow(key string, d time.Duration, response []*dns.Reco
 }
 
 // ServeMDNS runs a multicast server until the context is canceled.
-// It is safe and possible, although not beneficial, to run multiple ServeMDNS routines on the same instance.
-// It is also possible to run the same zones between Serve and ServeMDNS
+// Running multiple ServerMDNS routines on the same Server instance will not crash, but it will not behave optimally.
+// It is possible to run the same zones between Serve and ServeMDNS
 func (s *Server) ServeMDNS(ctx context.Context) error {
 	var flows flowTable
 
@@ -100,7 +100,7 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 		if msg.QR {
 			// answer
 			if msg.ClientPort {
-				s.logger.Printf("%s:mdns response from invalid source %v", iface, from)
+				s.logger.Printf("%s: mdns response from invalid source %v", iface, from)
 				continue
 			}
 
@@ -113,20 +113,20 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 			z := s.zones.Find(q.Name())
 			if z != nil {
 				msg.QR = true
-				response, _, err := z.MLookup(iface, true, q.Name(), q.Type(), q.Class())
-				if err != nil && !errors.Is(err, dns.NXDomain) {
-					s.logger.Printf("mdns lookup error %s:%v %v %v: %v",
+				a, ex, err := z.MLookup(iface, resolver.InAuth, q.Name(), q.Type(), q.Class())
+				if err != nil {
+					s.logger.Printf("%s: mdns lookup error %v %v %v: %v",
 						iface, q.Name(), q.Class(), q.Type(), err)
 					continue
 				}
-				if len(response) == 0 {
+				if len(a) == 0 && len(ex) == 0 {
 					continue
 				}
 
-				msg.Answers = nil
+				msg.Answers = make([]*dns.Record, 0, len(a)+len(ex))
 				msg.Authority = nil
 				msg.Additional = nil
-				for _, r := range response {
+				for n, r := range append(a, ex...) {
 					// sanitize records for legacy query:
 					// - cap TTL to 10 seconds
 					// - do not return mdns specifics in header format
@@ -134,17 +134,15 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 					if ttl > time.Second*10 {
 						ttl = time.Second * 10
 					}
-					msg.Answers = append(msg.Answers,
-						&dns.Record{
-							H: dns.NewHeader(
-								r.H.Name(),
-								r.H.Type(),
-								r.H.Class(),
-								r.H.TTL(),
-							),
-							D: r.D,
-						},
-					)
+					msg.Answers[n] = &dns.Record{
+						H: dns.NewHeader(
+							r.H.Name(),
+							r.H.Type(),
+							r.H.Class(),
+							r.H.TTL(),
+						),
+						D: r.D,
+					}
 				}
 
 				s.zones.Additional(true, iface, msg)
@@ -152,7 +150,7 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 			}
 		} else {
 			// mcast question
-			var immediate, delayed []*dns.Record
+			var unicast, exclusive, delayed []*dns.Record
 			var delay time.Duration
 
 			key := flowKey(iface, from)
@@ -175,24 +173,30 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 					continue // ignore zones we don't serve
 				}
 
-				response, _, err := z.MLookup(iface, true, q.Name(), q.Type(), q.Class())
+				d, e, err := z.MLookup(iface, resolver.InAuth, q.Name(), q.Type(), q.Class())
 				if err != nil {
-					s.logger.Printf("mdns lookup error %s:%v %v %v: %v",
+					s.logger.Printf("%s: mdns lookup error %v %v %v: %v",
 						iface, q.Name(), q.Class(), q.Type(), err)
 					continue
 				}
 
-				response = purgeKnownAnswers(response, msg.Answers)
+				d = purgeKnownAnswers(d, msg.Answers)
+				e = purgeKnownAnswers(e, msg.Answers)
 
-				if q.(*dns.MDNSQuestion).QU() { // answer QU immediately
-					immediate = append(immediate, response...)
+				if q.(*dns.MDNSQuestion).QU() {
+					unicast = append(unicast, d...)
+					unicast = append(unicast, e...)
 				} else {
-					delayed = append(delayed, response...)
+					exclusive = append(exclusive, e...)
+					delayed = append(delayed, d...)
 				}
 			}
 
-			if len(immediate) > 0 {
-				s.respond(iface, from, immediate)
+			if len(unicast) > 0 {
+				s.respond(iface, from, unicast)
+			}
+			if len(exclusive) > 0 {
+				s.respond(iface, nil, exclusive)
 			}
 			if len(delayed) > 0 {
 				flows.createFlow(key, delay, delayed, func(f *flow) {
@@ -210,6 +214,20 @@ func (s *Server) mdnsEnter(now time.Time, iface string, records []*dns.Record) {
 	for _, r := range records {
 		z := s.zones.Find(r.H.Name())
 		if z != nil {
+			// mDNS specific use of NSEC record to indicate a negative response
+			if r.Type() == dns.NSECType && r.D != nil {
+				if nsec := r.D.(*dns.NSECRecord); nsec.Next.Equal(r.Name()) {
+					neg := make([]*dns.Record, 0)
+					for t := nsec.Types.Next(dns.InvalidType); t != dns.InvalidType; t = nsec.Types.Next(t) {
+						neg = append(neg, &dns.Record{
+							dns.NewMDNSHeader(r.Name(), t, r.Class(), r.H.TTL(), true),
+							nil,
+						})
+					}
+					s.mdnsEnter(now, iface, neg)
+					continue
+				}
+			}
 			rr, ok := zones[z]
 			if !ok {
 				zones[z] = []*dns.Record{r}
@@ -222,7 +240,7 @@ func (s *Server) mdnsEnter(now time.Time, iface string, records []*dns.Record) {
 	for z, rr := range zones {
 		err := z.Enter(now, iface, rr)
 		if err != nil {
-			s.logger.Printf("%v:%s: error entering cache records: %v", z.Name(), iface, err)
+			s.logger.Printf("%s: error entering cache records in %v: %v", iface, z.Name(), err)
 		}
 	}
 }
@@ -231,4 +249,48 @@ func (s *Server) respond(iface string, to net.Addr, response []*dns.Record) erro
 	msg := &dns.Message{QR: true, Answers: response}
 	s.zones.Additional(true, iface, msg)
 	return s.conn.WriteTo(msg, iface, to, 0)
+}
+
+// Query immediately sends the requested query along with known answers.
+// This is not the end user interface to use to discover records. Use PersistentQuery for this purpose.
+func (s *Server) Query(iface string, questions []dns.Question) error {
+	msg := &dns.Message{}
+
+	for _, q := range questions {
+		auth := s.zones.Find(q.Name())
+		if auth == nil {
+			continue
+		}
+
+		msg.Questions = append(msg.Questions, q)
+
+		a, ex, err := auth.MLookup(iface, resolver.InCache, q.Name(), q.Type(), q.Class())
+		if err != nil {
+			return err
+		}
+
+		for _, r := range a {
+			if r.D != nil && r.H.Fresh() {
+				msg.Answers = append(msg.Answers, r)
+			}
+		}
+		for _, r := range ex {
+			if r.D != nil && r.H.Fresh() {
+				msg.Answers = append(msg.Answers, r)
+			}
+		}
+	}
+
+	err := s.conn.WriteTo(msg, iface, nil, 0)
+	var t *dns.Truncated
+	if errors.As(err, &t) && t.Section == 0 && len(msg.Questions) > 1 {
+		ql := len(msg.Questions) >> 1
+		if err := s.Query(iface, msg.Questions[:ql]); err != nil {
+			return err
+		}
+		if err := s.Query(iface, msg.Questions[ql:]); err != nil {
+			return err
+		}
+	}
+	return err
 }

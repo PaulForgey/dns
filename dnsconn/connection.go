@@ -281,7 +281,9 @@ func (p *PacketConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgS
 		case 0:
 			return err // can't fit the question!
 		case 1:
-			msg.TC = true
+			if !(p.mdns && msg.QR) {
+				msg.TC = true
+			}
 			msg.Answers = msg.Answers[:truncated.At]
 			if len(msg.Answers) == 0 {
 				return err // no room to answer at all
