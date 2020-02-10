@@ -9,8 +9,10 @@ import (
 	"tessier-ashpool.net/dns/nsdb"
 )
 
+type Scope uint
+
 const (
-	InCache uint = 1 << iota
+	InCache Scope = 1 << iota
 	InAuth
 
 	InAny = InCache | InAuth
@@ -21,7 +23,7 @@ type ZoneAuthority interface {
 	// Lookup retrieves authoritative records for the zone, or cached entries if they were entered
 	Lookup(key string, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (a []*dns.Record, ns []*dns.Record, err error)
 	// MLookup is Lookup with MDNS semantics
-	MLookup(key string, where uint, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (a, ex []*dns.Record, err error)
+	MLookup(key string, where Scope, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (a, ex []*dns.Record, err error)
 	// Hint returns true if this is a hint zone
 	Hint() bool
 	// Name returns the name of the zone
@@ -75,7 +77,7 @@ func (z *Zone) Name() dns.Name {
 // Lookup a name within a zone with MDNS semantics
 func (z *Zone) MLookup(
 	key string,
-	where uint,
+	where Scope,
 	name dns.Name,
 	rrtype dns.RRType,
 	rrclass dns.RRClass,

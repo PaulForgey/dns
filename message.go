@@ -218,3 +218,11 @@ func (m *MDNSQuestion) Class() RRClass {
 func (m *MDNSQuestion) QU() bool {
 	return (m.qclass & 0x8000) != 0
 }
+
+func (m *MDNSQuestion) SetQU(qu bool) {
+	if qu {
+		m.qclass |= 0x8000
+	} else {
+		m.qclass &^= 0x8000
+	}
+}

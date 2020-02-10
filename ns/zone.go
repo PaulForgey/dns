@@ -220,7 +220,7 @@ func (z *Zone) Class() dns.RRClass {
 // if authoritative is true, return only our authority.
 func (z *Zone) MLookup(
 	key string,
-	where uint,
+	where resolver.Scope,
 	name dns.Name,
 	rrtype dns.RRType,
 	rrclass dns.RRClass,
@@ -271,7 +271,7 @@ func (z *Zone) MLookup(
 			return
 		}
 
-		if len(ex2) == 0 {
+		if len(ex) == 0 {
 			ex = ex2
 		}
 		a = dns.Merge(a2, a)
@@ -964,42 +964,6 @@ func (zs *Zones) Zone(n dns.Name) *Zone {
 
 // Additional fills in the additional section if it can from either cache or authority
 func (zs *Zones) Additional(mdns bool, key string, msg *dns.Message) {
-	type nskey struct {
-		key     string
-		rrclass dns.RRClass
-	}
-
-	// convert negative responses to NSECs
-	var answers []*dns.Record
-	ns := make(map[nskey]*dns.Record)
-
-	for _, r := range msg.Answers {
-		if r.D == nil {
-			if !mdns {
-				continue // XXX panic? error?
-			}
-			key := nskey{r.Name().Key(), r.Class()}
-			nr := ns[key]
-			if nr == nil {
-				// assume any negative responses for the name share the same ttl
-				nr = &dns.Record{
-					dns.NewMDNSHeader(r.Name(), dns.NSECType, r.Class(), r.H.TTL(), true),
-					&dns.NSECRecord{Next: r.Name()},
-				}
-				ns[key] = nr
-			} else {
-				nr.D.(*dns.NSECRecord).Types.Set(r.Type())
-			}
-		} else {
-			answers = append(answers, r)
-		}
-	}
-
-	msg.Answers = answers
-	for _, v := range ns {
-		msg.Additional = append(msg.Additional, v)
-	}
-
 	records := make([]*dns.Record, len(msg.Authority), len(msg.Authority)+len(msg.Answers))
 	copy(records, msg.Authority)
 	records = append(records, msg.Answers...)

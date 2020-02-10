@@ -68,6 +68,7 @@ func (m *message) empty() bool {
 }
 
 // The Conn type sends and receives *dns.Message instances
+// Packet oriented connections are safe to read and write from multiple go routines. Stream oriented ones are not.
 type Conn interface {
 	fmt.Stringer
 
@@ -89,6 +90,9 @@ type Conn interface {
 
 	// VC returns true if the underlying transport is stream oriented
 	VC() bool
+
+	// EachIface enumerates known interfaces for this conn. If created with a name, only that name is used.
+	EachIface(f func(iface string) error) error
 }
 
 type conn struct {
@@ -115,7 +119,8 @@ type PacketConn struct {
 // the StreamConn type is a stream oriented Connection
 type StreamConn struct {
 	*conn
-	c net.Conn
+	c    net.Conn
+	mdns bool
 }
 
 func ifname(ifindex int) string {
@@ -131,17 +136,17 @@ func ifname(ifindex int) string {
 	return entry.(string)
 }
 
-func ifbyname(iface string) int {
+func ifbyname(iface string) *net.Interface {
 	entry, ok := ifnames.Load(iface)
 	if !ok {
 		ifi, err := net.InterfaceByName(iface)
 		if err != nil || ifi == nil {
-			return 0
+			return nil
 		}
-		ifnames.Store(iface, ifi.Index)
-		return ifi.Index
+		ifnames.Store(iface, ifi)
+		return ifi
 	}
-	return entry.(int)
+	return entry.(*net.Interface)
 }
 
 // NewConnection creates a new Conn instance with a net.Conn or net.PacketConn
@@ -156,6 +161,25 @@ func NewConn(conn net.Conn, network, iface string) Conn {
 // Network returns the network this connection was created with
 func (c *conn) Network() string {
 	return c.network
+}
+
+func (c *conn) EachIface(f func(string) error) error {
+	if c.iface != "" {
+		return f(c.iface)
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return err
+	}
+	for _, ifi := range ifaces {
+		if ifi.Flags&FlagsMask != FlagsMDNS {
+			continue
+		}
+		if err := f(ifi.Name); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // NewPacketConn creates a packet oriented connection from a net.PacketConn
@@ -269,7 +293,7 @@ func (p *PacketConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgS
 
 	msgBuf = buffer[:msgSize]
 
-	if !msg.QR && msg.ID == 0 {
+	for !(p.mdns || msg.QR) && msg.ID == 0 {
 		msg.ID = uint16(atomic.AddUint32(&p.conn.xid, 1))
 	}
 
@@ -307,25 +331,24 @@ func (p *PacketConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgS
 
 	msgBuf = msgBuf[:writer.Offset()]
 	if addr != nil {
-		if iface != "" {
+		if iface != "" && iface != p.conn.iface {
 			switch {
 			case p.p6 != nil:
-				ifindex := ifbyname(iface)
-				if ifindex == 0 {
+				ifi := ifbyname(iface)
+				if ifi == nil {
 					return ErrUnknownInterface
 				}
-				_, err = p.p6.WriteTo(msgBuf, &ipv6.ControlMessage{IfIndex: ifindex}, addr)
+				_, err = p.p6.WriteTo(msgBuf, &ipv6.ControlMessage{IfIndex: ifi.Index}, addr)
 
 			case p.p4 != nil:
-				ifindex := ifbyname(iface)
-				if ifindex == 0 {
+				ifi := ifbyname(iface)
+				if ifi == nil {
 					return ErrUnknownInterface
 				}
-				_, err = p.p4.WriteTo(msgBuf, &ipv4.ControlMessage{IfIndex: ifindex}, addr)
+				_, err = p.p4.WriteTo(msgBuf, &ipv4.ControlMessage{IfIndex: ifi.Index}, addr)
 
 			default:
 				_, err = p.c.WriteTo(msgBuf, addr)
-
 			}
 		} else {
 			_, err = p.c.WriteTo(msgBuf, addr)
@@ -335,6 +358,7 @@ func (p *PacketConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgS
 		if !ok {
 			return ErrNotConn
 		}
+
 		_, err = c.Write(msgBuf)
 	}
 
@@ -457,6 +481,11 @@ func (s *StreamConn) String() string {
 	return s.c.LocalAddr().String()
 }
 
+// MDNS sets MDNS specific wire decoding
+func (s *StreamConn) MDNS() {
+	s.mdns = true
+}
+
 // VC returns true if the underlying connection is stream oriented. (A StreamConn may use a connected net.PacketConn)
 func (s *StreamConn) VC() bool {
 	_, ok := s.c.(net.PacketConn)
@@ -479,7 +508,7 @@ func (s *StreamConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgS
 
 	msgBuf = buffer[:msgSize]
 
-	if !msg.QR && msg.ID == 0 {
+	for !msg.QR && msg.ID == 0 {
 		msg.ID = uint16(atomic.AddUint32(&s.conn.xid, 1))
 	}
 
@@ -532,12 +561,16 @@ func (s *StreamConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 				panic("short buffer put back in pool?")
 			}
 			msgBuf = buffer[:length]
-			if _, err = io.ReadFull(s.c, msgBuf); err != nil {
+			_, err = io.ReadFull(s.c, msgBuf)
+			if err != nil {
 				return nil, "", nil, err
 			}
 		}
 
 		reader := dns.NewWireCodec(msgBuf)
+		if s.mdns {
+			reader.MDNS()
+		}
 		msg := &dns.Message{}
 		err = reader.Decode(msg)
 

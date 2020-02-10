@@ -103,7 +103,6 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 				s.logger.Printf("%s: mdns response from invalid source %v", iface, from)
 				continue
 			}
-
 			now := time.Now()
 			s.mdnsEnter(now, iface, msg.Answers)
 			s.mdnsEnter(now, iface, msg.Additional)
@@ -209,25 +208,132 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 	return nil // unreached
 }
 
+// PersistentQuery starts a persistent query q until ctx is cancled, an error occurs, or f returns an error.
+// The full set of known records is always passed to f.
+func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(a []*dns.Record) error) error {
+	var idle *time.Timer
+	backoff := time.Second
+	requery := false
+
+	auth := s.zones.Find(q.Name())
+	if auth == nil {
+		return dns.NXDomain
+	}
+	c := make(chan struct{}, 1)
+	if z, ok := auth.(*Zone); ok {
+		z.PersistentQuery(c, q)
+		defer z.PersistentQuery(c, nil)
+	}
+
+	err := s.MQuery([]dns.Question{q})
+	for err == nil {
+		var rr []*dns.Record
+
+		if err = s.conn.EachIface(func(iface string) error {
+			var a, ex []*dns.Record
+
+			a, ex, err = auth.MLookup(iface, resolver.InAny, q.Name(), q.Type(), q.Class())
+			if err != nil {
+				return err
+			}
+
+			r := append(a, ex...)
+			rr = dns.Merge(rr, r)
+			return nil
+		}); err != nil {
+			break
+		}
+		if err = f(rr); err != nil {
+			break
+		}
+
+		// refresh at idle backoff or half ttl, whichever is sooner
+		refresh := backoff
+		for _, r := range rr {
+			httl := r.H.TTL() >> 1
+			if refresh > httl {
+				refresh = httl
+			}
+		}
+
+		if requery {
+			requery = false
+			s.queryLock.Lock()
+
+			queries := s.mqueries
+
+			found := false
+			for i, mq := range queries {
+				if !mq.Name().Equal(q.Name()) {
+					continue
+				}
+				if mq.Type().Asks(q.Type()) && mq.Class().Asks(q.Class()) {
+					// question already will be asked
+					found = true
+					break
+				}
+				if q.Type().Asks(mq.Type()) && q.Class().Asks(mq.Class()) {
+					// our question is more broad (wildcard over non wildcard)
+					queries[i] = q
+					found = true
+					break
+				}
+			}
+			if !found {
+				queries = append(queries, q)
+			}
+			s.mqueries = queries
+
+			if s.send == nil {
+				s.send = time.AfterFunc(time.Second, func() {
+					s.queryLock.Lock()
+					s.send = nil
+					queries := s.mqueries
+					s.mqueries = nil
+					s.queryLock.Unlock()
+
+					s.MQuery(queries)
+				})
+			}
+
+			s.queryLock.Unlock()
+		}
+
+		idle = time.NewTimer(refresh)
+		if refresh == backoff && backoff < time.Hour {
+			backoff <<= 1
+		}
+
+		select {
+		case <-idle.C:
+			requery = true
+		case <-ctx.Done():
+			err = ctx.Err()
+		case <-c:
+		}
+
+		idle.Stop()
+		idle = nil
+
+		if mq, ok := q.(*dns.MDNSQuestion); ok {
+			if mq.QU() {
+				mq.SetQU(false)
+			}
+		}
+	}
+
+	if idle != nil {
+		idle.Stop()
+	}
+
+	return err
+}
+
 func (s *Server) mdnsEnter(now time.Time, iface string, records []*dns.Record) {
 	zones := make(map[resolver.ZoneAuthority][]*dns.Record)
 	for _, r := range records {
 		z := s.zones.Find(r.H.Name())
 		if z != nil {
-			// mDNS specific use of NSEC record to indicate a negative response
-			if r.Type() == dns.NSECType && r.D != nil {
-				if nsec := r.D.(*dns.NSECRecord); nsec.Next.Equal(r.Name()) {
-					neg := make([]*dns.Record, 0)
-					for t := nsec.Types.Next(dns.InvalidType); t != dns.InvalidType; t = nsec.Types.Next(t) {
-						neg = append(neg, &dns.Record{
-							dns.NewMDNSHeader(r.Name(), t, r.Class(), r.H.TTL(), true),
-							nil,
-						})
-					}
-					s.mdnsEnter(now, iface, neg)
-					continue
-				}
-			}
 			rr, ok := zones[z]
 			if !ok {
 				zones[z] = []*dns.Record{r}
@@ -251,9 +357,15 @@ func (s *Server) respond(iface string, to net.Addr, response []*dns.Record) erro
 	return s.conn.WriteTo(msg, iface, to, 0)
 }
 
-// Query immediately sends the requested query along with known answers.
-// This is not the end user interface to use to discover records. Use PersistentQuery for this purpose.
-func (s *Server) Query(iface string, questions []dns.Question) error {
+// MQuery immediately sends a single shot of mDNS questions.
+// This is probably not the method for a typical client to use. See PersistentQuery
+func (s *Server) MQuery(questions []dns.Question) error {
+	return s.conn.EachIface(func(iface string) error {
+		return s.mquery(iface, questions)
+	})
+}
+
+func (s *Server) mquery(iface string, questions []dns.Question) error {
 	msg := &dns.Message{}
 
 	for _, q := range questions {
@@ -285,10 +397,10 @@ func (s *Server) Query(iface string, questions []dns.Question) error {
 	var t *dns.Truncated
 	if errors.As(err, &t) && t.Section == 0 && len(msg.Questions) > 1 {
 		ql := len(msg.Questions) >> 1
-		if err := s.Query(iface, msg.Questions[:ql]); err != nil {
+		if err := s.mquery(iface, msg.Questions[:ql]); err != nil {
 			return err
 		}
-		if err := s.Query(iface, msg.Questions[ql:]); err != nil {
+		if err := s.mquery(iface, msg.Questions[ql:]); err != nil {
 			return err
 		}
 	}

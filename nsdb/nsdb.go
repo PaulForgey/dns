@@ -352,7 +352,7 @@ func (rs *RRSet) Expire(now time.Time) bool {
 		return false
 	}
 	if now.Before(rs.Entered) {
-		panic("time went backwards")
+		now = rs.Entered
 	}
 	records := make([]*dns.Record, 0)
 	since := now.Sub(rs.Entered)

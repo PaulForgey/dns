@@ -104,17 +104,17 @@ type Conf struct {
 
 	ACLs              map[string]ACL   // ACLs by name
 	Zones             map[string]*Zone // unicast zones
-	MDNSZones         map[string]*Zone // MDNS zones
+	MDNSZones         map[string]*Zone // mDNS zones
 	Resolver          *Listener        `json:",omitempty"` // outgoing queries. Must be udp/udp4/udp6
 	REST              *REST            `json:",omitempty"` // REST server; omit or set to null to disable
 	Listeners         []Listener       `json:",omitmepty"` // additional or specific listeners
 	AutoListeners     bool             // true to automatically discover all interfaces to listen on
-	MDNSListeners     []Listener       `json:",omitempty"` // additional or specific MDNS listeners
-	AutoMDNSListeners bool             // true to automatically discover all interfaces for MDNS
+	MDNSListeners     []Listener       `json:",omitempty"` // additional or specific mDNS listeners
+	AutoMDNSListeners bool             // true to automatically discover all interfaces for mDNS
+	MDNSResolver      *Listener        `json:",omitempty"` // IPC listener for mDNS
 	AllowRecursion    []string         `json:",omitempty"` // ACLs for recursion
 
 	// XXX global server ACL
-	// XXX mdns zone
 }
 
 var logStderr bool
@@ -133,39 +133,10 @@ func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zone
 		}
 
 		logger.Printf("%s: listening %s %v", l.InterfaceName, l.Network, l.Address)
-		closer := make(chan struct{})
-		go func() {
-			select {
-			case <-ctx.Done():
-			case <-closer:
-			}
-			c.Close()
-		}()
-		for {
-			a, err := c.Accept()
-			if err != nil {
-				logger.Println(err)
-				close(closer)
-				break
-			} else {
-				closer := make(chan struct{})
-				go func() {
-					select {
-					case <-ctx.Done():
-					case <-closer:
-					}
-					a.Close()
-				}()
-				wg.Add(1)
-				go func() {
-					conn := dnsconn.NewStreamConn(a, l.Network, l.InterfaceName)
-					s := ns.NewServer(logger, conn, zones, res, allowRecursion)
-					s.Serve(ctx)
-					wg.Done()
-					close(closer)
-				}()
-			}
-		}
+		l.serveListener(ctx, wg, c, func(c dnsconn.Conn) {
+			s := ns.NewServer(logger, c, zones, res, allowRecursion)
+			s.Serve(ctx)
+		})
 	} else {
 		var conn dnsconn.Conn
 		if conf.Resolver != nil &&
@@ -188,16 +159,63 @@ func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zone
 	}
 }
 
-func (l *Listener) runMDNS(ctx context.Context, zones *ns.Zones) {
-	conn, err := dnsconn.NewMulticast(l.Network, l.Address, l.InterfaceName)
+func (l *Listener) runMDNS(ctx context.Context, wg *sync.WaitGroup, servers []*ns.Server) {
+	c, err := net.Listen(l.Network, l.Address)
 	if err != nil {
-		logger.Printf("multicast %s/%s: %v", l.Network, l.Address, err)
+		logger.Println(err)
 		return
 	}
-	logger.Printf("MDNS listening %s %v", l.Network, l.Address)
-	s := ns.NewServer(logger, conn, zones, nil, ns.AllAccess)
-	s.ServeMDNS(ctx)
-	conn.Close()
+
+	logger.Printf("running mDNS resolver on %s %v", l.Network, l.Address)
+	l.serveListener(ctx, wg, c, func(c dnsconn.Conn) {
+		r := ns.NewMResolver(logger, c, servers, ns.AllAccess, ns.AllAccess)
+		r.Serve(ctx)
+	})
+}
+
+func (l *Listener) serveListener(ctx context.Context, wg *sync.WaitGroup, c net.Listener, serve func(c dnsconn.Conn)) {
+	closer := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-closer:
+		}
+		c.Close()
+	}()
+	for {
+		a, err := c.Accept()
+		if err != nil {
+			logger.Println(err)
+			close(closer)
+			break
+		} else {
+			closer := make(chan struct{})
+			go func() {
+				select {
+				case <-ctx.Done():
+				case <-closer:
+				}
+				a.Close()
+			}()
+			wg.Add(1)
+			go func() {
+				conn := dnsconn.NewStreamConn(a, l.Network, l.InterfaceName)
+				serve(conn)
+				wg.Done()
+				close(closer)
+			}()
+		}
+	}
+}
+
+func (l *Listener) newMDNS(zones *ns.Zones) *ns.Server {
+	conn, err := dnsconn.NewMulticast(l.Network, l.Address, l.InterfaceName)
+	if err != nil {
+		logger.Printf("multicast: %s/%s: %v", l.Network, l.Address, err)
+		return nil
+	}
+	logger.Printf("mDNS listening %s %v", l.Network, l.Address)
+	return ns.NewServer(logger, conn, zones, nil, ns.AllAccess)
 }
 
 func netname(network string) string {
@@ -342,12 +360,29 @@ func main() {
 			wg.Done()
 		}(l)
 	}
+
+	servers := make([]*ns.Server, 0, len(conf.MDNSListeners))
 	for _, l := range conf.MDNSListeners {
+		if s := l.newMDNS(mzones); s != nil {
+			servers = append(servers, s)
+		}
+	}
+
+	for _, s := range servers {
 		wg.Add(1)
-		go func(l Listener) {
-			l.runMDNS(ctx, mzones)
+		go func(s *ns.Server) {
+			s.ServeMDNS(ctx)
+			s.Close()
 			wg.Done()
-		}(l)
+		}(s)
+	}
+
+	if conf.MDNSResolver != nil {
+		wg.Add(1)
+		go func() {
+			conf.MDNSResolver.runMDNS(ctx, wg, servers)
+			wg.Done()
+		}()
 	}
 
 	sigc := make(chan os.Signal, 1)

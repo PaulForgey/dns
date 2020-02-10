@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log"
 	"net"
+	"sync"
+	"time"
 
 	"tessier-ashpool.net/dns"
 	"tessier-ashpool.net/dns/dnsconn"
@@ -30,6 +32,9 @@ type Server struct {
 	allowRecursion Access
 
 	// mDNS
+	queryLock sync.Mutex
+	mqueries  []dns.Question
+	send      *time.Timer
 }
 
 type allAccess bool
@@ -59,6 +64,15 @@ func NewServer(
 		res:            res,
 		allowRecursion: allowRecursion,
 	}
+}
+
+// Close closes the underlying connection in the Server
+func (s *Server) Close() error {
+	return s.conn.Close()
+}
+
+func (s *Server) String() string {
+	return s.conn.String()
 }
 
 // Serve runs a unicast server until the context is canceled.

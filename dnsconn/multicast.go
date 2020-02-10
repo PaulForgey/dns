@@ -19,6 +19,12 @@ type Multicast struct {
 	msgSize int
 }
 
+// Interface flags we use to select
+const (
+	FlagsMask = net.FlagUp | net.FlagMulticast | net.FlagPointToPoint | net.FlagLoopback
+	FlagsMDNS = net.FlagUp | net.FlagMulticast
+)
+
 // Attempt to create a listener on an unknown or ambiguous network
 var ErrBadNetwork = errors.New("bad network name")
 
@@ -51,10 +57,7 @@ func NewMulticast(network, address, iface string) (*Multicast, error) {
 	}
 
 	for _, ifi := range ifaces {
-		if ifi.Flags&(net.FlagUp|net.FlagMulticast) != net.FlagUp|net.FlagMulticast {
-			continue
-		}
-		if ifi.Flags&net.FlagLoopback != 0 {
+		if ifi.Flags&FlagsMask != FlagsMDNS {
 			continue
 		}
 		if iface != "" && ifi.Name != iface {
@@ -97,6 +100,7 @@ func NewMulticast(network, address, iface string) (*Multicast, error) {
 					return nil, err
 				}
 				p.SetHopLimit(1)
+				p.SetMulticastLoopback(false)
 			}
 
 		case "udp4":
@@ -113,6 +117,7 @@ func NewMulticast(network, address, iface string) (*Multicast, error) {
 					return nil, err
 				}
 				p.SetMulticastTTL(1)
+				p.SetMulticastLoopback(false)
 			}
 
 		default:
