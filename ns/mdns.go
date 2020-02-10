@@ -179,6 +179,14 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 					continue
 				}
 
+				if len(d) == 0 && len(e) == 0 && q.Type() != dns.AnyType {
+					_, e, err = z.MLookup(iface, resolver.InAuth, q.Name(), dns.NSECType, q.Class())
+					if err != nil {
+						s.logger.Printf("%s: mdns lookup error %v %v %v: %v",
+							iface, q.Name(), q.Class(), dns.NSECType, err)
+					}
+				}
+
 				d = purgeKnownAnswers(d, msg.Answers)
 				e = purgeKnownAnswers(e, msg.Answers)
 
@@ -236,8 +244,29 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(a [
 			if err != nil {
 				return err
 			}
-
 			r := append(a, ex...)
+			if len(r) == 0 && q.Type() != dns.AnyType {
+				_, ex, err = auth.MLookup(iface, resolver.InAny, q.Name(), dns.NSECType, q.Class())
+				if len(ex) > 0 {
+					for _, rr := range ex {
+						if nsec, _ := rr.D.(*dns.NSECRecord); nsec != nil && nsec.Next.Equal(rr.Name()) {
+							if !nsec.Types.Is(q.Type()) {
+								r = []*dns.Record{&dns.Record{
+									H: dns.NewMDNSHeader(
+										rr.Name(),
+										q.Type(),
+										rr.Class(),
+										rr.H.TTL(),
+										true,
+									),
+									D: nil,
+								}}
+							}
+							break
+						}
+					}
+				}
+			}
 			rr = dns.Merge(rr, r)
 			return nil
 		}); err != nil {
@@ -250,7 +279,12 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(a [
 		// refresh at idle backoff or half ttl, whichever is sooner
 		refresh := backoff
 		for _, r := range rr {
-			httl := r.H.TTL() >> 1
+			httl := r.H.OriginalTTL() >> 1
+			if httl < r.H.TTL() {
+				httl -= (r.H.OriginalTTL() - r.H.TTL())
+			} else {
+				httl = time.Second
+			}
 			if refresh > httl {
 				refresh = httl
 			}
@@ -352,7 +386,14 @@ func (s *Server) mdnsEnter(now time.Time, iface string, records []*dns.Record) {
 }
 
 func (s *Server) respond(iface string, to net.Addr, response []*dns.Record) error {
-	msg := &dns.Message{QR: true, Answers: response}
+	msg := &dns.Message{QR: true}
+	for _, r := range response {
+		if r.Type() != dns.NSECType {
+			msg.Answers = append(msg.Answers, r)
+		} else {
+			msg.Additional = append(msg.Additional, r)
+		}
+	}
 	s.zones.Additional(true, iface, msg)
 	return s.conn.WriteTo(msg, iface, to, 0)
 }
@@ -374,6 +415,8 @@ func (s *Server) mquery(iface string, questions []dns.Question) error {
 			continue
 		}
 
+		s.logger.Printf("mDNS query %v %v %v -> %s", q.Name(), q.Class(), q.Type(), iface)
+
 		msg.Questions = append(msg.Questions, q)
 
 		a, ex, err := auth.MLookup(iface, resolver.InCache, q.Name(), q.Type(), q.Class())
@@ -382,12 +425,12 @@ func (s *Server) mquery(iface string, questions []dns.Question) error {
 		}
 
 		for _, r := range a {
-			if r.D != nil && r.H.Fresh() {
+			if r.D != nil && (r.H.OriginalTTL()>>1) >= r.H.TTL() {
 				msg.Answers = append(msg.Answers, r)
 			}
 		}
 		for _, r := range ex {
-			if r.D != nil && r.H.Fresh() {
+			if r.D != nil && (r.H.OriginalTTL()>>1) >= r.H.TTL() {
 				msg.Answers = append(msg.Answers, r)
 			}
 		}

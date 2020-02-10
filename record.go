@@ -285,8 +285,8 @@ type RecordHeader interface {
 	Class() RRClass
 	TTL() time.Duration
 	SetTTL(time.Duration)
+	OriginalTTL() time.Duration
 	Equal(RecordHeader) bool
-	Fresh() bool
 }
 
 // the HeaderData type contains uninterpreted header data
@@ -314,8 +314,8 @@ func (h *HeaderData) Type() RRType {
 	return RRType(h.rrtype)
 }
 
-func (h *HeaderData) Fresh() bool {
-	return (h.ttl >> 1) >= h.origTTL
+func (h *HeaderData) OriginalTTL() time.Duration {
+	return time.Duration(h.origTTL) * time.Second
 }
 
 // the Header type is a standard unicast resource record header
@@ -348,8 +348,8 @@ func (h *Header) Equal(m RecordHeader) bool {
 	return h.Name().Equal(m.Name()) && h.Type() == m.Type() && h.Class() == m.Class()
 }
 
-func (h *Header) Fresh() bool {
-	return (*HeaderData)(h).Fresh()
+func (h *Header) OriginalTTL() time.Duration {
+	return (*HeaderData)(h).OriginalTTL()
 }
 
 func (h *Header) Name() Name {
@@ -417,8 +417,8 @@ func (m *MDNSHeader) Equal(n RecordHeader) bool {
 	return m.Name().Equal(n.Name()) && m.Type() == n.Type() && m.Class() == n.Class()
 }
 
-func (m *MDNSHeader) Fresh() bool {
-	return (*HeaderData)(m).Fresh()
+func (m *MDNSHeader) OriginalTTL() time.Duration {
+	return (*HeaderData)(m).OriginalTTL()
 }
 
 func (m *MDNSHeader) Name() Name {
@@ -486,10 +486,10 @@ func (e *EDNSHeader) Class() RRClass {
 }
 
 // Not applicable methods
-func (e *EDNSHeader) TTL() time.Duration        { return 0 }
-func (e *EDNSHeader) SetTTL(time.Duration)      {}
-func (e *EDNSHeader) Equal(m RecordHeader) bool { return false }
-func (e *EDNSHeader) Fresh() bool               { return false }
+func (e *EDNSHeader) TTL() time.Duration         { return 0 }
+func (e *EDNSHeader) SetTTL(time.Duration)       {}
+func (e *EDNSHeader) Equal(m RecordHeader) bool  { return false }
+func (e *EDNSHeader) OriginalTTL() time.Duration { return 0 }
 
 // EDNS specific methods
 
@@ -544,7 +544,7 @@ func Subtract(r, n []*Record) []*Record {
 	for _, i := range r {
 		found := false
 		for _, j := range n {
-			if i.Match(j) {
+			if i.Equal(j) {
 				found = true
 				break
 			}

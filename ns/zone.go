@@ -781,7 +781,7 @@ func (z *Zone) postupdate_locked(updated bool, key string, update []*dns.Record)
 	// regardless of net change, this counts as query activity on zone (e.g. freshened ttl)
 	for _, r := range update {
 		for c, q := range z.queries {
-			if dns.Asks(q, r) {
+			if q.Name().Equal(r.Name()) {
 				select {
 				case c <- struct{}{}:
 				default: // do not block
@@ -972,21 +972,16 @@ func (zs *Zones) Additional(mdns bool, key string, msg *dns.Message) {
 		rec := records[i]
 
 		var name dns.Name
-		var rrtype dns.RRType
-
 		switch rec.Type() {
 		case dns.AType:
-			rrtype = dns.AAAAType
 			name = rec.Name()
 
 		case dns.AAAAType:
-			rrtype = dns.AType
 			name = rec.Name()
 
 		default:
 			if n, ok := rec.D.(dns.NameRecordType); ok {
 				name = n.RName()
-				rrtype = dns.AnyType
 			}
 		}
 
@@ -997,7 +992,7 @@ func (zs *Zones) Additional(mdns bool, key string, msg *dns.Message) {
 		// make sure we haven't already put it in
 		found := false
 		for _, a := range msg.Additional {
-			if a.Name().Equal(name) && rrtype.Asks(a.Type()) {
+			if a.Name().Equal(name) {
 				found = true
 				break
 			}
@@ -1006,7 +1001,7 @@ func (zs *Zones) Additional(mdns bool, key string, msg *dns.Message) {
 			continue
 		}
 		for _, a := range msg.Answers {
-			if a.Name().Equal(name) && rrtype.Asks(a.Type()) {
+			if a.Name().Equal(name) {
 				found = true
 				break
 			}
@@ -1024,17 +1019,17 @@ func (zs *Zones) Additional(mdns bool, key string, msg *dns.Message) {
 		var answers []*dns.Record
 		if mdns {
 			var a2 []*dns.Record
-			answers, a2, _ = zone.MLookup(key, resolver.InAuth, name, rrtype, rec.Class())
+			answers, a2, _ = zone.MLookup(key, resolver.InAuth, name, dns.AnyType, rec.Class())
 			answers = append(answers, a2...)
 		} else {
-			answers, _, _ = zone.Lookup(key, name, rrtype, rec.Class())
+			answers, _, _ = zone.Lookup(key, name, dns.AnyType, rec.Class())
 		}
 		for _, a := range answers {
 			if a.D == nil {
 				continue
 			}
 			switch a.Type() {
-			case dns.AType, dns.AAAAType, dns.TXTType, dns.PTRType, dns.SRVType:
+			case dns.AType, dns.AAAAType, dns.TXTType, dns.PTRType, dns.SRVType, dns.NSECType:
 				msg.Additional = append(msg.Additional, a)
 				records = append(records, a)
 			}

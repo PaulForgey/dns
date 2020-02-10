@@ -231,7 +231,7 @@ func (r RRMap) Lookup(exact bool, rrtype dns.RRType, rrclass dns.RRClass) *RRSet
 		}
 	} else {
 		rrset, _ = r.Get(rrtype, rrclass)
-		if rrset != nil && len(rrset.Records) > 1 {
+		if rrset != nil {
 			rrset = rrset.Copy()
 		}
 	}

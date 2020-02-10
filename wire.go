@@ -460,8 +460,7 @@ func (w *WireCodec) getRecord(r *Record) error {
 		return err
 	}
 
-	// RFC 2136 cases of RecordData being purposfully nil
-	if length == 0 && (r.H.Class() == AnyClass || r.H.Class() == NoneClass) {
+	if length == 0 {
 		r.D = nil
 	} else {
 		dc, err := w.Split(int(length))
