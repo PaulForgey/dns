@@ -78,22 +78,22 @@ func (r *MResolver) Serve(ctx context.Context) error {
 
 				for _, s := range r.servers {
 					for _, q := range msg.Questions {
-						go func(s *Server, q dns.Question) {
+						go func(msg *dns.Message, iface string, s *Server, q dns.Question) {
 							err := s.PersistentQuery(
 								pq.ctx, q,
-								func(records []*dns.Record) error {
-									return r.respond(msg.ID, records, nil)
+								func(iface string, records []*dns.Record) error {
+									return r.respond(msg.ID, iface, records, nil)
 								})
 							if err != nil {
-								r.respond(msg.ID, nil, err)
+								r.respond(msg.ID, "", nil, err)
 							}
-						}(s, q)
+						}(msg, iface, s, q)
 					}
 				}
 			} else {
 				err = dns.Refused
 			}
-			r.respond(msg.ID, nil, err)
+			r.respond(msg.ID, "", nil, err)
 
 		case dns.Update: // publish records
 			if r.allowUpdate.Check(nil, iface, "") {
@@ -110,11 +110,18 @@ func (r *MResolver) Serve(ctx context.Context) error {
 	return nil // unreached
 }
 
-func (r *MResolver) respond(id uint16, records []*dns.Record, err error) error {
+func (r *MResolver) respond(id uint16, iface string, records []*dns.Record, err error) error {
 	r.lk.Lock()
 	defer r.lk.Unlock()
 
 	msg := &dns.Message{ID: id, Opcode: dns.StandardQuery, QR: true, Answers: records}
+
+	if iface != "" {
+		msg.Authority = []*dns.Record{&dns.Record{
+			H: dns.NewHeader(nil, dns.TXTType, dns.NoneClass, 0),
+			D: &dns.TXTRecord{Text: []string{iface}},
+		}}
+	}
 	if err != nil {
 		if !errors.As(err, &msg.RCode) {
 			msg.RCode = dns.ServerFailure

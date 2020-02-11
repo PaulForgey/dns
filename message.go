@@ -107,8 +107,8 @@ type Question interface {
 	Class() RRClass
 }
 
-// Asks returns true if q would ask for r
-func Asks(q Question, r *Record) bool {
+// Asks returns true if q would include r
+func Asks(q Question, r Question) bool {
 	return q.Name().Equal(r.Name()) &&
 		q.Type().Asks(r.Type()) &&
 		q.Class().Asks(r.Class())

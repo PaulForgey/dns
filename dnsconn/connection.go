@@ -523,7 +523,7 @@ func (s *StreamConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgS
 	binary.BigEndian.PutUint16(hdr[:], uint16(len(msgBuf)))
 
 	s.c.SetWriteDeadline(time.Now().Add(5 * time.Minute))
-	if _, ok := s.c.(net.PacketConn); !ok {
+	if _, ok := s.c.(net.PacketConn); !ok || s.conn.network == "unix" {
 		if _, err := s.c.Write(hdr[:]); err != nil {
 			return err
 		}
@@ -544,8 +544,10 @@ func (s *StreamConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 	defer s.conn.pool.Put(buffer)
 
 	for {
-		s.c.SetReadDeadline(time.Now().Add(5 * time.Minute))
-		if pc, ok := s.c.(net.PacketConn); ok {
+		if s.conn.network != "unix" {
+			s.c.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		}
+		if pc, ok := s.c.(net.PacketConn); ok && s.conn.network != "unix" {
 			length, _, err := pc.ReadFrom(buffer)
 			if err != nil {
 				return nil, "", nil, err

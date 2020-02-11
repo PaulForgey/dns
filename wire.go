@@ -460,7 +460,8 @@ func (w *WireCodec) getRecord(r *Record) error {
 		return err
 	}
 
-	if length == 0 {
+	if length == 0 && (w.mdns || r.H.Class() == AnyClass || r.H.Class() == NoneClass) {
+		// either ipc mDNS negative cache response (not over the wire), or RFC 2136 case
 		r.D = nil
 	} else {
 		dc, err := w.Split(int(length))

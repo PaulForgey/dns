@@ -3,7 +3,6 @@ package resolver
 import (
 	"context"
 	"errors"
-	"io"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,7 +19,8 @@ type MResolver struct {
 }
 
 type mquery struct {
-	result func([]*dns.Record) error
+	wait   sync.WaitGroup
+	result func(string, []*dns.Record) error
 	err    chan error
 }
 
@@ -41,16 +41,30 @@ func NewMResolver(conn dnsconn.Conn) *MResolver {
 			if err != nil {
 				break
 			}
+
 			r.lk.Lock()
 			qr, ok := r.queries[msg.ID]
+			if ok {
+				qr.wait.Add(1)
+			}
 			r.lk.Unlock()
 			if ok {
-				if err := qr.result(msg.Answers); err != nil {
+				var iface string
+
+				if len(msg.Authority) > 0 {
+					txt, _ := msg.Authority[0].D.(*dns.TXTRecord)
+					if txt != nil {
+						iface = txt.Text[0]
+					}
+				}
+
+				if err := qr.result(iface, msg.Answers); err != nil {
 					qr.err <- err
 					r.lk.Lock()
 					delete(r.queries, msg.ID)
 					r.lk.Unlock()
 				}
+				qr.wait.Done()
 			}
 		}
 
@@ -69,8 +83,9 @@ func (r *MResolver) Close() error {
 	return r.conn.Close()
 }
 
-// Query runs a persistent query asking q until ctx is done
-func (r *MResolver) Query(ctx context.Context, q []dns.Question, result func([]*dns.Record) error) error {
+// Query runs a persistent query asking q until ctx is done.
+// Query is guaranteed to not return before result does, if it is called.
+func (r *MResolver) Query(ctx context.Context, q []dns.Question, result func(string, []*dns.Record) error) error {
 	var err error
 
 	msg := &dns.Message{Opcode: dns.StandardQuery, Questions: q}
@@ -107,6 +122,7 @@ func (r *MResolver) Query(ctx context.Context, q []dns.Question, result func([]*
 	msg.Questions = nil
 	r.conn.WriteTo(msg, "", nil, dnsconn.MaxMessageSize)
 	r.lk.Unlock()
+	mq.wait.Wait()
 
 	return err
 }
@@ -114,20 +130,28 @@ func (r *MResolver) Query(ctx context.Context, q []dns.Question, result func([]*
 // QueryOne does a one shot query
 func (r *MResolver) QueryOne(ctx context.Context, q []dns.Question) ([]*dns.Record, error) {
 	var result []*dns.Record
+	var t *time.Timer
 
 	tmo, cancel := context.WithTimeout(ctx, 3*time.Second)
 
-	err := r.Query(tmo, q, func(a []*dns.Record) error {
+	err := r.Query(tmo, q, func(iface string, a []*dns.Record) error {
 		result = dns.Merge(result, a)
-		if len(result) > 0 {
-			return io.EOF
+		if len(a) > 0 {
+			if t == nil {
+				t = time.AfterFunc(200*time.Millisecond, cancel)
+			} else {
+				t.Reset(200 * time.Millisecond)
+			}
 		}
+
 		return nil
 	})
+
 	cancel()
-	if errors.Is(err, io.EOF) {
-		err = nil
+
+	if err != nil && !errors.Is(err, context.Canceled) {
+		return nil, err
 	}
 
-	return result, err
+	return result, nil
 }

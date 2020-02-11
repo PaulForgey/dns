@@ -218,7 +218,7 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 
 // PersistentQuery starts a persistent query q until ctx is cancled, an error occurs, or f returns an error.
 // The full set of known records is always passed to f.
-func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(a []*dns.Record) error) error {
+func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(iface string, a []*dns.Record) error) error {
 	var idle *time.Timer
 	backoff := time.Second
 	requery := false
@@ -244,9 +244,13 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(a [
 			if err != nil {
 				return err
 			}
+
 			r := append(a, ex...)
 			if len(r) == 0 && q.Type() != dns.AnyType {
 				_, ex, err = auth.MLookup(iface, resolver.InAny, q.Name(), dns.NSECType, q.Class())
+				if err != nil {
+					return err
+				}
 				if len(ex) > 0 {
 					for _, rr := range ex {
 						if nsec, _ := rr.D.(*dns.NSECRecord); nsec != nil && nsec.Next.Equal(rr.Name()) {
@@ -267,12 +271,12 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(a [
 					}
 				}
 			}
-			rr = dns.Merge(rr, r)
+			if len(r) > 0 {
+				rr = append(rr, r...)
+				return f(iface, r)
+			}
 			return nil
 		}); err != nil {
-			break
-		}
-		if err = f(rr); err != nil {
 			break
 		}
 
@@ -298,15 +302,12 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(a [
 
 			found := false
 			for i, mq := range queries {
-				if !mq.Name().Equal(q.Name()) {
-					continue
-				}
-				if mq.Type().Asks(q.Type()) && mq.Class().Asks(q.Class()) {
+				if dns.Asks(mq, q) {
 					// question already will be asked
 					found = true
 					break
 				}
-				if q.Type().Asks(mq.Type()) && q.Class().Asks(mq.Class()) {
+				if dns.Asks(q, mq) {
 					// our question is more broad (wildcard over non wildcard)
 					queries[i] = q
 					found = true
@@ -415,7 +416,7 @@ func (s *Server) mquery(iface string, questions []dns.Question) error {
 			continue
 		}
 
-		s.logger.Printf("mDNS query %v %v %v -> %s", q.Name(), q.Class(), q.Type(), iface)
+		s.logger.Printf("mDNS query %v %v %v -> %s", q.Name(), q.Type(), q.Class(), iface)
 
 		msg.Questions = append(msg.Questions, q)
 
