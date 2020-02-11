@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Records is a special non-standard entity for identifying a group of resource records in a text file
@@ -919,8 +920,33 @@ func (c *TextCodec) putName(n Name) error {
 }
 
 func (c *TextCodec) putString(s string) error {
-	s = strings.ReplaceAll(s, "\"", "\\\"")
-	_, err := fmt.Fprintf(c.w, "\"%s\" ", s)
+	var size int
+	out := &strings.Builder{}
+
+	for b := []byte(s); len(b) > 0; b = b[size:] {
+		var r rune
+
+		r, size = utf8.DecodeRune(b)
+		if !unicode.IsPrint(r) { // escape unprintable just like invalid utf8
+			r = utf8.RuneError
+		}
+
+		switch r {
+		case '"', '\\':
+			out.WriteRune('\\')
+			out.WriteRune(r)
+
+		case utf8.RuneError:
+			for i := 0; i < size; i++ {
+				out.WriteString(fmt.Sprintf("\\%03d", b[i]))
+			}
+
+		default:
+			out.WriteRune(r)
+		}
+	}
+
+	_, err := fmt.Fprintf(c.w, "\"%v\" ", out)
 	return err
 }
 

@@ -236,7 +236,7 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(ifa
 	for err == nil {
 		var rr []*dns.Record
 
-		if err = s.conn.EachIface(func(iface string) error {
+		err = s.conn.EachIface(func(iface string) error {
 			var a, ex []*dns.Record
 
 			a, ex, err = auth.MLookup(iface, resolver.InAny, q.Name(), q.Type(), q.Class())
@@ -251,9 +251,7 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(ifa
 				return f(iface, r)
 			}
 			return nil
-		}); err != nil {
-			break
-		}
+		})
 
 		// refresh at idle backoff or half ttl, whichever is sooner
 		refresh := time.Hour
