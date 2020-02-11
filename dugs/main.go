@@ -87,6 +87,7 @@ func main() {
 			for _, r := range records {
 				fmt.Printf("%s: %v\n", iface, r)
 			}
+			fmt.Println()
 			return nil
 		})
 

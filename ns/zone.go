@@ -278,6 +278,10 @@ func (z *Zone) MLookup(
 	}
 
 	err = nil
+
+	if len(a) == 0 && len(ex) == 0 && !rrtype.Asks(dns.NSECType) {
+		_, ex, err = z.MLookup(key, where, name, dns.NSECType, rrclass)
+	}
 	return
 }
 

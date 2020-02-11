@@ -82,10 +82,10 @@ func (r *MResolver) Serve(ctx context.Context) error {
 							err := s.PersistentQuery(
 								pq.ctx, q,
 								func(iface string, records []*dns.Record) error {
-									return r.respond(msg.ID, iface, records, nil)
+									return r.respond(msg.ID, iface, q, records, nil)
 								})
 							if err != nil {
-								r.respond(msg.ID, "", nil, err)
+								r.respond(msg.ID, "", nil, nil, err)
 							}
 						}(msg, iface, s, q)
 					}
@@ -93,7 +93,7 @@ func (r *MResolver) Serve(ctx context.Context) error {
 			} else {
 				err = dns.Refused
 			}
-			r.respond(msg.ID, "", nil, err)
+			r.respond(msg.ID, "", nil, nil, err)
 
 		case dns.Update: // publish records
 			if r.allowUpdate.Check(nil, iface, "") {
@@ -110,11 +110,23 @@ func (r *MResolver) Serve(ctx context.Context) error {
 	return nil // unreached
 }
 
-func (r *MResolver) respond(id uint16, iface string, records []*dns.Record, err error) error {
+func (r *MResolver) respond(id uint16, iface string, q dns.Question, records []*dns.Record, err error) error {
 	r.lk.Lock()
 	defer r.lk.Unlock()
 
-	msg := &dns.Message{ID: id, Opcode: dns.StandardQuery, QR: true, Answers: records}
+	msg := &dns.Message{ID: id, Opcode: dns.StandardQuery, QR: true}
+
+	if q != nil {
+		msg.Questions = []dns.Question{q}
+	}
+
+	for _, rr := range records {
+		if nsec, _ := rr.D.(*dns.NSECRecord); nsec != nil && nsec.Next.Equal(rr.Name()) {
+			msg.Additional = append(msg.Additional, rr)
+		} else {
+			msg.Answers = append(msg.Answers, rr)
+		}
+	}
 
 	if iface != "" {
 		msg.Authority = []*dns.Record{&dns.Record{
@@ -125,7 +137,7 @@ func (r *MResolver) respond(id uint16, iface string, records []*dns.Record, err 
 	if err != nil {
 		if !errors.As(err, &msg.RCode) {
 			msg.RCode = dns.ServerFailure
-			r.logger.Printf("mDNS query id %d failed: %v", id, err)
+			r.logger.Printf("mDNS query id %d: %v", id, err)
 		}
 	}
 

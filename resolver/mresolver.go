@@ -50,15 +50,37 @@ func NewMResolver(conn dnsconn.Conn) *MResolver {
 			r.lk.Unlock()
 			if ok {
 				var iface string
+				answers := msg.Answers
 
 				if len(msg.Authority) > 0 {
+					// first record denotes interface
 					txt, _ := msg.Authority[0].D.(*dns.TXTRecord)
 					if txt != nil {
 						iface = txt.Text[0]
 					}
 				}
+				if len(msg.Additional) > 0 && len(msg.Questions) > 0 {
+					// first additional is NSEC negative cache, if present
+					q := msg.Questions[0]
+					rh := msg.Additional[0].H
+					nsec, _ := msg.Additional[0].D.(*dns.NSECRecord)
+					if nsec != nil && nsec.Next.Equal(rh.Name()) {
+						if q.Type() != dns.AnyType && !nsec.Types.Is(q.Type()) {
+							answers = append(answers, &dns.Record{
+								H: dns.NewMDNSHeader(
+									rh.Name(),
+									q.Type(),
+									rh.Class(),
+									rh.TTL(),
+									true,
+								),
+								D: nil,
+							})
+						}
+					}
+				}
 
-				if err := qr.result(iface, msg.Answers); err != nil {
+				if err := qr.result(iface, answers); err != nil {
 					qr.err <- err
 					r.lk.Lock()
 					delete(r.queries, msg.ID)
