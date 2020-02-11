@@ -114,8 +114,7 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 				msg.QR = true
 				a, ex, err := z.MLookup(iface, resolver.InAuth, q.Name(), q.Type(), q.Class())
 				if err != nil {
-					s.logger.Printf("%s: mdns lookup error %v %v %v: %v",
-						iface, q.Name(), q.Class(), q.Type(), err)
+					s.logger.Printf("%s: mdns lookup error %v: %v", iface, q, err)
 					continue
 				}
 				if len(a) == 0 && len(ex) == 0 {
@@ -179,8 +178,7 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 
 				d, e, err := z.MLookup(iface, resolver.InAuth, q.Name(), q.Type(), q.Class())
 				if err != nil {
-					s.logger.Printf("%s: mdns lookup error %v %v %v: %v",
-						iface, q.Name(), q.Class(), q.Type(), err)
+					s.logger.Printf("%s: mdns lookup error %v: %v", iface, q, err)
 					continue
 				}
 
@@ -217,8 +215,11 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 // The full set of known records is always passed to f.
 func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(iface string, a []*dns.Record) error) error {
 	var idle, debounce *time.Timer
+	var err error
+
 	backoff := time.Second
 	requery := false
+	first := true
 
 	auth := s.zones.Find(q.Name())
 	if auth == nil {
@@ -230,9 +231,8 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(ifa
 		defer z.PersistentQuery(c, nil)
 	}
 
-	s.logger.Printf("%v: persistent query %v %v %v", s, q.Name(), q.Type(), q.Class())
+	s.logger.Printf("%v (%s): persistent query %v", s, s.conn.Network(), q)
 
-	err := s.MQuery([]dns.Question{q})
 	for err == nil {
 		var rr []*dns.Record
 
@@ -266,16 +266,24 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(ifa
 					break
 				}
 			}
-			for _, r := range rr {
-				httl := r.H.OriginalTTL() >> 1
-				if httl < r.H.TTL() {
-					httl -= (r.H.OriginalTTL() - r.H.TTL())
-				} else {
-					httl = time.Second
+			if !requery {
+				for _, r := range rr {
+					httl := r.H.OriginalTTL() >> 1
+					if httl < r.H.TTL() {
+						httl -= (r.H.OriginalTTL() - r.H.TTL())
+					} else {
+						httl = time.Second
+					}
+					if refresh > httl {
+						refresh = httl
+					}
 				}
-				if refresh > httl {
-					refresh = httl
-				}
+			}
+		}
+
+		if first {
+			if len(rr) == 0 {
+				requery = true
 			}
 		}
 
@@ -304,21 +312,30 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(ifa
 			}
 			s.mqueries = queries
 
-			if s.send == nil {
-				s.send = time.AfterFunc(time.Second, func() {
-					s.queryLock.Lock()
-					s.send = nil
-					queries := s.mqueries
-					s.mqueries = nil
-					s.queryLock.Unlock()
+			if first {
+				queries := s.mqueries
+				s.mqueries = nil
+				s.queryLock.Unlock()
 
-					s.MQuery(queries)
-				})
+				s.MQuery(queries)
+			} else {
+				if s.send == nil {
+					s.send = time.AfterFunc(time.Second, func() {
+						s.queryLock.Lock()
+						s.send = nil
+						queries := s.mqueries
+						s.mqueries = nil
+						s.queryLock.Unlock()
+
+						s.MQuery(queries)
+					})
+				}
+
+				s.queryLock.Unlock()
 			}
-
-			s.queryLock.Unlock()
 		}
 
+		first = false
 		idle = time.NewTimer(refresh)
 		if refresh == backoff && backoff < time.Hour {
 			backoff <<= 1
@@ -362,7 +379,7 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(ifa
 		}
 	}
 
-	s.logger.Printf("%v: end persistent query %v %v %v: %v", s, q.Name(), q.Type(), q.Class(), err)
+	s.logger.Printf("%v (%s): end persistent query %v: %v", s, s.conn.Network(), q, err)
 
 	if debounce != nil && !debounce.Stop() {
 		<-debounce.C
@@ -426,7 +443,7 @@ func (s *Server) mquery(iface string, questions []dns.Question) error {
 			continue
 		}
 
-		s.logger.Printf("mDNS query %v %v %v -> %s", q.Name(), q.Type(), q.Class(), iface)
+		s.logger.Printf("%s (%v):mDNS query %v", iface, s.conn.Network(), q)
 
 		msg.Questions = append(msg.Questions, q)
 
