@@ -386,8 +386,8 @@ func (c *TextCodec) token(optional bool) (string, error) {
 			default:
 				if unicode.IsNumber(rune(b)) {
 					if len(c.line) < 2 ||
-						!unicode.IsNumber(rune(c.line[1])) ||
-						!unicode.IsNumber(rune(c.line[2])) {
+						!unicode.IsNumber(rune(c.line[0])) ||
+						!unicode.IsNumber(rune(c.line[1])) {
 						return "", fmt.Errorf(
 							"%w: illegal number escape \\%c%s",
 							ErrUnexpectedToken,
@@ -397,6 +397,7 @@ func (c *TextCodec) token(optional bool) (string, error) {
 					num := 100 * int(b-'0')
 					num += 10 * int(c.line[0]-'0')
 					num += int(c.line[1] - '0')
+					token += string([]byte{byte(num)})
 					c.line = c.line[2:]
 				} else {
 					token += string(b)

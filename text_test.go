@@ -307,6 +307,29 @@ $ORIGIN tessier-ashpool.net
 	}
 }
 
+func TestInvalidUTF(t *testing.T) {
+	input := `
+host 10m IN TXT "netbios=\148\152r" ; decimal escapes
+}
+`
+	c := NewTextReader(strings.NewReader(input), nil)
+	r := &Record{}
+	if err := c.Decode(r); err != nil {
+		t.Fatal(err)
+	}
+	name, err := NameWithString("host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect := &Record{
+		H: NewHeader(name, TXTType, INClass, 10*time.Minute),
+		D: &TXTRecord{Text: []string{"netbios=\224\230r"}}, // octal escapes
+	}
+	if !r.Equal(expect) {
+		t.Fatalf("%v != %v", r, expect)
+	}
+}
+
 func TestRecords(t *testing.T) {
 	input := `
 0
