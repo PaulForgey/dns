@@ -62,7 +62,12 @@ type Zone struct {
 	db       nsdb.Db
 
 	// mDNS persistent queries
-	queries map[chan<- struct{}]dns.Question
+	queries map[chan<- struct{}]mdnsQuery
+}
+
+type mdnsQuery struct {
+	iface string
+	q     dns.Question
 }
 
 func (z *Zone) init() {
@@ -71,7 +76,7 @@ func (z *Zone) init() {
 	z.updateWait = &sync.WaitGroup{}
 	z.updateLock = &sync.Mutex{}
 	z.updateCond = sync.NewCond(z.updateLock)
-	z.queries = make(map[chan<- struct{}]dns.Question)
+	z.queries = make(map[chan<- struct{}]mdnsQuery)
 
 	z.keys = make(map[string]nsdb.Db)
 }
@@ -96,12 +101,12 @@ func NewCacheZone(cache *resolver.Zone) *Zone {
 
 // PersistentQuery installs a notification on the zone for q. If q is nil, the channel is removed from notifications.
 // The channel is written non blocking. A zone reloading or transferring will not trigger this mechanism.
-func (z *Zone) PersistentQuery(c chan<- struct{}, q dns.Question) {
+func (z *Zone) PersistentQuery(c chan<- struct{}, iface string, q dns.Question) {
 	z.Lock()
 	if q == nil {
 		delete(z.queries, c)
 	} else {
-		z.queries[c] = q
+		z.queries[c] = mdnsQuery{iface, q}
 	}
 	z.Unlock()
 }
@@ -783,8 +788,12 @@ func (z *Zone) postupdate_locked(updated bool, key string, update []*dns.Record)
 		}
 	}
 	// regardless of net change, this counts as update activity on zone (e.g. freshened ttl)
-	for c, q := range z.queries {
+	for c, mq := range z.queries {
 		for _, r := range update {
+			if !(key == "" || mq.iface == "" || key == mq.iface) {
+				continue
+			}
+			q := mq.q
 			if q.Name().Equal(r.Name()) &&
 				q.Class().Asks(r.Class()) &&
 				(q.Type().Asks(r.Type()) || r.Type() == dns.NSECType) {
