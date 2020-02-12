@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"tessier-ashpool.net/dns"
+	"tessier-ashpool.net/dns/dnsconn"
 	"tessier-ashpool.net/dns/resolver"
 )
 
@@ -211,10 +212,9 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 	return nil // unreached
 }
 
-// PersistentQuery starts a persistent query q until ctx is cancled, an error occurs, or f returns an error.
-// The full set of known records is always passed to f.
-func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(iface string, a []*dns.Record) error) error {
-	var idle, debounce *time.Timer
+// PersistentQuery starts a persistent query q until ctx is canceled
+func (s *Server) PersistentQuery(ctx context.Context, q dns.Question) error {
+	var idle *time.Timer
 	var err error
 
 	backoff := time.Second
@@ -225,18 +225,13 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(ifa
 	if auth == nil {
 		return dns.NXDomain
 	}
-	c := make(chan struct{}, 1)
-	if z, ok := auth.(*Zone); ok {
-		z.PersistentQuery(c, q)
-		defer z.PersistentQuery(c, nil)
-	}
 
 	s.logger.Printf("%v (%s): persistent query %v", s, s.conn.Network(), q)
 
 	for err == nil {
 		var rr []*dns.Record
 
-		err = s.conn.EachIface(func(iface string) error {
+		err = dnsconn.EachIface(func(iface string) error {
 			var a, ex []*dns.Record
 
 			a, ex, err = auth.MLookup(iface, resolver.InAny, q.Name(), q.Type(), q.Class())
@@ -244,12 +239,8 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(ifa
 				return err
 			}
 
-			r := append(a, ex...)
-
-			if len(r) > 0 {
-				rr = append(rr, r...)
-				return f(iface, r)
-			}
+			rr = append(rr, a...)
+			rr = append(rr, ex...)
 			return nil
 		})
 
@@ -339,30 +330,12 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(ifa
 			backoff <<= 1
 		}
 
-		again := true
-		for again {
-			var d <-chan time.Time
-			if debounce != nil {
-				d = debounce.C
-			}
-			select {
-			case <-idle.C:
-				requery = true
-				again = false
-				idle = nil
-			case <-ctx.Done():
-				err = ctx.Err()
-				again = false
-			case <-d:
-				debounce = nil
-				again = false
-			case <-c:
-				if len(rr) == 0 {
-					again = false
-				} else if debounce == nil {
-					debounce = time.NewTimer(time.Second)
-				}
-			}
+		select {
+		case <-idle.C:
+			requery = true
+			idle = nil
+		case <-ctx.Done():
+			err = ctx.Err()
 		}
 
 		if idle != nil && !idle.Stop() {
@@ -379,9 +352,6 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, f func(ifa
 
 	s.logger.Printf("%v (%s): end persistent query %v: %v", s, s.conn.Network(), q, err)
 
-	if debounce != nil && !debounce.Stop() {
-		<-debounce.C
-	}
 	if idle != nil && !idle.Stop() {
 		<-idle.C
 	}
@@ -427,7 +397,7 @@ func (s *Server) respond(iface string, to net.Addr, response []*dns.Record) erro
 // MQuery immediately sends a single shot of mDNS questions.
 // This is probably not the method for a typical client to use. See PersistentQuery
 func (s *Server) MQuery(questions []dns.Question) error {
-	return s.conn.EachIface(func(iface string) error {
+	return dnsconn.EachIface(func(iface string) error {
 		return s.mquery(iface, questions)
 	})
 }

@@ -159,7 +159,7 @@ func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zone
 	}
 }
 
-func (l *Listener) runMDNS(ctx context.Context, wg *sync.WaitGroup, servers []*ns.Server) {
+func (l *Listener) runMDNS(ctx context.Context, wg *sync.WaitGroup, servers []*ns.Server, mzones *ns.Zones) {
 	c, err := net.Listen(l.Network, l.Address)
 	if err != nil {
 		logger.Println(err)
@@ -168,7 +168,7 @@ func (l *Listener) runMDNS(ctx context.Context, wg *sync.WaitGroup, servers []*n
 
 	logger.Printf("running mDNS resolver on %s %v", l.Network, l.Address)
 	l.serveListener(ctx, wg, c, func(c dnsconn.Conn) {
-		r := ns.NewMResolver(logger, c, servers, ns.AllAccess, ns.AllAccess)
+		r := ns.NewMResolver(logger, c, servers, mzones, ns.AllAccess, ns.AllAccess)
 		r.Serve(ctx)
 	})
 }
@@ -380,7 +380,7 @@ func main() {
 	if conf.MDNSResolver != nil {
 		wg.Add(1)
 		go func() {
-			conf.MDNSResolver.runMDNS(ctx, wg, servers)
+			conf.MDNSResolver.runMDNS(ctx, wg, servers, mzones)
 			wg.Done()
 		}()
 	}

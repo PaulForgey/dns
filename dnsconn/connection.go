@@ -90,9 +90,6 @@ type Conn interface {
 
 	// VC returns true if the underlying transport is stream oriented
 	VC() bool
-
-	// EachIface enumerates known interfaces for this conn. If created with a name, only that name is used.
-	EachIface(f func(iface string) error) error
 }
 
 type conn struct {
@@ -161,25 +158,6 @@ func NewConn(conn net.Conn, network, iface string) Conn {
 // Network returns the network this connection was created with
 func (c *conn) Network() string {
 	return c.network
-}
-
-func (c *conn) EachIface(f func(string) error) error {
-	if c.iface != "" {
-		return f(c.iface)
-	}
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return err
-	}
-	for _, ifi := range ifaces {
-		if ifi.Flags&FlagsMask != FlagsMDNS {
-			continue
-		}
-		if err := f(ifi.Name); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // NewPacketConn creates a packet oriented connection from a net.PacketConn

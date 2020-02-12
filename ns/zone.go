@@ -782,17 +782,21 @@ func (z *Zone) postupdate_locked(updated bool, key string, update []*dns.Record)
 			}
 		}
 	}
-	// regardless of net change, this counts as query activity on zone (e.g. freshened ttl)
-	for _, r := range update {
-		for c, q := range z.queries {
-			if q.Name().Equal(r.Name()) {
+	// regardless of net change, this counts as update activity on zone (e.g. freshened ttl)
+	for c, q := range z.queries {
+		for _, r := range update {
+			if q.Name().Equal(r.Name()) &&
+				q.Class().Asks(r.Class()) &&
+				(q.Type().Asks(r.Type()) || r.Type() == dns.NSECType) {
 				select {
 				case c <- struct{}{}:
 				default: // do not block
 				}
+				break // hit notification only once
 			}
 		}
 	}
+
 	return nil
 }
 

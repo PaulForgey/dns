@@ -34,6 +34,23 @@ var mdnsPool = sync.Pool{
 	},
 }
 
+// EachIface calls f for every known interface applicable to mDNS
+func EachIface(f func(string) error) error {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return err
+	}
+	for _, ifi := range ifaces {
+		if ifi.Flags&FlagsMask != FlagsMDNS {
+			continue
+		}
+		if err := f(ifi.Name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // NewMulticast returns a Connection joined to the mdns multicast group
 func NewMulticast(network, address, iface string) (*Multicast, error) {
 	var conn *net.UDPConn

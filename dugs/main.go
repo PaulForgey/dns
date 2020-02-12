@@ -84,8 +84,13 @@ func main() {
 		}()
 
 		err := r.Query(ctx, questions, func(iface string, records []*dns.Record) error {
-			for _, r := range records {
-				fmt.Printf("%s: %v\n", iface, r)
+			fmt.Printf("; iface=%s\n", iface)
+			if len(records) > 0 {
+				for _, r := range records {
+					fmt.Println(r)
+				}
+			} else {
+				fmt.Println("; none")
 			}
 			fmt.Println()
 			return nil
