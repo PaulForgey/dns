@@ -231,6 +231,7 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question) error {
 	for err == nil {
 		var rr []*dns.Record
 
+		oneEmpty := false
 		err = dnsconn.EachIface(func(iface string) error {
 			var a, ex []*dns.Record
 
@@ -239,14 +240,18 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question) error {
 				return err
 			}
 
-			rr = append(rr, a...)
-			rr = append(rr, ex...)
+			a = append(a, ex...)
+			if len(a) == 0 {
+				oneEmpty = true
+			} else {
+				rr = append(rr, a...)
+			}
 			return nil
 		})
 
 		// refresh at idle backoff or half ttl, whichever is sooner
 		refresh := time.Hour
-		if len(rr) == 0 {
+		if oneEmpty {
 			refresh = backoff
 		} else {
 			for _, r := range rr {
@@ -270,10 +275,8 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question) error {
 			}
 		}
 
-		if first {
-			if len(rr) == 0 {
-				requery = true
-			}
+		if first && oneEmpty {
+			requery = true
 		}
 
 		if requery {
