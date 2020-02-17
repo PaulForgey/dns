@@ -172,7 +172,13 @@ func messageSize(conn dnsconn.Conn, msg *dns.Message) int {
 			if msgSize < dnsconn.MinMessageSize {
 				msgSize = dnsconn.MinMessageSize
 			}
-			msg.EDNS = dns.NewEDNS(uint16(dnsconn.UDPMessageSize), 0, 0, 0)
+
+			mySize := dnsconn.UDPMessageSize
+			if mc, ok := conn.(*dnsconn.Multicast); ok {
+				mySize = mc.MessageSize()
+			}
+
+			msg.EDNS = dns.NewEDNS(uint16(mySize), 0, 0, 0)
 		}
 	}
 	return msgSize

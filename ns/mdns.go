@@ -109,6 +109,7 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 		if msg.ClientPort && len(msg.Questions) == 1 {
 			// legacy unicast query
 			q := msg.Questions[0]
+			s.logger.Printf("%s:%v:legacy query %v", iface, from, q)
 			z := s.zones.Find(q.Name())
 			if z != nil {
 				msg.QR = true
@@ -124,7 +125,7 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 				msg.Answers = make([]*dns.Record, 0, len(a)+len(ex))
 				msg.Authority = nil
 				msg.Additional = nil
-				for n, r := range append(a, ex...) {
+				for _, r := range append(a, ex...) {
 					// sanitize records for legacy query:
 					// - cap TTL to 10 seconds
 					// - do not return mdns specifics in header format
@@ -137,18 +138,25 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 					if ttl > time.Second*10 {
 						ttl = time.Second * 10
 					}
-					msg.Answers[n] = &dns.Record{
-						H: dns.NewHeader(
-							r.H.Name(),
-							r.H.Type(),
-							r.H.Class(),
-							r.H.TTL(),
-						),
+					msg.Answers = append(msg.Answers, &dns.Record{
+						H: dns.NewHeader(r.H.Name(), r.H.Type(), r.H.Class(), ttl),
 						D: r.D,
-					}
+					})
 				}
 
 				s.zones.Additional(true, msg)
+
+				for i, r := range msg.Additional {
+					nr := &dns.Record{
+						H: dns.NewHeader(r.H.Name(), r.H.Type(), r.H.Class(), r.H.TTL()),
+						D: r.D,
+					}
+					if nr.H.TTL() > time.Second*10 {
+						nr.H.SetTTL(time.Second * 10)
+					}
+					msg.Additional[i] = nr
+				}
+
 				s.conn.WriteTo(msg, from, messageSize(s.conn, msg))
 			}
 		} else if msg.QR {

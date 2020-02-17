@@ -1108,16 +1108,7 @@ func (zs *Zones) Additional(mdns bool, msg *dns.Message) {
 
 		// make sure we haven't already put it in
 		found := false
-		for _, a := range msg.Additional {
-			if a.Name().Equal(name) && rrtype.Asks(a.Type()) {
-				found = true
-				break
-			}
-		}
-		if found {
-			continue
-		}
-		for _, a := range msg.Answers {
+		for _, a := range records {
 			if a.Name().Equal(name) && rrtype.Asks(a.Type()) {
 				found = true
 				break
@@ -1148,7 +1139,7 @@ func (zs *Zones) Additional(mdns bool, msg *dns.Message) {
 			switch a.Type() {
 			case dns.AType, dns.AAAAType, dns.TXTType, dns.PTRType, dns.SRVType, dns.NSECType:
 				found := false
-				for _, r := range msg.Additional {
+				for _, r := range records {
 					if r.Equal(a) {
 						found = true
 						break

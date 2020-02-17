@@ -148,6 +148,10 @@ func NewMulticast(network, address, iface string) (*Multicast, error) {
 	return m, nil
 }
 
+func (m *Multicast) MessageSize() int {
+	return m.msgSize
+}
+
 func (m *Multicast) WriteTo(msg *dns.Message, addr net.Addr, msgSize int) error {
 	if addr == nil {
 		addr = m.gaddr
