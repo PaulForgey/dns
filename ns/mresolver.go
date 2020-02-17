@@ -259,7 +259,9 @@ func (r *MResolver) update(ctx context.Context, owners map[uint16]*owner, msg *d
 
 	// allow an empty final message
 	if len(msg.Answers) > 0 {
-		if err := o.names.Enter(r.zones, iface, msg.Answers); err != nil {
+		err := o.names.Enter(r.zones, iface, msg.Answers)
+		if err != nil && !errors.Is(err, dns.NotZone) {
+			// XXX need to handle NotZone better
 			return err
 		}
 	}

@@ -951,7 +951,17 @@ func (z *Zone) Enter(now time.Time, key string, records []*dns.Record) ([]*dns.R
 				}
 			}
 			if rrset != nil && rrset.Exclusive {
-				conflict = append(conflict, r)
+				found := false
+				for _, rr := range rrset.Records {
+					if rr.Equal(r) {
+						// not in conflict
+						found = true
+						break
+					}
+				}
+				if !found {
+					conflict = append(conflict, r)
+				}
 			} else {
 				add = append(add, r)
 			}

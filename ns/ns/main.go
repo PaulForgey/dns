@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -11,7 +12,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
+	"time"
 
 	"tessier-ashpool.net/dns"
 	"tessier-ashpool.net/dns/dnsconn"
@@ -27,6 +30,12 @@ const (
 	HintType      ZoneType = "hint"
 	CacheType     ZoneType = "cache" // same as "hint" but with built-in root
 )
+
+var logStderr bool
+var confFile string
+var cache = ns.NewCacheZone(resolver.NewRootZone())
+var logger *log.Logger
+var res *resolver.Resolver
 
 type Zone struct {
 	Type             ZoneType
@@ -71,23 +80,6 @@ type CIDR struct {
 	net.IPNet
 }
 
-func (c *CIDR) UnmarshalJSON(b []byte) error {
-	var s string
-	if err := json.Unmarshal(b, &s); err != nil {
-		return err
-	}
-	if _, ipnet, err := net.ParseCIDR(s); err != nil {
-		return err
-	} else {
-		c.IPNet = *ipnet
-	}
-	return nil
-}
-
-func (c CIDR) MarshalJSON() ([]byte, error) {
-	return json.Marshal(c.IPNet.String())
-}
-
 // XXX need user authentication options for REST, and once we have DNSSEC (sigh), keys
 type ACE struct {
 	InterfaceName string `json:",omitempty"` // interface name
@@ -112,16 +104,28 @@ type Conf struct {
 	MDNSListeners     []Listener       `json:",omitempty"` // additional or specific mDNS listeners
 	AutoMDNSListeners bool             // true to automatically discover all interfaces for mDNS
 	MDNSResolver      *Listener        `json:",omitempty"` // IPC listener for mDNS
+	AnnounceHost      bool             // true to automatically mDNS advertise A and AAAA records for this host
 	AllowRecursion    []string         `json:",omitempty"` // ACLs for recursion
 
 	// XXX global server ACL
 }
 
-var logStderr bool
-var confFile string
-var cache = ns.NewCacheZone(resolver.NewRootZone())
-var logger *log.Logger
-var res *resolver.Resolver
+func (c *CIDR) UnmarshalJSON(b []byte) error {
+	var s string
+	if err := json.Unmarshal(b, &s); err != nil {
+		return err
+	}
+	if _, ipnet, err := net.ParseCIDR(s); err != nil {
+		return err
+	} else {
+		c.IPNet = *ipnet
+	}
+	return nil
+}
+
+func (c CIDR) MarshalJSON() ([]byte, error) {
+	return json.Marshal(c.IPNet.String())
+}
 
 func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zones *ns.Zones) {
 	allowRecursion := conf.Access(&conf.AllowRecursion)
@@ -224,6 +228,163 @@ func netname(network string) string {
 	return network
 }
 
+func namesForHost(host dns.Name, mzones *ns.Zones) (resolver.OwnerNames, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+
+	names := make(resolver.OwnerNames)
+
+	for _, ifi := range ifaces {
+		if (ifi.Flags & dnsconn.FlagsMask) != dnsconn.FlagsMDNS {
+			continue
+		}
+
+		var records []*dns.Record
+		addrs, err := ifi.Addrs()
+		if err != nil {
+			return nil, err
+		}
+
+		nsec := &dns.NSECRecord{Next: host}
+
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip := ipnet.IP
+			ip4 := ip.To4()
+			if ip4 != nil {
+				nsec.Types.Set(dns.AType)
+				rev, err := dns.NameWithString(
+					fmt.Sprintf("%d.%d.%d.%d.in-addr.arpa",
+						ip4[3], ip4[2], ip4[1], ip4[0]))
+				if err != nil {
+					return nil, err
+				}
+
+				arec := &dns.ARecord{}
+				copy(arec.Address[:], ip4)
+
+				records = append(records,
+					&dns.Record{
+						H: dns.NewMDNSHeader(host, dns.AType, dns.INClass, 120*time.Second, true),
+						D: arec,
+					},
+					&dns.Record{
+						H: dns.NewMDNSHeader(rev, dns.PTRType, dns.INClass, 120*time.Second, true),
+						D: &dns.PTRRecord{host},
+					},
+				)
+			} else {
+				nsec.Types.Set(dns.AAAAType)
+				rname := &strings.Builder{}
+				for i := len(ip) - 1; i >= 0; i-- {
+					rname.WriteString(fmt.Sprintf("%x.%x.", ip[i]&0xf, ip[i]>>4))
+				}
+				rname.WriteString("ip6.arpa")
+				rev, err := dns.NameWithString(rname.String())
+
+				if err != nil {
+					return nil, err
+				}
+
+				aaaarec := &dns.AAAARecord{}
+				copy(aaaarec.Address[:], ip)
+
+				records = append(records,
+					&dns.Record{
+						H: dns.NewMDNSHeader(host, dns.AAAAType, dns.INClass, 120*time.Second, true),
+						D: aaaarec,
+					},
+					&dns.Record{
+						H: dns.NewMDNSHeader(rev, dns.PTRType, dns.INClass, 120*time.Second, true),
+						D: &dns.PTRRecord{host},
+					},
+				)
+			}
+		}
+
+		records = append(records, &dns.Record{
+			H: dns.NewMDNSHeader(host, dns.NSECType, dns.INClass, 120*time.Second, true),
+			D: nsec,
+		})
+
+		err = names.Enter(mzones, ifi.Name, records)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return names, nil
+}
+
+func announceHost(ctx context.Context, servers []*ns.Server, mzones *ns.Zones) error {
+	hostname, err := os.Hostname()
+	if err != nil {
+		return err
+	}
+	h := strings.Split(hostname, ".")
+	if len(h) == 0 {
+		return errors.New("empty hostname")
+	}
+	hostname = h[0]
+
+	var names resolver.OwnerNames
+
+	try := 0
+	stop := false
+	for !stop {
+		var host dns.Name
+		if try == 0 {
+			host, err = dns.NameWithString(hostname + ".local")
+		} else {
+			host, err = dns.NameWithString(fmt.Sprintf("%s-%d.local", hostname, try))
+		}
+		if err != nil {
+			return err
+		}
+		try++
+
+		names, err = namesForHost(host, mzones)
+		if err != nil {
+			return err
+		}
+
+		actx, cancel := context.WithCancel(ctx)
+		errch := make(chan error, len(servers))
+
+		for _, s := range servers {
+			go func(s *ns.Server) {
+				err2 := s.Announce(actx, names, cancel)
+				if err2 != nil && !errors.Is(err2, context.Canceled) && !errors.Is(err2, dns.YXDomain) {
+					errch <- err2
+				}
+			}(s)
+		}
+
+		select {
+		case <-ctx.Done():
+			stop = true
+			cancel()
+			err = ctx.Err()
+		case err = <-errch:
+			stop = true
+			cancel()
+		case <-actx.Done():
+		}
+	}
+
+	if names != nil {
+		for _, s := range servers {
+			s.Unannounce(names)
+		}
+	}
+
+	return err
+}
+
 func main() {
 	var err error
 	var conf Conf
@@ -260,7 +421,11 @@ func main() {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx2, cancel2 := context.WithCancel(ctx) // cancel this one for cleanup
+
 	wg := &sync.WaitGroup{}
+	wg2 := &sync.WaitGroup{} // cleanup work ahead of shutdown
+
 	zones := ns.NewZones()
 	mzones := ns.NewZones()
 
@@ -373,10 +538,19 @@ func main() {
 	}
 
 	if conf.MDNSResolver != nil {
-		wg.Add(1)
+		wg2.Add(1)
 		go func() {
-			conf.MDNSResolver.runMDNS(ctx, wg, servers, mzones)
-			wg.Done()
+			conf.MDNSResolver.runMDNS(ctx2, wg, servers, mzones)
+			wg2.Done()
+		}()
+	}
+
+	if conf.AnnounceHost {
+		wg2.Add(1)
+		go func() {
+			err := announceHost(ctx2, servers, mzones)
+			logger.Printf("mDNS host annoucement: %v", err)
+			wg2.Done()
 		}()
 	}
 
@@ -385,8 +559,11 @@ func main() {
 
 	select {
 	case sig := <-sigc:
-		cancel()
 		logger.Printf("shutting down on %v", sig)
+		cancel2()
+		wg2.Wait()
+		logger.Printf("cleanup done, shutting down")
+		cancel()
 	case <-ctx.Done():
 		logger.Printf("shutting down by request")
 	}

@@ -29,7 +29,8 @@ func (n OwnerNames) Enter(auth Authority, iface string, records []*dns.Record) e
 			if auth != nil {
 				z = auth.Find(name)
 				if z == nil {
-					return dns.NotZone
+					// add only the records we know about and do not fail the operation
+					return nil
 				}
 			}
 			owner = &OwnerName{
