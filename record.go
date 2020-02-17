@@ -48,6 +48,9 @@ func (c RRClass) String() string {
 
 // Set assigns a class' value from a string
 func (c *RRClass) Set(str string) error {
+	if str[0] == '+' {
+		str = str[1:]
+	}
 	ustr := strings.ToUpper(str)
 	switch ustr {
 	case "IN":
@@ -518,7 +521,7 @@ type RecordData interface {
 	Encoder
 	Decoder
 	// Less and Equal will panic if given different RecordData type
-	Less(RecordData) bool  // MDNS rules comparing binary data (with uncompressed names, of course)
+	Less(RecordData) bool  // mDNS rules comparing binary data (with uncompressed names, of course)
 	Equal(RecordData) bool // faster than !(m.Less(n) || n.Less(m))
 }
 
@@ -535,7 +538,7 @@ func Merge(r, n []*Record) []*Record {
 
 // Subract removes records present in n from r
 func Subtract(r, n []*Record) []*Record {
-	if len(n) == 0 {
+	if len(n) == 0 || len(r) == 0 {
 		return r
 	}
 
@@ -605,7 +608,7 @@ func (r *Record) Match(n *Record) bool {
 	return r.D.Equal(n.D)
 }
 
-// Less for the Record type is a bit silly for practical use, but allows sorting records to make testing easier
+// Less returns true if r < n by mDNS rules
 func (r *Record) Less(n *Record) bool {
 	rn := r.Name()
 	nn := n.Name()

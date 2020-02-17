@@ -1,12 +1,10 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"net"
 	"os"
-	"os/signal"
 
 	"tessier-ashpool.net/dns"
 	"tessier-ashpool.net/dns/dnsconn"
@@ -19,6 +17,7 @@ var rrtype = dns.AnyType
 var rrclass = dns.INClass
 var qu = false
 var oneshot = false
+var updates string
 
 func exitError(msg interface{}) {
 	fmt.Fprintf(os.Stderr, "%s: %v\n", os.Args[0], msg)
@@ -36,14 +35,10 @@ func main() {
 	flag.Var(&rrclass, "class", "class")
 	flag.BoolVar(&qu, "qu", qu, "ask for unicast response")
 	flag.BoolVar(&oneshot, "oneshot", oneshot, "one shot query")
+	flag.StringVar(&updates, "updates", updates, "file for updates (- for stdin)")
 
 	flag.Parse()
 	args := flag.Args()
-
-	if len(args) < 1 {
-		fmt.Fprintf(os.Stderr, "usage: %s [flags] name [..name]\n", os.Args[0])
-		os.Exit(2)
-	}
 
 	c, err := net.Dial(network, host)
 	if err != nil {
@@ -64,40 +59,9 @@ func main() {
 		questions[i] = dns.NewMDNSQuestion(name, rrtype, rrclass, qu)
 	}
 
-	if oneshot {
-		records, err := r.QueryOne(context.Background(), questions)
-		if err != nil {
-			exitError(err)
-		}
-
-		for _, r := range records {
-			fmt.Println(r)
-		}
+	if updates != "" {
+		update(r)
 	} else {
-		ctx, cancel := context.WithCancel(context.Background())
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, os.Interrupt)
-
-		go func() {
-			<-c
-			cancel()
-		}()
-
-		err := r.Query(ctx, questions, func(iface string, records []*dns.Record) error {
-			fmt.Printf("; iface=%s\n", iface)
-			if len(records) > 0 {
-				for _, r := range records {
-					fmt.Println(r)
-				}
-			} else {
-				fmt.Println("; none")
-			}
-			fmt.Println()
-			return nil
-		})
-
-		if err != nil {
-			exitError(err)
-		}
+		query(r, questions)
 	}
 }

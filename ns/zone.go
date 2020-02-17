@@ -290,6 +290,80 @@ func (z *Zone) MLookup(
 	return
 }
 
+// Remove returns all the records for a given name and interface scope, removing them from the authoritative db.
+// Records both interface specific and without scope are returned and removed together. The result is intended for the
+// authority section of a probe in conflict.
+// The underlying cache is also removed, however its records are not returned as they are not authoritative and are not
+// likely to be present under normal circumstances.
+func (z *Zone) Remove(key string, name dns.Name) ([]*dns.Record, []*dns.Record, error) {
+	var db nsdb.Db
+	var irecords, records []*dns.Record
+
+	z.Lock()
+	defer func() {
+		if db != nil {
+			db.EndUpdate(true)
+			z.Unlock()
+		}
+	}()
+
+	db, _ = z.keys[key]
+	if db == nil {
+		db = z.db
+	}
+
+	move := func(db nsdb.Db) ([]*dns.Record, error) {
+		var result []*dns.Record
+
+		rrmap, err := db.Lookup(name)
+		if err != nil && !errors.Is(err, dns.NXDomain) {
+			return nil, err
+		}
+		for _, v := range rrmap {
+			result = append(result, v.Records...)
+		}
+		if err == nil {
+			if err := db.Enter(name, nil); err != nil {
+				return nil, err
+			}
+		}
+		return result, nil
+	}
+
+	if db != nil {
+		if err := db.BeginUpdate(); err != nil {
+			return nil, nil, err
+		}
+		result, err := move(db)
+		if err != nil {
+			return nil, nil, err
+		}
+		if db != z.db {
+			irecords = result
+		} else {
+			records = result
+		}
+	}
+
+	if db != z.db && z.db != nil {
+		result, err := move(z.db)
+		if err != nil {
+			return nil, nil, err
+		}
+		records = result
+	}
+
+	err := db.EndUpdate(false)
+	z.Unlock()
+	db = nil
+	if err != nil {
+		return nil, nil, err
+	}
+
+	z.Zone.Remove(key, name)
+	return irecords, records, nil
+}
+
 func (z *Zone) Lookup(
 	key string,
 	name dns.Name,
@@ -482,7 +556,7 @@ func (z *Zone) Xfer(ixfr bool, nextRecord func() (*dns.Record, error)) error {
 					add = append(add, records...)
 					records = records[:0]
 
-					if _, err := nsdb.Patch(z.db, del, add); err != nil {
+					if _, err := nsdb.Patch(z.db, time.Time{}, del, add); err != nil {
 						return err
 					}
 
@@ -677,6 +751,7 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 
 			u, err := nsdb.Patch(
 				db,
+				time.Time{},
 				[]*dns.Record{
 					&dns.Record{
 						H: dns.NewHeader(r.Name(), rrtype, rrclass, 0),
@@ -811,8 +886,9 @@ func (z *Zone) postupdate_locked(updated bool, key string, update []*dns.Record)
 
 // Enter enters recods into the zone, such as from mDNS or other external means. If there is no existing backing db
 // for key, a Memory type db is created for it.
-// If now is non-zero, the updates are passed to the cache layer and are considered non authoritative
-func (z *Zone) Enter(now time.Time, key string, records []*dns.Record) error {
+// If now is non-zero, the updates are passed to the cache layer and are considered non authoritative unless there are
+// conflicting authoriative records, in which case the conflicting records are not added but are returned
+func (z *Zone) Enter(now time.Time, key string, records []*dns.Record) ([]*dns.Record, error) {
 	var db nsdb.Db
 	abort := true
 
@@ -820,37 +896,74 @@ func (z *Zone) Enter(now time.Time, key string, records []*dns.Record) error {
 	defer func() {
 		if db != nil {
 			z.Unlock()
-			db.EndUpdate(abort)
+			if now.IsZero() {
+				db.EndUpdate(abort)
+			}
 		}
 	}()
 
-	if now.IsZero() {
-		db, _ = z.keys[key]
-		if db == nil {
-			db = nsdb.NewMemory()
-			z.keys[key] = db
+	db, _ = z.keys[key]
+	if db == nil {
+		db = nsdb.NewMemory()
+		z.keys[key] = db
+		if key == "" {
+			z.db = db
 		}
 	}
-	if db != nil {
+	if now.IsZero() {
+		var remove, add []*dns.Record
+
 		if err := db.BeginUpdate(); err != nil {
-			return err
+			return nil, err
 		}
 
-		updated, err := nsdb.Load(db, time.Time{}, records)
+		for _, r := range records {
+			if r.D != nil {
+				add = append(add, r)
+			} else {
+				remove = append(remove, r)
+			}
+		}
+
+		updated, err := nsdb.Patch(db, time.Time{}, remove, add)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		if err := z.postupdate_locked(updated, key, records); err != nil {
-			return err
+			return nil, err
 		}
 
 		abort = false
-		return nil
+		return nil, nil
 	} else {
-		z.postupdate_locked(false, key, records)
+		var add, conflict []*dns.Record
+
+		for _, r := range records {
+			rrset, err := nsdb.Lookup(db, true, r.Name(), r.Type(), r.Class())
+			if err != nil && !errors.Is(err, dns.NXDomain) {
+				return nil, err
+			}
+			if rrset == nil && db != z.db && z.db != nil {
+				rrset, err = nsdb.Lookup(z.db, true, r.Name(), r.Type(), r.Class())
+				if err != nil && !errors.Is(err, dns.NXDomain) {
+					return nil, err
+				}
+			}
+			if rrset != nil && rrset.Exclusive {
+				conflict = append(conflict, r)
+			} else {
+				add = append(add, r)
+			}
+		}
+
+		z.postupdate_locked(false, key, add)
+
+		db = nil
 		z.Unlock()
-		return z.Zone.Enter(now, key, records)
+
+		_, err := z.Zone.Enter(now, key, add)
+		return conflict, err
 	}
 }
 
@@ -880,7 +993,7 @@ func (z *Zone) NotifyC() <-chan struct{} {
 	return z.u
 }
 
-// HoldUpdates blocks updates from occuring until ReloadUpdates is called
+// HoldUpdates blocks updates from occuring until ReleaseUpdates is called
 func (z *Zone) HoldUpdates() {
 	z.updateLock.Lock()
 	if z.blockUpdates {
@@ -980,7 +1093,7 @@ func (zs *Zones) Zone(n dns.Name) *Zone {
 }
 
 // Additional fills in the additional section if it can from either cache or authority
-func (zs *Zones) Additional(mdns bool, key string, msg *dns.Message) {
+func (zs *Zones) Additional(mdns bool, msg *dns.Message) {
 	records := make([]*dns.Record, len(msg.Authority), len(msg.Authority)+len(msg.Answers))
 	copy(records, msg.Authority)
 	records = append(records, msg.Answers...)
@@ -989,16 +1102,21 @@ func (zs *Zones) Additional(mdns bool, key string, msg *dns.Message) {
 		rec := records[i]
 
 		var name dns.Name
+		var rrtype dns.RRType
+
 		switch rec.Type() {
 		case dns.AType:
 			name = rec.Name()
+			rrtype = dns.AAAAType
 
 		case dns.AAAAType:
 			name = rec.Name()
+			rrtype = dns.AType
 
 		default:
-			if n, ok := rec.D.(dns.NameRecordType); ok {
+			if n, ok := rec.D.(dns.NameRecordType); ok && !n.RName().Equal(rec.Name()) {
 				name = n.RName()
+				rrtype = dns.AnyType
 			}
 		}
 
@@ -1009,7 +1127,7 @@ func (zs *Zones) Additional(mdns bool, key string, msg *dns.Message) {
 		// make sure we haven't already put it in
 		found := false
 		for _, a := range msg.Additional {
-			if a.Name().Equal(name) {
+			if a.Name().Equal(name) && rrtype.Asks(a.Type()) {
 				found = true
 				break
 			}
@@ -1018,7 +1136,7 @@ func (zs *Zones) Additional(mdns bool, key string, msg *dns.Message) {
 			continue
 		}
 		for _, a := range msg.Answers {
-			if a.Name().Equal(name) {
+			if a.Name().Equal(name) && rrtype.Asks(a.Type()) {
 				found = true
 				break
 			}
@@ -1036,10 +1154,10 @@ func (zs *Zones) Additional(mdns bool, key string, msg *dns.Message) {
 		var answers []*dns.Record
 		if mdns {
 			var a2 []*dns.Record
-			answers, a2, _ = zone.MLookup(key, resolver.InAuth, name, dns.AnyType, rec.Class())
+			answers, a2, _ = zone.MLookup(msg.Iface, resolver.InAuth, name, rrtype, rec.Class())
 			answers = append(answers, a2...)
 		} else {
-			answers, _, _ = zone.Lookup(key, name, dns.AnyType, rec.Class())
+			answers, _, _ = zone.Lookup(msg.Iface, name, rrtype, rec.Class())
 		}
 		for _, a := range answers {
 			if a.D == nil {
@@ -1047,8 +1165,17 @@ func (zs *Zones) Additional(mdns bool, key string, msg *dns.Message) {
 			}
 			switch a.Type() {
 			case dns.AType, dns.AAAAType, dns.TXTType, dns.PTRType, dns.SRVType, dns.NSECType:
-				msg.Additional = append(msg.Additional, a)
-				records = append(records, a)
+				found := false
+				for _, r := range msg.Additional {
+					if r.Equal(a) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					msg.Additional = append(msg.Additional, a)
+					records = append(records, a)
+				}
 			}
 		}
 	}

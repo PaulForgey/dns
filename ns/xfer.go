@@ -15,7 +15,7 @@ func sendBatch(conn dnsconn.Conn, msg *dns.Message, to net.Addr, r []*dns.Record
 	msg.RCode = dns.NoError
 
 	msgSize := messageSize(conn, msg)
-	err := conn.WriteTo(msg, "", to, msgSize)
+	err := conn.WriteTo(msg, to, msgSize)
 
 	var truncated *dns.Truncated
 	if !conn.VC() && errors.As(err, &truncated) && len(r) > 1 {

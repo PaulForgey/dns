@@ -94,8 +94,9 @@ type Message struct {
 	Authority  []*Record
 	Additional []*Record
 	EDNS       *EDNS
-	NoTC       bool // internal: do not try to recover from truncation
-	ClientPort bool // internal: udp message source port was not listening port
+	NoTC       bool   // internal: do not try to recover from truncation
+	ClientPort bool   // internal: udp message source port was not listening port
+	Iface      string // internal: interface message received on or sending to
 }
 
 type Question interface {

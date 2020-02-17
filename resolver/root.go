@@ -67,7 +67,7 @@ func NewRootZone() *Zone {
 		}
 		records = append(records, r)
 	}
-	if err := zone.Enter(time.Time{}, "", records); err != nil {
+	if _, err := zone.Enter(time.Time{}, "", records); err != nil {
 		panic(err)
 	}
 

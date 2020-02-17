@@ -22,7 +22,7 @@ func TestClose(t *testing.T) {
 
 	wg.Add(1)
 	go func() {
-		_, _, _, err = c.ReadFromIf(ctx, func(m *dns.Message) bool {
+		_, _, err = c.ReadFromIf(ctx, func(m *dns.Message) bool {
 			return false
 		})
 		wg.Done()
@@ -40,7 +40,7 @@ func TestClose(t *testing.T) {
 
 	wg.Add(1)
 	go func() {
-		_, _, _, err = c.ReadFromIf(context.Background(), func(m *dns.Message) bool {
+		_, _, err = c.ReadFromIf(context.Background(), func(m *dns.Message) bool {
 			return false
 		})
 		wg.Done()

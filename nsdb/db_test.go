@@ -86,7 +86,7 @@ ns1 A 192.168.0.1
 	if _, err := Load(db, time.Time{}, parseText(t, data)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Patch(db, remove, add); err != nil {
+	if _, err := Patch(db, time.Time{}, remove, add); err != nil {
 		t.Fatal(err)
 	}
 

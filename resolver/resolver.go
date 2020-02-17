@@ -125,7 +125,7 @@ func (r *Resolver) Transact(ctx context.Context, dest net.Addr, msg *dns.Message
 			msg.EDNS = dns.NewEDNS(uint16(dnsconn.UDPMessageSize), 0, 0, 0)
 		}
 	}
-	if err := r.conn.WriteTo(msg, "", dest, outSize); err != nil {
+	if err := r.conn.WriteTo(msg, dest, outSize); err != nil {
 		return nil, err
 	}
 	return r.Receive(ctx, msg.ID)
@@ -133,7 +133,7 @@ func (r *Resolver) Transact(ctx context.Context, dest net.Addr, msg *dns.Message
 
 // Receive returns the next answer of a given message ID (used only with tcp zone transfer)
 func (r *Resolver) Receive(ctx context.Context, id uint16) (*dns.Message, error) {
-	msg, _, _, err := r.conn.ReadFromIf(ctx, func(m *dns.Message) bool {
+	msg, _, err := r.conn.ReadFromIf(ctx, func(m *dns.Message) bool {
 		return m.QR && m.ID == id
 	})
 	if msg != nil {
@@ -512,6 +512,7 @@ func (r *Resolver) resolve(
 			if len(ips) == 0 {
 				return nil, dns.NXDomain
 			}
+
 			for _, ip := range ips {
 				nsaddrs = append(nsaddrs, &net.UDPAddr{
 					IP:   ip.IP(),

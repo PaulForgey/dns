@@ -472,6 +472,7 @@ func (c *TextCodec) getRecord(r *Record) error {
 
 	var token string
 	var gotTTL, gotClass bool
+	var exclusive bool
 
 	for {
 		token, err = c.token(false)
@@ -497,6 +498,9 @@ func (c *TextCodec) getRecord(r *Record) error {
 		}
 
 		if err := rrclass.Set(token); err == nil {
+			if token[0] == '+' {
+				exclusive = true
+			}
 			c.rrclass = rrclass
 			gotClass = true
 			continue
@@ -510,7 +514,11 @@ func (c *TextCodec) getRecord(r *Record) error {
 		return err
 	}
 
-	r.H = NewHeader(rname, rrtype, rrclass, ttl)
+	if exclusive {
+		r.H = NewMDNSHeader(rname, rrtype, rrclass, ttl, true)
+	} else {
+		r.H = NewHeader(rname, rrtype, rrclass, ttl)
+	}
 
 	token, err = c.token(true) // allow nil rdata
 	if err != nil {
@@ -768,15 +776,29 @@ func (c *TextCodec) Decode(i interface{}) error {
 }
 
 func (c *TextCodec) putRecord(r *Record) error {
-	if _, err := fmt.Fprintf(
-		c.w,
-		"%v %v %v %v ",
-		r.Name(),
-		r.H.TTL(),
-		r.Class(),
-		r.Type(),
-	); err != nil {
-		return err
+	if CacheFlush(r.H) {
+		// mdns exclusive record (cache flush bit)
+		if _, err := fmt.Fprintf(
+			c.w,
+			"%v %v +%v %v ",
+			r.Name(),
+			r.H.TTL(),
+			r.Class(),
+			r.Type(),
+		); err != nil {
+			return err
+		}
+	} else {
+		if _, err := fmt.Fprintf(
+			c.w,
+			"%v %v %v %v ",
+			r.Name(),
+			r.H.TTL(),
+			r.Class(),
+			r.Type(),
+		); err != nil {
+			return err
+		}
 	}
 
 	if r.D == nil {

@@ -15,6 +15,7 @@ type MResolver struct {
 	lk      sync.Mutex
 	conn    dnsconn.Conn
 	queries map[uint16]*mquery
+	owners  map[uint16]chan error
 	qid     uint32
 }
 
@@ -30,6 +31,7 @@ func NewMResolver(conn dnsconn.Conn) *MResolver {
 	r := &MResolver{
 		conn:    conn,
 		queries: make(map[uint16]*mquery),
+		owners:  make(map[uint16]chan error),
 	}
 
 	go func() {
@@ -37,18 +39,30 @@ func NewMResolver(conn dnsconn.Conn) *MResolver {
 		for {
 			var msg *dns.Message
 
-			msg, _, _, err = conn.ReadFromIf(context.Background(), nil)
+			msg, _, err = conn.ReadFromIf(context.Background(), nil)
 			if err != nil {
 				break
 			}
 
 			r.lk.Lock()
-			qr, ok := r.queries[msg.ID]
-			if ok {
+			qr, _ := r.queries[msg.ID]
+			if qr != nil {
 				qr.wait.Add(1)
 			}
-			r.lk.Unlock()
+			o, ok := r.owners[msg.ID]
 			if ok {
+				if msg.RCode != dns.NoError {
+					delete(r.owners, msg.ID)
+				} else {
+					o = nil
+				}
+			}
+			if o != nil {
+				o <- msg.RCode
+			}
+			r.lk.Unlock()
+
+			if qr != nil {
 				var iface string
 				answers := msg.Answers
 
@@ -88,11 +102,15 @@ func NewMResolver(conn dnsconn.Conn) *MResolver {
 				}
 				qr.wait.Done()
 			}
+
 		}
 
 		r.lk.Lock()
 		for _, mq := range r.queries {
 			mq.err <- err
+		}
+		for _, o := range r.owners {
+			o <- err
 		}
 		r.lk.Unlock()
 	}()
@@ -123,7 +141,7 @@ func (r *MResolver) Query(ctx context.Context, q []dns.Question, result func(str
 	}
 	r.queries[msg.ID] = mq
 
-	err = r.conn.WriteTo(msg, "", nil, dnsconn.MaxMessageSize)
+	err = r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize)
 	if err != nil {
 		delete(r.queries, msg.ID)
 	}
@@ -142,7 +160,7 @@ func (r *MResolver) Query(ctx context.Context, q []dns.Question, result func(str
 	r.lk.Lock()
 	delete(r.queries, msg.ID)
 	msg.Questions = nil
-	r.conn.WriteTo(msg, "", nil, dnsconn.MaxMessageSize)
+	r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize)
 	r.lk.Unlock()
 	mq.wait.Wait()
 
@@ -176,4 +194,56 @@ func (r *MResolver) QueryOne(ctx context.Context, q []dns.Question) ([]*dns.Reco
 	}
 
 	return result, nil
+}
+
+// Announce announces records for a name, returning when either the context is canceled or an error occurs
+// (including conflict)
+func (r *MResolver) Announce(ctx context.Context, names OwnerNames) error {
+	id := uint16(atomic.AddUint32(&r.qid, 1))
+	errc := make(chan error, 1)
+
+	r.lk.Lock()
+	r.owners[id] = errc
+	r.lk.Unlock()
+
+	defer func() {
+		r.lk.Lock()
+		delete(r.owners, id)
+		r.lk.Unlock()
+	}()
+
+	msg := &dns.Message{ID: id, TC: true, Opcode: dns.Update}
+	for _, owner := range names {
+		for iface := range owner.RRSets {
+			msg.Authority = []*dns.Record{
+				&dns.Record{
+					H: dns.NewMDNSHeader(nil, dns.TXTType, dns.NoneClass, 0, false),
+					D: &dns.TXTRecord{Text: []string{iface}},
+				},
+			}
+			msg.Answers = owner.RRSets.Records(iface)
+
+			if err := r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize); err != nil {
+				return err
+			}
+		}
+	}
+	msg.TC = false
+	msg.Authority = nil
+	msg.Answers = nil
+	if err := r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize); err != nil {
+		return err
+	}
+
+	var err error
+	select {
+	case <-ctx.Done():
+		err = ctx.Err()
+	case err = <-errc:
+	}
+
+	msg.QR = true
+	r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize)
+
+	return err
 }

@@ -18,7 +18,6 @@ type MResolver struct {
 	conn    dnsconn.Conn
 	servers []*Server
 	zones   *Zones
-	queries map[uint16]*query
 	lk      sync.Mutex
 
 	allowQuery  Access
@@ -28,6 +27,12 @@ type MResolver struct {
 type query struct {
 	ctx    context.Context
 	cancel func()
+}
+
+type owner struct {
+	ctx    context.Context
+	cancel func()
+	names  resolver.OwnerNames
 }
 
 // NewMResolver creates a new resolver server
@@ -44,7 +49,6 @@ func NewMResolver(
 		conn:        conn,
 		servers:     servers,
 		zones:       zones,
-		queries:     make(map[uint16]*query),
 		allowQuery:  allowQuery,
 		allowUpdate: allowUpdate,
 	}
@@ -54,25 +58,25 @@ func NewMResolver(
 // Although the dns message is used as the IPC message because it is natural and convenient, the exact protocol
 // specifics are private and not intended to be run over any external network transport.
 func (r *MResolver) Serve(ctx context.Context) error {
-	defer func() {
-		for k, v := range r.queries {
-			v.cancel()
-			delete(r.queries, k)
-		}
-	}()
+	queries := make(map[uint16]*query)
+	owners := make(map[uint16]*owner)
+	cctx, cancel := context.WithCancel(ctx)
+
+	defer cancel()
 
 	for {
-		msg, iface, _, err := r.conn.ReadFromIf(ctx, nil)
+		msg, _, err := r.conn.ReadFromIf(cctx, nil)
 		if err != nil {
 			return err
 		}
+		iface := msg.Iface
 
 		switch msg.Opcode {
 		case dns.StandardQuery: // add or remove subscribed queries
 			err = nil
 
-			if r.allowQuery.Check(nil, iface, "") {
-				r.query(ctx, msg)
+			if r.allowQuery.Check(nil, msg.Iface, "") {
+				r.query(cctx, queries, msg)
 			} else {
 				err = dns.Refused
 			}
@@ -80,24 +84,28 @@ func (r *MResolver) Serve(ctx context.Context) error {
 
 		case dns.Update: // publish records
 			if r.allowUpdate.Check(nil, iface, "") {
+				err = r.update(cctx, owners, msg)
+			} else {
+				err = dns.Refused
 			}
+			r.respond(msg.ID, "", nil, nil, err)
 
 		default:
 			msg.QR = true
 			msg.Questions = nil
 			msg.RCode = dns.NotImplemented
-			r.conn.WriteTo(msg, "", nil, dnsconn.MaxMessageSize)
+			r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize)
 		}
 	}
 
 	return nil // unreached
 }
 
-func (r *MResolver) query(ctx context.Context, msg *dns.Message) {
-	pq := r.queries[msg.ID]
+func (r *MResolver) query(ctx context.Context, queries map[uint16]*query, msg *dns.Message) {
+	pq := queries[msg.ID]
 	if pq == nil {
 		pq = &query{}
-		r.queries[msg.ID] = pq
+		queries[msg.ID] = pq
 	} else {
 		pq.cancel()
 	}
@@ -210,5 +218,82 @@ func (r *MResolver) respond(id uint16, iface string, q dns.Question, records []*
 		}
 	}
 
-	return r.conn.WriteTo(msg, "", nil, dnsconn.MaxMessageSize)
+	return r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize)
+}
+
+func (r *MResolver) update(ctx context.Context, owners map[uint16]*owner, msg *dns.Message) error {
+	var iface string
+
+	r.lk.Lock()
+	defer r.lk.Unlock()
+
+	o, ok := owners[msg.ID]
+
+	if msg.QR {
+		// ipc client sends ID with response to unannounce
+		if ok {
+			delete(owners, msg.ID)
+			o.cancel()
+		}
+		return nil
+	}
+
+	if len(msg.Authority) > 0 {
+		a := msg.Authority[0]
+		if txt, _ := a.D.(*dns.TXTRecord); txt != nil && len(txt.Text) == 1 {
+			iface = txt.Text[0]
+		} else {
+			return dns.FormError
+		}
+	}
+
+	if !ok {
+		octx, cancel := context.WithCancel(ctx)
+		o = &owner{
+			ctx:    octx,
+			cancel: cancel,
+			names:  make(resolver.OwnerNames),
+		}
+		owners[msg.ID] = o
+	}
+
+	// allow an empty final message
+	if len(msg.Answers) > 0 {
+		if err := o.names.Enter(r.zones, iface, msg.Answers); err != nil {
+			return err
+		}
+	}
+
+	if !msg.TC {
+		for _, s := range r.servers {
+			go func(s *Server) {
+				var err error
+
+				err = s.Announce(o.ctx, o.names, func() {
+					r.lk.Lock()
+					_, ok := owners[msg.ID]
+					if ok {
+						delete(owners, msg.ID)
+					}
+					r.lk.Unlock()
+					if ok {
+						o.cancel()
+						r.respond(msg.ID, "", nil, nil, dns.YXDomain)
+					}
+				})
+				if err != nil {
+					r.respond(msg.ID, "", nil, nil, err)
+				}
+			}(s)
+		}
+
+		go func() {
+			<-o.ctx.Done()
+			for _, s := range r.servers {
+				s.Unannounce(o.names)
+			}
+		}()
+	}
+
+	return nil
 }

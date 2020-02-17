@@ -24,12 +24,14 @@ type ZoneAuthority interface {
 	Lookup(key string, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (a []*dns.Record, ns []*dns.Record, err error)
 	// MLookup is Lookup with MDNS semantics
 	MLookup(key string, where Scope, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (a, ex []*dns.Record, err error)
+	// Remove removes records matching name and interface
+	Remove(key string, name dns.Name) (irecords, records []*dns.Record, err error)
 	// Hint returns true if this is a hint zone
 	Hint() bool
 	// Name returns the name of the zone
 	Name() dns.Name
 	// Enter enters recors into the cache.
-	Enter(now time.Time, key string, records []*dns.Record) error
+	Enter(now time.Time, key string, records []*dns.Record) ([]*dns.Record, error)
 }
 
 // the Authority interface defines a container finding closest a matching ZoneAuthority for a given Name
@@ -128,6 +130,59 @@ func (z *Zone) MLookup(
 	return
 }
 
+// Remove removes a name from a zone
+func (z *Zone) Remove(iface string, name dns.Name) ([]*dns.Record, []*dns.Record, error) {
+	var db *nsdb.Cache
+	var irecords, records []*dns.Record
+
+	z.Lock()
+	defer z.Unlock()
+
+	db, _ = z.keys[iface]
+	if db == nil {
+		db = z.cache
+	}
+
+	move := func(db *nsdb.Cache) ([]*dns.Record, error) {
+		var result []*dns.Record
+
+		rrmap, err := db.Lookup(name)
+		if err != nil && !errors.Is(err, dns.NXDomain) {
+			return nil, err
+		}
+		for _, v := range rrmap {
+			result = append(result, v.Records...)
+		}
+		if err == nil {
+			if err := db.Enter(name, nil); err != nil {
+				return nil, err
+			}
+		}
+		return result, nil
+	}
+
+	if db != nil {
+		result, err := move(db)
+		if err != nil {
+			return nil, nil, err
+		}
+		if db != z.cache {
+			irecords = result
+		} else {
+			records = result
+		}
+	}
+	if db != z.cache && z.cache != nil {
+		result, err := move(z.cache)
+		if err != nil {
+			return nil, nil, err
+		}
+		records = result
+	}
+
+	return irecords, records, nil
+}
+
 // Lookup a name within a zone, or a delegation above it.
 func (z *Zone) Lookup(
 	key string,
@@ -157,6 +212,7 @@ func (z *Zone) Lookup(
 			break
 		}
 	}
+
 	return a, ns, err
 }
 
@@ -204,7 +260,7 @@ func (z *Zone) LookupDb(
 
 // Enter loads items into the cache. If now is zero value, these are permanent and non-overwritable entries.
 // XXX do not cache pseduo records
-func (z *Zone) Enter(now time.Time, key string, records []*dns.Record) error {
+func (z *Zone) Enter(now time.Time, key string, records []*dns.Record) ([]*dns.Record, error) {
 	var db *nsdb.Cache
 	z.Lock()
 	db, ok := z.keys[key]
@@ -214,5 +270,5 @@ func (z *Zone) Enter(now time.Time, key string, records []*dns.Record) error {
 	}
 	z.Unlock()
 	_, err := nsdb.Load(db, now, records)
-	return err
+	return nil, err
 }

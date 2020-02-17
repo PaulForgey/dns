@@ -32,9 +32,11 @@ type Server struct {
 	allowRecursion Access
 
 	// mDNS
-	queryLock sync.Mutex
-	mqueries  []dns.Question
-	send      *time.Timer
+	lk       sync.Mutex
+	mqueries []dns.Question            // questions being asked, to batch up
+	send     *time.Timer               // delay to send a batch of queries
+	probing  map[string][]*dns.Message // redirect a copy of messages to names being probed
+	owners   map[string]func()         // if we lose a conflict, call this owner
 }
 
 type allAccess bool
@@ -63,6 +65,8 @@ func NewServer(
 		zones:          zones,
 		res:            res,
 		allowRecursion: allowRecursion,
+		probing:        make(map[string][]*dns.Message),
+		owners:         make(map[string]func()),
 	}
 }
 
@@ -83,13 +87,14 @@ func (s *Server) Serve(ctx context.Context) error {
 		return ErrNoConnection
 	}
 	for {
-		msg, iface, from, err := s.conn.ReadFromIf(ctx, func(msg *dns.Message) bool {
+		msg, from, err := s.conn.ReadFromIf(ctx, func(msg *dns.Message) bool {
 			return !msg.QR // only questions
 		})
 		if err != nil {
 			s.logger.Printf("listener %v exiting: %v", s.conn, err)
 			return err
 		}
+		iface := msg.Iface
 
 		if len(msg.Questions) != 1 {
 			// XXX this needs to change if we ever support an op with no Q section or multiple questions
@@ -139,7 +144,7 @@ func (s *Server) Serve(ctx context.Context) error {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
-					go s.query(ctx, msg, iface, from, zone)
+					go s.query(ctx, msg, from, zone)
 				}
 			}
 
@@ -190,5 +195,5 @@ func (s *Server) answer(err error, clear bool, msg *dns.Message, to net.Addr) er
 	}
 
 	msgSize := messageSize(s.conn, msg)
-	return s.conn.WriteTo(msg, "", to, msgSize)
+	return s.conn.WriteTo(msg, to, msgSize)
 }

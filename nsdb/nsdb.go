@@ -128,7 +128,7 @@ func Load(db Db, entered time.Time, records []*dns.Record) (bool, error) {
 // Patch is a convenience function to remove records from remove and add from add.
 // This uses a combination of IXFR/update rules. Exact matches are removed, AnyType or AnyClass removes rrsets.
 // Returns true if the patch resulted in records being deletd.
-func Patch(db Db, remove []*dns.Record, add []*dns.Record) (bool, error) {
+func Patch(db Db, entered time.Time, remove []*dns.Record, add []*dns.Record) (bool, error) {
 	updated := false
 	err := dns.RecordSets(
 		remove,
@@ -153,7 +153,7 @@ func Patch(db Db, remove []*dns.Record, add []*dns.Record) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	added, err := Load(db, time.Time{}, add)
+	added, err := Load(db, entered, add)
 	if err != nil {
 		return updated, err
 	}

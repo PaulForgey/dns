@@ -27,16 +27,16 @@ func testNetwork(t *testing.T, network string) error {
 
 	c := NewConn(conn, network, "")
 
-	var iface string
+	var msg *dns.Message
 
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
-		_, iface, _, err = c.ReadFromIf(context.Background(), nil)
+		msg, _, err = c.ReadFromIf(context.Background(), nil)
 		wg.Done()
 	}()
 
-	if err2 := c.WriteTo(&dns.Message{}, "", addr, UDPMessageSize); err2 != nil {
+	if err2 := c.WriteTo(&dns.Message{}, addr, UDPMessageSize); err2 != nil {
 		return err2
 	}
 	wg.Wait()
@@ -44,10 +44,10 @@ func testNetwork(t *testing.T, network string) error {
 		return err
 	}
 
-	if iface == "" {
+	if msg == nil || msg.Iface == "" {
 		return errors.New("no interface name")
 	}
-	_, err = net.InterfaceByName(iface)
+	_, err = net.InterfaceByName(msg.Iface)
 	if err != nil {
 		return err
 	}

@@ -45,7 +45,6 @@ var ifnames = sync.Map{}
 
 type message struct {
 	msg        *dns.Message
-	iface      string
 	source     net.Addr
 	next, prev *message
 }
@@ -77,12 +76,12 @@ type Conn interface {
 
 	// WriteTo sends a dns message to addr limited to msgSize. If the connection is stream oriented, addr must be nil.
 	// If the connection is packet oriented, msg may be nil if the connection has an idea of a default destination.
-	WriteTo(msg *dns.Message, iface string, addr net.Addr, msgSize int) error
+	WriteTo(msg *dns.Message, addr net.Addr, msgSize int) error
 
 	// ReadFromIf receives a dns message. If the connection is stream oriented, the from address will be nil.
 	// If match is nil, any message is returned. If a message is filtered out of a stream connection, that message
 	// will be lost. Messages filtered out of stream connections are presented to future callers.
-	ReadFromIf(ctx context.Context, match func(*dns.Message) bool) (msg *dns.Message, iface string, from net.Addr, err error)
+	ReadFromIf(ctx context.Context, match func(*dns.Message) bool) (msg *dns.Message, from net.Addr, err error)
 
 	// Close closes the underyling connection and allows any blocking ReadFromIf or WriteTo operations to immediately
 	// fail.
@@ -106,7 +105,7 @@ type PacketConn struct {
 	p4       *ipv4.PacketConn
 	p6       *ipv6.PacketConn
 	lk       *sync.Mutex
-	cond     *sync.Cond
+	waiters  []chan struct{}
 	messages *message
 	backlog  int
 	err      error
@@ -176,7 +175,6 @@ func NewPacketConn(c net.PacketConn, network, iface string) *PacketConn {
 		},
 		c:        c,
 		lk:       lk,
-		cond:     sync.NewCond(lk),
 		messages: messages,
 	}
 
@@ -200,7 +198,7 @@ func NewPacketConn(c net.PacketConn, network, iface string) *PacketConn {
 		var err error
 
 		for err == nil {
-			msg, iface, source, err = p.readFrom()
+			msg, source, err = p.readFrom()
 			if source != nil && port != 0 {
 				if u, ok := source.(*net.UDPAddr); ok {
 					if u.Port != port {
@@ -215,7 +213,7 @@ func NewPacketConn(c net.PacketConn, network, iface string) *PacketConn {
 			if err != nil && msg == nil {
 				p.err = err // connection error
 			} else if err == nil {
-				p.messages.insertTail(&message{msg: msg, iface: iface, source: source})
+				p.messages.insertTail(&message{msg: msg, source: source})
 				p.backlog++
 			} else {
 				err = nil
@@ -228,7 +226,10 @@ func NewPacketConn(c net.PacketConn, network, iface string) *PacketConn {
 				p.backlog--
 			}
 
-			p.cond.Broadcast()
+			for _, c := range p.waiters {
+				close(c)
+			}
+			p.waiters = nil
 			p.lk.Unlock()
 		}
 	}(p)
@@ -254,7 +255,7 @@ func (p *PacketConn) String() string {
 // WriteTo sends a *dns.Message. If the message could not fit but could stil be validly sent with reduced extra records,
 // Write returns nil but will update msg with what it actually sent.
 // msgSize is the maximum message size to fit the message.
-func (p *PacketConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgSize int) error {
+func (p *PacketConn) WriteTo(msg *dns.Message, addr net.Addr, msgSize int) error {
 	var msgBuf []byte
 
 	if msgSize < MinMessageSize || msgSize > MaxMessageSize {
@@ -309,17 +310,17 @@ func (p *PacketConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgS
 
 	msgBuf = msgBuf[:writer.Offset()]
 	if addr != nil {
-		if iface != "" && iface != p.conn.iface {
+		if msg.Iface != "" && msg.Iface != p.conn.iface {
 			switch {
 			case p.p6 != nil:
-				ifi := ifbyname(iface)
+				ifi := ifbyname(msg.Iface)
 				if ifi == nil {
 					return ErrUnknownInterface
 				}
 				_, err = p.p6.WriteTo(msgBuf, &ipv6.ControlMessage{IfIndex: ifi.Index}, addr)
 
 			case p.p4 != nil:
-				ifi := ifbyname(iface)
+				ifi := ifbyname(msg.Iface)
 				if ifi == nil {
 					return ErrUnknownInterface
 				}
@@ -345,20 +346,8 @@ func (p *PacketConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgS
 
 // ReadFromIf receives a *dns.Message, returning the message and, if unconnected, the source address.
 // match should be quick. The connection is locked during its call.
-func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bool) (*dns.Message, string, net.Addr, error) {
+func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bool) (*dns.Message, net.Addr, error) {
 	var err error
-
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			p.lk.Lock()
-			p.cond.Broadcast()
-			p.lk.Unlock()
-		case <-done:
-		}
-	}()
 
 	p.lk.Lock()
 	for err == nil {
@@ -369,26 +358,31 @@ func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 				p.backlog--
 				p.lk.Unlock()
 
-				return m.msg, m.iface, m.source, nil
+				return m.msg, m.source, nil
 			}
 		}
 
-		err = ctx.Err()
+		c := make(chan struct{})
+		p.waiters = append(p.waiters, c)
+		p.lk.Unlock()
+
+		select {
+		case <-ctx.Done():
+			err = ctx.Err()
+		case <-c:
+		}
+
+		p.lk.Lock()
 		if err == nil {
 			err = p.err
 		}
-		if err != nil {
-			break
-		}
-
-		p.cond.Wait()
 	}
 	p.lk.Unlock()
 
-	return nil, "", nil, err
+	return nil, nil, err
 }
 
-func (p *PacketConn) readFrom() (*dns.Message, string, net.Addr, error) {
+func (p *PacketConn) readFrom() (*dns.Message, net.Addr, error) {
 	var msgBuf []byte
 	var from net.Addr
 	var err error
@@ -423,7 +417,7 @@ func (p *PacketConn) readFrom() (*dns.Message, string, net.Addr, error) {
 	}
 
 	if err != nil {
-		return nil, "", nil, err
+		return nil, nil, err
 	}
 	msgBuf = buffer[:r]
 
@@ -433,7 +427,8 @@ func (p *PacketConn) readFrom() (*dns.Message, string, net.Addr, error) {
 	}
 	msg := &dns.Message{}
 	err = reader.Decode(msg)
-	return msg, iface, from, err
+	msg.Iface = iface
+	return msg, from, err
 }
 
 // Close closes the underlying conn
@@ -471,7 +466,7 @@ func (s *StreamConn) VC() bool {
 }
 
 // addr must be nil. msgSize should be MaxMessageSize
-func (s *StreamConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgSize int) error {
+func (s *StreamConn) WriteTo(msg *dns.Message, addr net.Addr, msgSize int) error {
 	var msgBuf []byte
 
 	if msgSize < MinMessageSize || msgSize > MaxMessageSize {
@@ -513,7 +508,7 @@ func (s *StreamConn) WriteTo(msg *dns.Message, iface string, addr net.Addr, msgS
 	return nil
 }
 
-func (s *StreamConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bool) (*dns.Message, string, net.Addr, error) {
+func (s *StreamConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bool) (*dns.Message, net.Addr, error) {
 	var msgBuf []byte
 	var hdr [2]byte
 	var err error
@@ -528,12 +523,12 @@ func (s *StreamConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 		if pc, ok := s.c.(net.PacketConn); ok && s.conn.network != "unix" {
 			length, _, err := pc.ReadFrom(buffer)
 			if err != nil {
-				return nil, "", nil, err
+				return nil, nil, err
 			}
 			msgBuf = buffer[:length]
 		} else {
 			if _, err = io.ReadFull(s.c, hdr[:]); err != nil {
-				return nil, "", nil, err
+				return nil, nil, err
 			}
 			length := int(binary.BigEndian.Uint16(hdr[:]))
 			if length > len(buffer) {
@@ -543,7 +538,7 @@ func (s *StreamConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 			msgBuf = buffer[:length]
 			_, err = io.ReadFull(s.c, msgBuf)
 			if err != nil {
-				return nil, "", nil, err
+				return nil, nil, err
 			}
 		}
 
@@ -553,9 +548,10 @@ func (s *StreamConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 		}
 		msg := &dns.Message{}
 		err = reader.Decode(msg)
+		msg.Iface = s.iface
 
 		if err != nil || match == nil || match(msg) {
-			return msg, s.iface, nil, err
+			return msg, nil, err
 		}
 	}
 }

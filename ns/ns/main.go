@@ -168,33 +168,28 @@ func (l *Listener) runMDNS(ctx context.Context, wg *sync.WaitGroup, servers []*n
 
 	logger.Printf("running mDNS resolver on %s %v", l.Network, l.Address)
 	l.serveListener(ctx, wg, c, func(c dnsconn.Conn) {
+		c.(*dnsconn.StreamConn).MDNS()
 		r := ns.NewMResolver(logger, c, servers, mzones, ns.AllAccess, ns.AllAccess)
 		r.Serve(ctx)
 	})
 }
 
 func (l *Listener) serveListener(ctx context.Context, wg *sync.WaitGroup, c net.Listener, serve func(c dnsconn.Conn)) {
-	closer := make(chan struct{})
+	lctx, cancel := context.WithCancel(ctx)
 	go func() {
-		select {
-		case <-ctx.Done():
-		case <-closer:
-		}
+		<-lctx.Done()
 		c.Close()
 	}()
 	for {
 		a, err := c.Accept()
 		if err != nil {
 			logger.Println(err)
-			close(closer)
+			cancel()
 			break
 		} else {
-			closer := make(chan struct{})
+			actx, cancel := context.WithCancel(lctx)
 			go func() {
-				select {
-				case <-ctx.Done():
-				case <-closer:
-				}
+				<-actx.Done()
 				a.Close()
 			}()
 			wg.Add(1)
@@ -202,7 +197,7 @@ func (l *Listener) serveListener(ctx context.Context, wg *sync.WaitGroup, c net.
 				conn := dnsconn.NewStreamConn(a, l.Network, l.InterfaceName)
 				serve(conn)
 				wg.Done()
-				close(closer)
+				cancel()
 			}()
 		}
 	}
