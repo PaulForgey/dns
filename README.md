@@ -2,7 +2,7 @@ DNS
 ===
 
 This evolving work in progress project has the goal of providing components necessary to to flexibly resolve and serve
-DNS and MDNS traffic. The intention is to allow small pieces to be used for special purposes if necessary supporting a 
+DNS and mDNS traffic. The intention is to allow small pieces to be used for special purposes if necessary supporting a 
 variety of applications from embedded resolution or answering queries to a fully functional standalone server.
 
 Current status
@@ -19,7 +19,9 @@ primary, secondary, and hint zones.
 
 Has REST server allowing zones to be configured and loaded.
 
-There is absolutely no access control, but this will be addressed very soon.
+mDNS functionality is coming along. Still needs higher level resolver interface for querying, browsing, announcing and 
+unannouncing services. This can be done as it is now, but it requires an understanding of all the resource records involved.
+
 
 Interesting features
 --------------------
@@ -27,14 +29,14 @@ Interesting features
 Zone data may be "keyed" to allow different answers depending on the view of the zone. This "key" is usually the interface
 name of the query. External views of this data, such as for zone transfers, can not and therefore do not preserve this
 multidimentionality and a flat view of the zone from that interface's perpspective is given. The main motivation for this
-feature is to support correct MDNS behavior where records may be unique per network interface.
+feature is to support correct mDNS behavior where records may be unique per network interface.
 
 Planned next items
 ------------------
 
-* Access Control
-* MDNS server and API for it
-* Quit storing extraneous and duplicate header information in the cache
+* Better access controls
+* High level mDNS resolver interface for general consumption
+* Performance work identifying hot spots where we can do better with memory pressure
 
 Further out
 -----------
@@ -42,15 +44,16 @@ Further out
 * DNSSEC (reluctantly), at least enough to have authenticated updates
 * Not requiring authoritative records to all be in the cache at once, allowing much larger zones to be backed by on disk
   storage
-* Flexible and pluggable back ends other than zone file format which may be custom implemented
 
 Why?
 ----
 
-I have worked on enough ad-hoc MDNS implementations to want one that is easy to understand and can co-exist with all the basic
+I have worked on enough ad-hoc mDNS implementations to want one that is easy to understand and can co-exist with all the basic
 componented needed for regular DNS as well. My goal is to make the services from a collection of individually useful components,
 while trying to allow idiomatic Go interactions.
 
 This project is never intended to replace Go's built-in DNS resolver. If simple DNS resolution against an existing recursive
 resolver is all that is needed, this project is not intended to provide any further benefit unless control or inspection of the
 low level queries is desired.
+
+This project can be handy for programs wanting to embed DNS services or use mDNS.
