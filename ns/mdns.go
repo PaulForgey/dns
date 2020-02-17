@@ -306,6 +306,20 @@ func (s *Server) Announce(ctx context.Context, names resolver.OwnerNames, confli
 	return s.announce(names)
 }
 
+// SetHost sets the current announced host name
+func (s *Server) SetHost(name dns.Name) {
+	s.lk.Lock()
+	s.host = name
+	s.lk.Unlock()
+}
+
+// Host returns the current announced host name, if any. Use a persistent query for the result to track this becoming stale.
+func (s *Server) Host() dns.Name {
+	s.lk.Lock()
+	defer s.lk.Unlock()
+	return s.host
+}
+
 // Remove announced records, if we are currently answering them.
 // If records are in the process of probing, the process will stop before announcing and no further action will be taken.
 func (s *Server) Unannounce(names resolver.OwnerNames) error {

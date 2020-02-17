@@ -357,6 +357,7 @@ func announceHost(ctx context.Context, wg *sync.WaitGroup, servers []*ns.Server,
 		for _, s := range servers {
 			wg.Add(1)
 			go func(s *ns.Server) {
+				s.SetHost(host)
 				err := s.Announce(actx, names, cancel)
 				if err != nil {
 					errch <- err

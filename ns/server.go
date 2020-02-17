@@ -37,6 +37,7 @@ type Server struct {
 	send     *time.Timer               // delay to send a batch of queries
 	probing  map[string][]*dns.Message // redirect a copy of messages to names being probed
 	owners   map[string]func()         // if we lose a conflict, call this owner
+	host     dns.Name                  // current name of this host being announced, if any
 }
 
 type allAccess bool

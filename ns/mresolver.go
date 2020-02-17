@@ -111,6 +111,12 @@ func (r *MResolver) query(ctx context.Context, queries map[uint16]*query, msg *d
 	}
 	pq.ctx, pq.cancel = context.WithCancel(ctx)
 
+	if len(msg.Questions) == 0 && len(r.servers) > 0 {
+		msg.Questions = []dns.Question{
+			dns.NewMDNSQuestion(r.servers[0].Host(), dns.AnyType, dns.INClass, false),
+		}
+	}
+
 	for _, q := range msg.Questions {
 		auth := r.zones.Find(q.Name())
 		if auth == nil {
