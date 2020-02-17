@@ -3,16 +3,14 @@ package main
 import (
 	"flag"
 	"fmt"
-	"net"
 	"os"
 
 	"tessier-ashpool.net/dns"
-	"tessier-ashpool.net/dns/dnsconn"
 	"tessier-ashpool.net/dns/resolver"
 )
 
 var network = "unix"
-var host = "/var/run/mDNS"
+var host = "/var/run/mDNS/mDNS-socket"
 var rrtype = dns.AnyType
 var rrclass = dns.INClass
 var qu = false
@@ -40,13 +38,10 @@ func main() {
 	flag.Parse()
 	args := flag.Args()
 
-	c, err := net.Dial(network, host)
+	r, err := resolver.NewMResolverClient(network, host)
 	if err != nil {
 		exitError(err)
 	}
-	conn := dnsconn.NewStreamConn(c, network, "")
-	conn.MDNS()
-	r := resolver.NewMResolver(conn)
 	defer r.Close()
 
 	questions := make([]dns.Question, len(args))

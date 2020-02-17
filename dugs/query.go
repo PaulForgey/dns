@@ -10,15 +10,27 @@ import (
 	"tessier-ashpool.net/dns/resolver"
 )
 
+func printRecords(iface string, records []*dns.Record) {
+	fmt.Printf("; iface=%s\n", iface)
+	if len(records) > 0 {
+		for _, r := range records {
+			fmt.Println(r)
+		}
+	} else {
+		fmt.Println("; none")
+	}
+	fmt.Println()
+}
+
 func query(r *resolver.MResolver, questions []dns.Question) {
 	if oneshot {
-		records, err := r.QueryOne(context.Background(), questions)
+		rrsets, err := r.QueryOne(context.Background(), questions)
 		if err != nil {
 			exitError(err)
 		}
 
-		for _, r := range records {
-			fmt.Println(r)
+		for iface, records := range rrsets {
+			printRecords(iface, records)
 		}
 	} else {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -31,15 +43,7 @@ func query(r *resolver.MResolver, questions []dns.Question) {
 		}()
 
 		err := r.Query(ctx, questions, func(iface string, records []*dns.Record) error {
-			fmt.Printf("; iface=%s\n", iface)
-			if len(records) > 0 {
-				for _, r := range records {
-					fmt.Println(r)
-				}
-			} else {
-				fmt.Println("; none")
-			}
-			fmt.Println()
+			printRecords(iface, records)
 			return nil
 		})
 

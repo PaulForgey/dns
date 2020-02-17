@@ -3,6 +3,7 @@ package resolver
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,7 +26,19 @@ type mquery struct {
 	err    chan error
 }
 
-// NewMResolver creates a new client side IPC endpoint to talk to ns.MResolver
+// NewMResolverClient creates a new client side IPC endpoint to talk to ns.MResolver.
+// network must be stream oriented.
+func NewMResolverClient(network, address string) (*MResolver, error) {
+	c, err := net.Dial(network, address)
+	if err != nil {
+		return nil, err
+	}
+	conn := dnsconn.NewStreamConn(c, network, "")
+	conn.MDNS()
+	return NewMResolver(conn), nil
+}
+
+// NewMResolver creates a new client side IPC endpoint using an existing connection.
 // conn must be stream oriented and connected to the server side of an ns.MResolver
 func NewMResolver(conn dnsconn.Conn) *MResolver {
 	r := &MResolver{
@@ -168,14 +181,14 @@ func (r *MResolver) Query(ctx context.Context, q []dns.Question, result func(str
 }
 
 // QueryOne does a one shot query
-func (r *MResolver) QueryOne(ctx context.Context, q []dns.Question) ([]*dns.Record, error) {
-	var result []*dns.Record
+func (r *MResolver) QueryOne(ctx context.Context, q []dns.Question) (IfaceRRSets, error) {
 	var t *time.Timer
+	result := make(IfaceRRSets)
 
 	tmo, cancel := context.WithTimeout(ctx, 3*time.Second)
 
 	err := r.Query(tmo, q, func(iface string, a []*dns.Record) error {
-		result = dns.Merge(result, a)
+		result.Add(iface, a)
 		if len(a) > 0 {
 			if t == nil {
 				t = time.AfterFunc(200*time.Millisecond, cancel)

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -164,10 +165,26 @@ func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zone
 }
 
 func (l *Listener) runMDNS(ctx context.Context, wg *sync.WaitGroup, servers []*ns.Server, mzones *ns.Zones) {
+
+	if l.Network == "unix" {
+		err := os.MkdirAll(filepath.Dir(l.Address), 0755)
+		if err != nil {
+			logger.Println(err)
+			return
+		}
+	}
+
 	c, err := net.Listen(l.Network, l.Address)
 	if err != nil {
 		logger.Println(err)
 		return
+	}
+	if l.Network == "unix" {
+		err := os.Chmod(l.Address, 0666)
+		if err != nil {
+			logger.Printf("mDNS: chmod %s: %v", l.Address, err)
+			// just a warning
+		}
 	}
 
 	logger.Printf("running mDNS resolver on %s %v", l.Network, l.Address)
@@ -258,13 +275,6 @@ func namesForHost(host dns.Name, mzones *ns.Zones) (resolver.OwnerNames, error) 
 			ip4 := ip.To4()
 			if ip4 != nil {
 				nsec.Types.Set(dns.AType)
-				rev, err := dns.NameWithString(
-					fmt.Sprintf("%d.%d.%d.%d.in-addr.arpa",
-						ip4[3], ip4[2], ip4[1], ip4[0]))
-				if err != nil {
-					return nil, err
-				}
-
 				arec := &dns.ARecord{}
 				copy(arec.Address[:], ip4)
 
@@ -273,24 +283,9 @@ func namesForHost(host dns.Name, mzones *ns.Zones) (resolver.OwnerNames, error) 
 						H: dns.NewMDNSHeader(host, dns.AType, dns.INClass, 120*time.Second, true),
 						D: arec,
 					},
-					&dns.Record{
-						H: dns.NewMDNSHeader(rev, dns.PTRType, dns.INClass, 120*time.Second, true),
-						D: &dns.PTRRecord{host},
-					},
 				)
 			} else {
 				nsec.Types.Set(dns.AAAAType)
-				rname := &strings.Builder{}
-				for i := len(ip) - 1; i >= 0; i-- {
-					rname.WriteString(fmt.Sprintf("%x.%x.", ip[i]&0xf, ip[i]>>4))
-				}
-				rname.WriteString("ip6.arpa")
-				rev, err := dns.NameWithString(rname.String())
-
-				if err != nil {
-					return nil, err
-				}
-
 				aaaarec := &dns.AAAARecord{}
 				copy(aaaarec.Address[:], ip)
 
@@ -299,12 +294,20 @@ func namesForHost(host dns.Name, mzones *ns.Zones) (resolver.OwnerNames, error) 
 						H: dns.NewMDNSHeader(host, dns.AAAAType, dns.INClass, 120*time.Second, true),
 						D: aaaarec,
 					},
-					&dns.Record{
-						H: dns.NewMDNSHeader(rev, dns.PTRType, dns.INClass, 120*time.Second, true),
-						D: &dns.PTRRecord{host},
-					},
 				)
 			}
+			records = append(records,
+				&dns.Record{
+					H: dns.NewMDNSHeader(
+						resolver.ArpaName(ip),
+						dns.PTRType,
+						dns.INClass,
+						120*time.Second,
+						true,
+					),
+					D: &dns.PTRRecord{Name: host},
+				},
+			)
 		}
 
 		records = append(records, &dns.Record{
