@@ -290,78 +290,50 @@ func (z *Zone) MLookup(
 	return
 }
 
-// Remove returns all the records for a given name and interface scope, removing them from the authoritative db.
-// Records both interface specific and without scope are returned and removed together. The result is intended for the
-// authority section of a probe in conflict.
+// Remove returns all the records for a given name in all its interface scopes.
 // The underlying cache is also removed, however its records are not returned as they are not authoritative and are not
 // likely to be present under normal circumstances.
-func (z *Zone) Remove(key string, name dns.Name) ([]*dns.Record, []*dns.Record, error) {
-	var db nsdb.Db
-	var irecords, records []*dns.Record
+func (z *Zone) Remove(name dns.Name) (resolver.IfaceRRSets, error) {
+	abort := true
 
 	z.Lock()
 	defer func() {
-		if db != nil {
-			db.EndUpdate(true)
+		if abort {
+			for _, db := range z.keys {
+				db.EndUpdate(true)
+			}
 			z.Unlock()
 		}
 	}()
 
-	db, _ = z.keys[key]
-	if db == nil {
-		db = z.db
+	for _, db := range z.keys {
+		if err := db.BeginUpdate(); err != nil {
+			return nil, err
+		}
 	}
 
-	move := func(db nsdb.Db) ([]*dns.Record, error) {
-		var result []*dns.Record
-
+	rrsets := make(resolver.IfaceRRSets)
+	for iface, db := range z.keys {
 		rrmap, err := db.Lookup(name)
 		if err != nil && !errors.Is(err, dns.NXDomain) {
 			return nil, err
 		}
-		for _, v := range rrmap {
-			result = append(result, v.Records...)
+		for _, rrset := range rrmap {
+			rrsets[iface] = append(rrsets[iface], rrset.Records...)
 		}
-		if err == nil {
-			if err := db.Enter(name, nil); err != nil {
-				return nil, err
-			}
-		}
-		return result, nil
-	}
-
-	if db != nil {
-		if err := db.BeginUpdate(); err != nil {
-			return nil, nil, err
-		}
-		result, err := move(db)
-		if err != nil {
-			return nil, nil, err
-		}
-		if db != z.db {
-			irecords = result
-		} else {
-			records = result
+		if err := db.Enter(name, nil); err != nil {
+			return nil, err
 		}
 	}
 
-	if db != z.db && z.db != nil {
-		result, err := move(z.db)
-		if err != nil {
-			return nil, nil, err
-		}
-		records = result
+	abort = false
+	for _, db := range z.keys {
+		db.EndUpdate(false)
 	}
-
-	err := db.EndUpdate(false)
 	z.Unlock()
-	db = nil
-	if err != nil {
-		return nil, nil, err
-	}
 
-	z.Zone.Remove(key, name)
-	return irecords, records, nil
+	z.Zone.Remove(name)
+	return rrsets, nil
 }
 
 func (z *Zone) Lookup(

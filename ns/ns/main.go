@@ -320,7 +320,7 @@ func namesForHost(host dns.Name, mzones *ns.Zones) (resolver.OwnerNames, error) 
 	return names, nil
 }
 
-func announceHost(ctx context.Context, servers []*ns.Server, mzones *ns.Zones) error {
+func announceHost(ctx context.Context, wg *sync.WaitGroup, servers []*ns.Server, mzones *ns.Zones) error {
 	hostname, err := os.Hostname()
 	if err != nil {
 		return err
@@ -334,8 +334,7 @@ func announceHost(ctx context.Context, servers []*ns.Server, mzones *ns.Zones) e
 	var names resolver.OwnerNames
 
 	try := 0
-	stop := false
-	for !stop {
+	for err == nil {
 		var host dns.Name
 		if try == 0 {
 			host, err = dns.NameWithString(hostname + ".local")
@@ -356,23 +355,27 @@ func announceHost(ctx context.Context, servers []*ns.Server, mzones *ns.Zones) e
 		errch := make(chan error, len(servers))
 
 		for _, s := range servers {
+			wg.Add(1)
 			go func(s *ns.Server) {
-				err2 := s.Announce(actx, names, cancel)
-				if err2 != nil && !errors.Is(err2, context.Canceled) && !errors.Is(err2, dns.YXDomain) {
-					errch <- err2
+				err := s.Announce(actx, names, cancel)
+				if err != nil {
+					errch <- err
 				}
+				wg.Done()
 			}(s)
 		}
 
 		select {
 		case <-ctx.Done():
-			stop = true
-			cancel()
-			err = ctx.Err()
 		case err = <-errch:
-			stop = true
-			cancel()
-		case <-actx.Done():
+			if errors.Is(err, context.Canceled) || errors.Is(err, dns.YXDomain) {
+				err = nil
+			}
+		}
+		cancel()
+
+		if err == nil {
+			err = ctx.Err()
 		}
 	}
 
@@ -548,7 +551,7 @@ func main() {
 	if conf.AnnounceHost {
 		wg2.Add(1)
 		go func() {
-			err := announceHost(ctx2, servers, mzones)
+			err := announceHost(ctx2, wg2, servers, mzones)
 			logger.Printf("mDNS host annoucement: %v", err)
 			wg2.Done()
 		}()

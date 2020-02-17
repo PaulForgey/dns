@@ -45,6 +45,12 @@ func questionKey(iface string, from net.Addr) string {
 	return iface + from.String()
 }
 
+func newQuestionTable() *questionTable {
+	return &questionTable{
+		questions: make(map[string]*question),
+	}
+}
+
 func (t *questionTable) updateQuestion(key string, d time.Duration, answers []*dns.Record) {
 	t.Lock()
 	q, ok := t.questions[key]
@@ -85,7 +91,7 @@ func (t *questionTable) createQuestion(key string, d time.Duration, response []*
 // Running multiple ServerMDNS routines on the same Server instance will not crash, but it will not behave optimally.
 // It is possible to run the same zones between Serve and ServeMDNS
 func (s *Server) ServeMDNS(ctx context.Context) error {
-	var questions questionTable
+	questions := newQuestionTable()
 
 	if s.conn == nil {
 		return ErrNoConnection
@@ -170,13 +176,14 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 			}
 			if len(conflict) > 0 {
 				dns.RecordSets(conflict, func(name dns.Name, _ []*dns.Record) error {
+					nk := name.Key()
 					z := s.zones.Find(name)
 					if z == nil {
 						// likely racing zone add/remove between mdnsEnter and here
 						return nil
 					}
 					s.lk.Lock()
-					owner, _ := s.owners[name.Key()]
+					owner, _ := s.owners[nk]
 					s.lk.Unlock()
 					if owner == nil {
 						// no owner indcates a record we do not back down from
@@ -187,23 +194,16 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 					// we seem to have received something in conflict with one of our
 					// exclusive records, so put the name back into probe state
 					names := make(resolver.OwnerNames)
-					err := dnsconn.EachIface(func(iface string) error {
-						irecords, records, err := z.Remove(iface, name)
-						if err != nil {
-							s.logger.Printf("%s: error removing records from %v: %v",
-								iface, name, err)
-							return err
-						}
-						if err := names.Enter(s.zones, iface, irecords); err != nil {
-							return err
-						}
-						if err := names.Enter(s.zones, "", records); err != nil {
-							return err
-						}
-						return nil
-					})
+					rrsets, err := z.Remove(name)
 					if err != nil {
+						s.logger.Printf("%v: error removing records: %v", name, err)
 						return err
+					}
+					names[nk] = &resolver.OwnerName{
+						Name:      name,
+						Z:         z,
+						RRSets:    rrsets,
+						Exclusive: true,
 					}
 					go s.probe(ctx, names)
 
@@ -291,7 +291,7 @@ func (s *Server) Announce(ctx context.Context, names resolver.OwnerNames, confli
 	if conflict != nil {
 		s.lk.Lock()
 		for nk, owner := range names {
-			s.logger.Printf("%v: Announce", owner.Name)
+			s.logger.Printf("%v (%s): Announce", owner.Name, s.conn.Network())
 			if owner.Exclusive {
 				s.owners[nk] = conflict
 			}
@@ -314,50 +314,41 @@ func (s *Server) Unannounce(names resolver.OwnerNames) error {
 	s.lk.Lock()
 	for nk, owner := range names {
 		delete(s.owners, nk)
-		s.logger.Printf("%v: Unannounce", owner.Name)
+		s.logger.Printf("%v (%s): Unannounce", owner.Name, s.conn.Network())
 	}
 	s.lk.Unlock()
 
-	rrset := make(resolver.IfaceRRSets)
+	rrsets := make(resolver.IfaceRRSets)
 	for _, owner := range names {
-		if err := dnsconn.EachIface(func(iface string) error {
-			irecords, records, err := owner.Z.Remove(iface, owner.Name)
-			if err != nil {
-				s.logger.Printf("%s: %v: error removing: %v", iface, owner.Name, err)
-				return err
-			}
+		nsets, err := owner.Z.Remove(owner.Name)
+		if err != nil {
+			s.logger.Printf("%v: error removing: %v", owner.Name, err)
+			return err
+		}
+		for iface, records := range nsets {
 			for _, r := range records {
 				r.H.SetTTL(time.Second)
 			}
-			for _, r := range irecords {
-				r.H.SetTTL(time.Second)
-			}
-
-			rrset.Add(iface, irecords)
-			rrset.Add("", records)
-			return nil
-		}); err != nil {
-			return err
+			rrsets[iface] = dns.Merge(rrsets[iface], records)
 		}
 	}
 
-	for iface, _ := range rrset {
-		if iface == "" {
-			continue
-		}
-		records := rrset.Records(iface)
+	err := dnsconn.EachIface(func(iface string) error {
+		records := rrsets.Records(iface)
 		if len(records) == 0 {
-			continue
+			return nil
 		}
 		for _, r := range records {
 			s.logger.Printf("%s: unannouncing %v", iface, r)
 		}
 		if err := s.respond(iface, nil, records); err != nil {
 			s.logger.Printf("%s: error unannouncing: %v", iface, err)
+			return err
 		}
-	}
+		return nil
+	})
 
-	return nil
+	return err
 }
 
 // PersistentQuery starts a persistent query q until ctx is canceled
@@ -750,13 +741,10 @@ func (s *Server) announce(names resolver.OwnerNames) error {
 		}
 	}
 
-	for iface, _ := range answers {
-		if iface == "" {
-			continue
-		}
+	err := dnsconn.EachIface(func(iface string) error {
 		records := answers.Records(iface)
 		if len(records) == 0 {
-			continue
+			return nil
 		}
 
 		for _, r := range records {
@@ -767,9 +755,11 @@ func (s *Server) announce(names resolver.OwnerNames) error {
 			s.logger.Printf("%s (%s): error announcing records: %v", iface, s.conn.Network(), err)
 			return err
 		}
-	}
 
-	return nil
+		return nil
+	})
+
+	return err
 }
 
 func (s *Server) mdnsEnter(now time.Time, iface string, records []*dns.Record) ([]*dns.Record, error) {

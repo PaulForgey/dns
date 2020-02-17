@@ -25,7 +25,7 @@ type ZoneAuthority interface {
 	// MLookup is Lookup with MDNS semantics
 	MLookup(key string, where Scope, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (a, ex []*dns.Record, err error)
 	// Remove removes records matching name and interface
-	Remove(key string, name dns.Name) (irecords, records []*dns.Record, err error)
+	Remove(name dns.Name) (IfaceRRSets, error)
 	// Hint returns true if this is a hint zone
 	Hint() bool
 	// Name returns the name of the zone
@@ -130,57 +130,27 @@ func (z *Zone) MLookup(
 	return
 }
 
-// Remove removes a name from a zone
-func (z *Zone) Remove(iface string, name dns.Name) ([]*dns.Record, []*dns.Record, error) {
-	var db *nsdb.Cache
-	var irecords, records []*dns.Record
-
+// Remove removes a name from a zone, returning its content as an IfaceRRSet
+func (z *Zone) Remove(name dns.Name) (IfaceRRSets, error) {
 	z.Lock()
 	defer z.Unlock()
 
-	db, _ = z.keys[iface]
-	if db == nil {
-		db = z.cache
-	}
+	rrsets := make(IfaceRRSets)
 
-	move := func(db *nsdb.Cache) ([]*dns.Record, error) {
-		var result []*dns.Record
-
+	for iface, db := range z.keys {
 		rrmap, err := db.Lookup(name)
 		if err != nil && !errors.Is(err, dns.NXDomain) {
 			return nil, err
 		}
-		for _, v := range rrmap {
-			result = append(result, v.Records...)
+		for _, rrset := range rrmap {
+			rrsets[iface] = append(rrsets[iface], rrset.Records...)
 		}
-		if err == nil {
-			if err := db.Enter(name, nil); err != nil {
-				return nil, err
-			}
+		if err := db.Enter(name, nil); err != nil {
+			return nil, err
 		}
-		return result, nil
 	}
 
-	if db != nil {
-		result, err := move(db)
-		if err != nil {
-			return nil, nil, err
-		}
-		if db != z.cache {
-			irecords = result
-		} else {
-			records = result
-		}
-	}
-	if db != z.cache && z.cache != nil {
-		result, err := move(z.cache)
-		if err != nil {
-			return nil, nil, err
-		}
-		records = result
-	}
-
-	return irecords, records, nil
+	return rrsets, nil
 }
 
 // Lookup a name within a zone, or a delegation above it.
