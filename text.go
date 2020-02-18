@@ -284,12 +284,16 @@ func (c *TextCodec) token(optional bool) (string, error) {
 			}
 		}
 
-		b := c.line[0]
-		c.line = c.line[1:]
+		b, length := utf8.DecodeRuneInString(c.line)
+		if b == utf8.RuneError {
+			b = rune(c.line[0])
+			length = 1
+		}
+		c.line = c.line[length:]
 
 		if c.sol {
 			c.sol = false
-			if unicode.IsSpace(rune(b)) {
+			if unicode.IsSpace(b) {
 				// special case: blank is a token, but only at start of line
 				return "", nil
 			}
@@ -365,7 +369,7 @@ func (c *TextCodec) token(optional bool) (string, error) {
 			case ')':
 				c.paren = false
 			default:
-				if unicode.IsSpace(rune(b)) {
+				if unicode.IsSpace(b) {
 					// eat leading whitespace
 					if len(token) > 0 {
 						s = done
@@ -384,7 +388,7 @@ func (c *TextCodec) token(optional bool) (string, error) {
 				// special case for domain name parsing
 				token += dot
 			default:
-				if unicode.IsNumber(rune(b)) {
+				if unicode.IsNumber(b) {
 					if len(c.line) < 2 ||
 						!unicode.IsNumber(rune(c.line[0])) ||
 						!unicode.IsNumber(rune(c.line[1])) {

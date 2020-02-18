@@ -1,6 +1,7 @@
 package dns
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net"
@@ -327,6 +328,42 @@ host 10m IN TXT "netbios=\148\152r" ; decimal escapes
 	}
 	if !r.Equal(expect) {
 		t.Fatalf("%v != %v", r, expect)
+	}
+}
+
+func TestUTF8(t *testing.T) {
+	input := `
+💥💀💣🌀👊.local. 10m0s IN TXT "ΚΕΦΑΛΗΞΘ"
+`
+
+	c := NewTextReader(strings.NewReader(input), nil)
+	r := &Record{}
+	if err := c.Decode(r); err != nil {
+		t.Fatal(err)
+	}
+	name, err := NameWithString("💥💀💣🌀👊.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect := &Record{
+		H: NewHeader(name, TXTType, INClass, 10*time.Minute),
+		D: &TXTRecord{Text: []string{"ΚΕΦΑΛΗΞΘ"}},
+	}
+	if !r.Equal(expect) {
+		t.Fatalf("parse: %v != %v", r, expect)
+	}
+
+	buf := &bytes.Buffer{}
+	c = NewTextWriter(buf)
+	if err := c.Encode(r); err != nil {
+		t.Fatal(err)
+	}
+	c = NewTextReader(buf, nil)
+	if err := c.Decode(r); err != nil {
+		t.Fatal(err)
+	}
+	if !r.Equal(expect) {
+		t.Fatalf("round trip: %v != %v", r, expect)
 	}
 }
 
