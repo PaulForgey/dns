@@ -113,19 +113,19 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 			z := s.zones.Find(q.Name())
 			if z != nil {
 				msg.QR = true
-				a, ex, err := z.MLookup(iface, resolver.InAuth, q.Name(), q.Type(), q.Class())
+				a, err := z.MLookup(iface, resolver.InAuth, q.Name(), q.Type(), q.Class())
 				if err != nil {
 					s.logger.Printf("%s: mdns lookup error %v: %v", iface, q, err)
 					continue
 				}
-				if len(a) == 0 && len(ex) == 0 {
+				if len(a) == 0 {
 					continue
 				}
 
-				msg.Answers = make([]*dns.Record, 0, len(a)+len(ex))
+				msg.Answers = make([]*dns.Record, 0, len(a))
 				msg.Authority = nil
 				msg.Additional = nil
-				for _, r := range append(a, ex...) {
+				for _, r := range a {
 					// sanitize records for legacy query:
 					// - cap TTL to 10 seconds
 					// - do not return mdns specifics in header format
@@ -258,21 +258,23 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 					continue // ignore zones we don't serve
 				}
 
-				d, e, err := z.MLookup(iface, resolver.InAuth, q.Name(), q.Type(), q.Class())
+				a, err := z.MLookup(iface, resolver.InAuth, q.Name(), q.Type(), q.Class())
 				if err != nil {
 					s.logger.Printf("%s: mdns lookup error %v: %v", iface, q, err)
 					continue
 				}
-
-				d = purgeKnownAnswers(d, msg.Answers)
-				e = purgeKnownAnswers(e, msg.Answers)
+				a = purgeKnownAnswers(a, msg.Answers)
 
 				if q.(*dns.MDNSQuestion).QU() {
-					unicast = append(unicast, d...)
-					unicast = append(unicast, e...)
+					unicast = a
 				} else {
-					exclusive = append(exclusive, e...)
-					delayed = append(delayed, d...)
+					for _, r := range a {
+						if dns.CacheFlush(r.H) {
+							exclusive = append(exclusive, r)
+						} else {
+							delayed = append(delayed, r)
+						}
+					}
 				}
 			}
 
@@ -396,15 +398,18 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question) error {
 		exclusive := true
 
 		err = dnsconn.EachIface(func(iface string) error {
-			var a, ex []*dns.Record
-
-			a, ex, err = auth.MLookup(iface, resolver.InAny, q.Name(), q.Type(), q.Class())
+			a, err := auth.MLookup(iface, resolver.InAny, q.Name(), q.Type(), q.Class())
 			if err != nil {
 				return err
 			}
-			exclusive = exclusive && len(a) == 0
-
-			a = append(a, ex...)
+			if exclusive {
+				for _, r := range a {
+					exclusive = exclusive && dns.CacheFlush(r.H)
+					if !exclusive {
+						break
+					}
+				}
+			}
 			if len(a) == 0 {
 				oneEmpty = true
 				exclusive = false
@@ -841,17 +846,12 @@ func (s *Server) mquery(iface string, questions []dns.Question) error {
 
 		msg.Questions = append(msg.Questions, q)
 
-		a, ex, err := auth.MLookup(iface, resolver.InCache, q.Name(), q.Type(), q.Class())
+		a, err := auth.MLookup(iface, resolver.InCache, q.Name(), q.Type(), q.Class())
 		if err != nil {
 			return err
 		}
 
 		for _, r := range a {
-			if r.D != nil && (r.H.OriginalTTL()>>1) >= r.H.TTL() {
-				msg.Answers = append(msg.Answers, r)
-			}
-		}
-		for _, r := range ex {
 			if r.D != nil && (r.H.OriginalTTL()>>1) >= r.H.TTL() {
 				msg.Answers = append(msg.Answers, r)
 			}

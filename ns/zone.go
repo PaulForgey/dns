@@ -229,7 +229,7 @@ func (z *Zone) MLookup(
 	name dns.Name,
 	rrtype dns.RRType,
 	rrclass dns.RRClass,
-) (a, ex []*dns.Record, err error) {
+) (a []*dns.Record, err error) {
 	z.RLock()
 	db, ok := z.keys[key]
 	if !ok {
@@ -248,17 +248,7 @@ func (z *Zone) MLookup(
 			}
 
 			if rrset != nil {
-				if rrset.Exclusive {
-					ex = rrset.Copy().Records
-				} else {
-					for _, r := range rrset.Records {
-						if dns.CacheFlush(r.H) {
-							ex = append(ex, r)
-						} else {
-							a = append(a, r)
-						}
-					}
-				}
+				a = dns.Merge(a, rrset.Records)
 			}
 
 			if db != z.db {
@@ -269,23 +259,19 @@ func (z *Zone) MLookup(
 		}
 	}
 
-	if (where&resolver.InCache) != 0 && len(ex) == 0 {
-		var a2, ex2 []*dns.Record
-		a2, ex2, err = z.Zone.MLookup(key, where, name, rrtype, rrclass)
+	if (where & resolver.InCache) != 0 {
+		var a2 []*dns.Record
+		a2, err = z.Zone.MLookup(key, where, name, rrtype, rrclass)
 		if err != nil {
 			return
-		}
-
-		if len(ex) == 0 {
-			ex = ex2
 		}
 		a = dns.Merge(a2, a)
 	}
 
 	err = nil
 
-	if len(a) == 0 && len(ex) == 0 && !rrtype.Asks(dns.NSECType) {
-		_, ex, err = z.MLookup(key, where, name, dns.NSECType, rrclass)
+	if len(a) == 0 && !rrtype.Asks(dns.NSECType) {
+		return z.MLookup(key, where, name, dns.NSECType, rrclass)
 	}
 	return
 }
@@ -1126,9 +1112,7 @@ func (zs *Zones) Additional(mdns bool, msg *dns.Message) {
 		// find it from cache
 		var answers []*dns.Record
 		if mdns {
-			var a2 []*dns.Record
-			answers, a2, _ = zone.MLookup(msg.Iface, resolver.InAuth, name, rrtype, rec.Class())
-			answers = append(answers, a2...)
+			answers, _ = zone.MLookup(msg.Iface, resolver.InAuth, name, rrtype, rec.Class())
 		} else {
 			answers, _, _ = zone.Lookup(msg.Iface, name, rrtype, rec.Class())
 		}

@@ -151,14 +151,14 @@ func (r *MResolver) query(ctx context.Context, queries map[uint16]*query, msg *d
 				defer z.PersistentQuery(c, "", nil)
 
 				for err == nil {
-					a, ex, err := z.MLookup(iface, resolver.InAny, q.Name(), q.Type(), q.Class())
+					a, err := z.MLookup(iface, resolver.InAny, q.Name(), q.Type(), q.Class())
 					if err != nil {
 						r.logger.Printf("%s: MLookup %v: %v", iface, q, err)
 						if err = r.respond(msg.ID, iface, q, nil, err); err != nil {
 							break
 						}
 					}
-					if err = r.respond(msg.ID, iface, q, append(a, ex...), nil); err != nil {
+					if err = r.respond(msg.ID, iface, q, a, nil); err != nil {
 						break
 					}
 

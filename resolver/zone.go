@@ -23,7 +23,7 @@ type ZoneAuthority interface {
 	// Lookup retrieves authoritative records for the zone, or cached entries if they were entered
 	Lookup(key string, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (a []*dns.Record, ns []*dns.Record, err error)
 	// MLookup is Lookup with MDNS semantics
-	MLookup(key string, where Scope, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (a, ex []*dns.Record, err error)
+	MLookup(key string, where Scope, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) ([]*dns.Record, error)
 	// Remove removes records matching name and interface
 	Remove(name dns.Name) (IfaceRRSets, error)
 	// Hint returns true if this is a hint zone
@@ -83,7 +83,7 @@ func (z *Zone) MLookup(
 	name dns.Name,
 	rrtype dns.RRType,
 	rrclass dns.RRClass,
-) (a []*dns.Record, ex []*dns.Record, err error) {
+) (a []*dns.Record, err error) {
 	if (where & InCache) == 0 {
 		return
 	}
@@ -101,23 +101,7 @@ func (z *Zone) MLookup(
 			return
 		}
 		if rrset != nil {
-			if rrtype == dns.AnyType || rrclass == dns.AnyClass {
-				for _, r := range rrset.Records {
-					if dns.CacheFlush(r.H) {
-						ex = append(ex, r)
-					} else {
-						a = append(a, r)
-					}
-				}
-			} else {
-				rrset = rrset.Copy()
-				if rrset.Exclusive {
-					ex = rrset.Records
-				} else {
-					a = rrset.Records
-				}
-			}
-			return
+			a = dns.Merge(a, rrset.Records)
 		}
 		if db != z.cache {
 			db = z.cache
