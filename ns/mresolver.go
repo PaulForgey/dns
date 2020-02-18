@@ -104,10 +104,15 @@ func (r *MResolver) Serve(ctx context.Context) error {
 func (r *MResolver) query(ctx context.Context, queries map[uint16]*query, msg *dns.Message) {
 	pq := queries[msg.ID]
 	if pq == nil {
-		pq = &query{}
-		queries[msg.ID] = pq
+		if !msg.QR {
+			pq = &query{}
+			queries[msg.ID] = pq
+		}
 	} else {
 		pq.cancel()
+	}
+	if msg.QR {
+		return // QR to terminate query
 	}
 	pq.ctx, pq.cancel = context.WithCancel(ctx)
 

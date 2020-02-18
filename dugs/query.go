@@ -42,10 +42,13 @@ func query(r *resolver.MResolver, questions []dns.Question) {
 			cancel()
 		}()
 
-		err := r.Query(ctx, questions, func(iface string, records []*dns.Record) error {
-			printRecords(iface, records)
+		err := r.Query(ctx, questions, func(rrsets resolver.IfaceRRSets) error {
+			for iface, records := range rrsets {
+				printRecords(iface, records)
+			}
 			return nil
 		})
+		cancel()
 
 		if err != nil {
 			exitError(err)

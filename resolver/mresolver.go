@@ -21,9 +21,10 @@ type MResolver struct {
 }
 
 type mquery struct {
-	wait   sync.WaitGroup
-	result func(string, []*dns.Record) error
-	err    chan error
+	answers IfaceRRSets
+	result  func(IfaceRRSets) error
+	err     chan error
+	t       *time.Timer
 }
 
 // NewMResolverClient creates a new client side IPC endpoint to talk to ns.MResolver.
@@ -59,26 +60,19 @@ func NewMResolver(conn dnsconn.Conn) *MResolver {
 
 			r.lk.Lock()
 			qr, _ := r.queries[msg.ID]
-			if qr != nil {
-				qr.wait.Add(1)
-			}
 			o, ok := r.owners[msg.ID]
 			if ok {
 				if msg.RCode != dns.NoError {
 					delete(r.owners, msg.ID)
+					o <- msg.RCode
 				} else {
 					o = nil
 				}
-			}
-			if o != nil {
-				o <- msg.RCode
 			}
 			r.lk.Unlock()
 
 			if qr != nil {
 				var iface string
-				answers := msg.Answers
-
 				if len(msg.Authority) > 0 {
 					// first record denotes interface
 					txt, _ := msg.Authority[0].D.(*dns.TXTRecord)
@@ -86,34 +80,33 @@ func NewMResolver(conn dnsconn.Conn) *MResolver {
 						iface = txt.Text[0]
 					}
 				}
-				if len(msg.Additional) > 0 && len(msg.Questions) > 0 {
-					// first additional is NSEC negative cache, if present
-					q := msg.Questions[0]
-					rh := msg.Additional[0].H
-					nsec, _ := msg.Additional[0].D.(*dns.NSECRecord)
-					if nsec != nil && nsec.Next.Equal(rh.Name()) {
-						if q.Type() != dns.AnyType && !nsec.Types.Is(q.Type()) {
-							answers = append(answers, &dns.Record{
-								H: dns.NewMDNSHeader(
-									rh.Name(),
-									q.Type(),
-									rh.Class(),
-									rh.TTL(),
-									true,
-								),
-								D: nil,
-							})
+
+				r.lk.Lock()
+
+				if qr.answers == nil {
+					qr.answers = make(IfaceRRSets)
+				}
+				qr.answers.Add(iface, msg.Answers)
+
+				if qr.t == nil {
+					qr.t = time.AfterFunc(200*time.Millisecond, func() {
+						r.lk.Lock()
+						answers := qr.answers
+						qr.answers = nil
+						qr.t = nil
+						r.lk.Unlock()
+
+						if err := qr.result(answers); err != nil {
+							r.lk.Lock()
+							delete(r.queries, msg.ID)
+							r.lk.Unlock()
+
+							qr.err <- err
 						}
-					}
+					})
 				}
 
-				if err := qr.result(iface, answers); err != nil {
-					qr.err <- err
-					r.lk.Lock()
-					delete(r.queries, msg.ID)
-					r.lk.Unlock()
-				}
-				qr.wait.Done()
+				r.lk.Unlock()
 			}
 
 		}
@@ -137,8 +130,7 @@ func (r *MResolver) Close() error {
 }
 
 // Query runs a persistent query asking q until ctx is done.
-// Query is guaranteed to not return before result does, if it is called.
-func (r *MResolver) Query(ctx context.Context, q []dns.Question, result func(string, []*dns.Record) error) error {
+func (r *MResolver) Query(ctx context.Context, q []dns.Question, result func(IfaceRRSets) error) error {
 	var err error
 
 	msg := &dns.Message{Opcode: dns.StandardQuery, Questions: q}
@@ -171,38 +163,34 @@ func (r *MResolver) Query(ctx context.Context, q []dns.Question, result func(str
 	}
 
 	r.lk.Lock()
+	if mq.t != nil {
+		mq.t.Stop()
+	}
 	delete(r.queries, msg.ID)
 	msg.Questions = nil
+	msg.QR = true
 	r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize)
 	r.lk.Unlock()
-	mq.wait.Wait()
 
 	return err
 }
 
 // QueryOne does a one shot query
+var errOneShot = errors.New("once")
+
 func (r *MResolver) QueryOne(ctx context.Context, q []dns.Question) (IfaceRRSets, error) {
-	var t *time.Timer
-	result := make(IfaceRRSets)
+	var result IfaceRRSets
 
-	tmo, cancel := context.WithTimeout(ctx, 3*time.Second)
+	qctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 
-	err := r.Query(tmo, q, func(iface string, a []*dns.Record) error {
-		result.Add(iface, a)
-		if len(a) > 0 {
-			if t == nil {
-				t = time.AfterFunc(200*time.Millisecond, cancel)
-			} else {
-				t.Reset(200 * time.Millisecond)
-			}
-		}
-
-		return nil
+	err := r.Query(qctx, q, func(answers IfaceRRSets) error {
+		result = answers
+		return errOneShot
 	})
 
 	cancel()
 
-	if err != nil && !errors.Is(err, context.Canceled) {
+	if !errors.Is(err, errOneShot) {
 		return nil, err
 	}
 

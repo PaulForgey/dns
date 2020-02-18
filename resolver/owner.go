@@ -105,6 +105,5 @@ func (s IfaceRRSets) Records(iface string) []*dns.Record {
 // Enter adds interface specific records to the set.
 // An error is returned if shared records are added to existing exclusive ones or vice versa.
 func (s IfaceRRSets) Add(iface string, records []*dns.Record) {
-	irecords, _ := s[iface]
-	s[iface] = dns.Merge(irecords, records)
+	s[iface] = dns.Merge(s[iface], records)
 }
