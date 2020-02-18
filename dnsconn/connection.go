@@ -362,6 +362,10 @@ func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 			}
 		}
 
+		if err = p.err; err != nil {
+			break
+		}
+
 		c := make(chan struct{})
 		p.waiters = append(p.waiters, c)
 		p.lk.Unlock()
@@ -373,9 +377,6 @@ func (p *PacketConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 		}
 
 		p.lk.Lock()
-		if err == nil {
-			err = p.err
-		}
 	}
 	p.lk.Unlock()
 
