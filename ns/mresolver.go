@@ -75,7 +75,7 @@ func (r *MResolver) Serve(ctx context.Context) error {
 		case dns.StandardQuery: // add or remove subscribed queries
 			err = nil
 
-			if r.allowQuery.Check(nil, msg.Iface, "") {
+			if r.allowQuery.Check(ctx, nil, msg.Iface, "") {
 				r.query(cctx, queries, msg)
 			} else {
 				err = dns.Refused
@@ -83,7 +83,7 @@ func (r *MResolver) Serve(ctx context.Context) error {
 			r.respond(msg.ID, "", nil, nil, err)
 
 		case dns.Update: // publish records
-			if r.allowUpdate.Check(nil, iface, "") {
+			if r.allowUpdate.Check(ctx, nil, iface, "") {
 				err = r.update(cctx, owners, msg)
 			} else {
 				err = dns.Refused

@@ -128,7 +128,7 @@ func (c CIDR) MarshalJSON() ([]byte, error) {
 	return json.Marshal(c.IPNet.String())
 }
 
-func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zones *ns.Zones) {
+func (l *Listener) run(ctx context.Context, conf *Conf, zones *ns.Zones) {
 	allowRecursion := conf.Access(&conf.AllowRecursion)
 	if l.VC {
 		c, err := net.Listen(l.Network, l.Address)
@@ -138,7 +138,7 @@ func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zone
 		}
 
 		logger.Printf("%s: listening %s %v", l.InterfaceName, l.Network, l.Address)
-		l.serveListener(ctx, wg, c, func(c dnsconn.Conn) {
+		l.serveListener(ctx, c, func(c dnsconn.Conn) {
 			s := ns.NewServer(logger, c, zones, res, allowRecursion)
 			s.Serve(ctx)
 		})
@@ -164,8 +164,7 @@ func (l *Listener) run(ctx context.Context, wg *sync.WaitGroup, conf *Conf, zone
 	}
 }
 
-func (l *Listener) runMDNS(ctx context.Context, wg *sync.WaitGroup, servers []*ns.Server, mzones *ns.Zones) {
-
+func (l *Listener) runMDNS(ctx context.Context, servers []*ns.Server, mzones *ns.Zones) {
 	if l.Network == "unix" {
 		err := os.MkdirAll(filepath.Dir(l.Address), 0755)
 		if err != nil {
@@ -188,14 +187,15 @@ func (l *Listener) runMDNS(ctx context.Context, wg *sync.WaitGroup, servers []*n
 	}
 
 	logger.Printf("running mDNS resolver on %s %v", l.Network, l.Address)
-	l.serveListener(ctx, wg, c, func(c dnsconn.Conn) {
+	l.serveListener(ctx, c, func(c dnsconn.Conn) {
 		c.(*dnsconn.StreamConn).MDNS()
 		r := ns.NewMResolver(logger, c, servers, mzones, ns.AllAccess, ns.AllAccess)
 		r.Serve(ctx)
 	})
 }
 
-func (l *Listener) serveListener(ctx context.Context, wg *sync.WaitGroup, c net.Listener, serve func(c dnsconn.Conn)) {
+func (l *Listener) serveListener(ctx context.Context, c net.Listener, serve func(c dnsconn.Conn)) {
+	wg := &sync.WaitGroup{}
 	lctx, cancel := context.WithCancel(ctx)
 	go func() {
 		<-lctx.Done()
@@ -217,11 +217,12 @@ func (l *Listener) serveListener(ctx context.Context, wg *sync.WaitGroup, c net.
 			go func() {
 				conn := dnsconn.NewStreamConn(a, l.Network, l.InterfaceName)
 				serve(conn)
-				wg.Done()
 				cancel()
+				wg.Done()
 			}()
 		}
 	}
+	wg.Wait()
 }
 
 func (l *Listener) newMDNS(zones *ns.Zones) *ns.Server {
@@ -323,7 +324,9 @@ func namesForHost(host dns.Name, mzones *ns.Zones) (resolver.OwnerNames, error) 
 	return names, nil
 }
 
-func announceHost(ctx context.Context, wg *sync.WaitGroup, servers []*ns.Server, mzones *ns.Zones) error {
+func announceHost(ctx context.Context, servers []*ns.Server, mzones *ns.Zones) error {
+	wg := &sync.WaitGroup{}
+
 	hostname, err := os.Hostname()
 	if err != nil {
 		return err
@@ -359,8 +362,8 @@ func announceHost(ctx context.Context, wg *sync.WaitGroup, servers []*ns.Server,
 
 		for _, s := range servers {
 			wg.Add(1)
+			s.SetHost(host)
 			go func(s *ns.Server) {
-				s.SetHost(host)
 				err := s.Announce(actx, names, cancel)
 				if err != nil {
 					errch <- err
@@ -388,6 +391,7 @@ func announceHost(ctx context.Context, wg *sync.WaitGroup, servers []*ns.Server,
 			s.Unannounce(names)
 		}
 	}
+	wg.Wait()
 
 	return err
 }
@@ -523,7 +527,7 @@ func main() {
 	for _, l := range conf.Listeners {
 		wg.Add(1)
 		go func(l Listener) {
-			l.run(ctx, wg, &conf, zones)
+			l.run(ctx, &conf, zones)
 			wg.Done()
 		}(l)
 	}
@@ -547,7 +551,7 @@ func main() {
 	if conf.MDNSResolver != nil {
 		wg2.Add(1)
 		go func() {
-			conf.MDNSResolver.runMDNS(ctx2, wg, servers, mzones)
+			conf.MDNSResolver.runMDNS(ctx2, servers, mzones)
 			wg2.Done()
 		}()
 	}
@@ -555,7 +559,7 @@ func main() {
 	if conf.AnnounceHost {
 		wg2.Add(1)
 		go func() {
-			err := announceHost(ctx2, wg2, servers, mzones)
+			err := announceHost(ctx2, servers, mzones)
 			logger.Printf("mDNS host annoucement: %v", err)
 			wg2.Done()
 		}()

@@ -19,7 +19,7 @@ var ErrNoNS = errors.New("zone has no NS records")
 var ErrNoNSAddrs = errors.New("zone has no resolvable hosts for NS records")
 
 type Access interface {
-	Check(from net.Addr, iface string, resource string) bool
+	Check(ctx context.Context, from net.Addr, iface string, resource string) bool
 }
 
 type Server struct {
@@ -42,7 +42,7 @@ type Server struct {
 
 type allAccess bool
 
-func (a allAccess) Check(net.Addr, string, string) bool {
+func (a allAccess) Check(context.Context, net.Addr, string, string) bool {
 	return bool(a)
 }
 
@@ -113,14 +113,14 @@ func (s *Server) Serve(ctx context.Context) error {
 			if zone = s.zones.Zone(q.Name()); zone != nil {
 				switch msg.Opcode {
 				case dns.Update:
-					if zone.AllowUpdate == nil || !zone.AllowUpdate.Check(from, iface, "") {
+					if zone.AllowUpdate == nil || !zone.AllowUpdate.Check(ctx, from, iface, "") {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
 					s.update(ctx, iface, msg, from, zone)
 
 				case dns.Notify:
-					if zone.AllowNotify == nil || !zone.AllowNotify.Check(from, iface, "") {
+					if zone.AllowNotify == nil || !zone.AllowNotify.Check(ctx, from, iface, "") {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
@@ -132,7 +132,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			switch q.Type() {
 			case dns.AXFRType, dns.IXFRType:
 				if zone = s.zones.Zone(q.Name()); zone != nil {
-					if zone.AllowTransfer == nil || !zone.AllowTransfer.Check(from, iface, "") {
+					if zone.AllowTransfer == nil || !zone.AllowTransfer.Check(ctx, from, iface, "") {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}
@@ -141,7 +141,7 @@ func (s *Server) Serve(ctx context.Context) error {
 
 			default:
 				if zone, _ = s.zones.Find(q.Name()).(*Zone); zone != nil {
-					if zone.AllowQuery == nil || !zone.AllowQuery.Check(from, iface, "") {
+					if zone.AllowQuery == nil || !zone.AllowQuery.Check(ctx, from, iface, "") {
 						s.answer(dns.Refused, true, msg, from)
 						continue
 					}

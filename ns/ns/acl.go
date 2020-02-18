@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net"
 	"strings"
 
@@ -16,7 +17,7 @@ func (c *Conf) Access(list *[]string) ns.Access {
 	return &acls{c: c, list: list}
 }
 
-func (a *acls) Check(from net.Addr, iface string, resource string) bool {
+func (a *acls) Check(ctx context.Context, from net.Addr, iface string, resource string) bool {
 	a.c.RLock()
 	defer a.c.RUnlock()
 
@@ -26,7 +27,7 @@ func (a *acls) Check(from net.Addr, iface string, resource string) bool {
 			logger.Printf("unknown acl %s", name)
 			continue
 		}
-		if acl.Check(from, iface, resource) {
+		if acl.Check(ctx, from, iface, resource) {
 			return true
 		}
 	}
@@ -34,7 +35,7 @@ func (a *acls) Check(from net.Addr, iface string, resource string) bool {
 	return false
 }
 
-func (a ACL) Check(from net.Addr, iface string, resource string) bool {
+func (a ACL) Check(ctx context.Context, from net.Addr, iface string, resource string) bool {
 	if len(a) == 0 {
 		return false
 	}

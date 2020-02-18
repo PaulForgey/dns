@@ -72,15 +72,15 @@ func (ra *requestAuth) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		auth = ra.s.allowGET.Check(addr, "", r.URL.Path)
+		auth = ra.s.allowGET.Check(r.Context(), addr, "", r.URL.Path)
 	case http.MethodPut:
-		auth = ra.s.allowPUT.Check(addr, "", r.URL.Path)
+		auth = ra.s.allowPUT.Check(r.Context(), addr, "", r.URL.Path)
 	case http.MethodDelete:
-		auth = ra.s.allowDELETE.Check(addr, "", r.URL.Path)
+		auth = ra.s.allowDELETE.Check(r.Context(), addr, "", r.URL.Path)
 	case http.MethodPost:
-		auth = ra.s.allowPOST.Check(addr, "", r.URL.Path)
+		auth = ra.s.allowPOST.Check(r.Context(), addr, "", r.URL.Path)
 	case http.MethodPatch:
-		auth = ra.s.allowPATCH.Check(addr, "", r.URL.Path)
+		auth = ra.s.allowPATCH.Check(r.Context(), addr, "", r.URL.Path)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return

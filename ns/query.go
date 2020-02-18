@@ -12,7 +12,7 @@ func (s *Server) query(ctx context.Context, msg *dns.Message, from net.Addr, zon
 	var err error
 	q := msg.Questions[0]
 
-	msg.RA = (s.res != nil) && s.allowRecursion.Check(from, msg.Iface, "")
+	msg.RA = (s.res != nil) && s.allowRecursion.Check(ctx, from, msg.Iface, "")
 	msg.AA = !zone.Hint()
 
 	// try our own authority first

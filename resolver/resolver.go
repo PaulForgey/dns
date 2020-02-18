@@ -12,7 +12,6 @@ import (
 	"tessier-ashpool.net/dns/dnsconn"
 )
 
-var ErrNoRecords = errors.New("no matching records") // returned only by specialized Lookup methods
 var ErrLameDelegation = errors.New("lame delegation")
 var ErrNoRecursion = errors.New("recursion denied")
 
@@ -199,11 +198,14 @@ func (r *Resolver) Query(
 	r.lk.Lock()
 	if len(r.servers) > 1 {
 		// round robin servers if we have several
-		top := r.servers[0]
-		copy(r.servers, r.servers[1:])
-		r.servers[len(r.servers)-1] = top
+		servers = make([]net.Addr, len(r.servers))
+		copy(servers, r.servers[1:])
+		servers[len(servers)-1] = r.servers[0]
+		// swap in a copy to avoid moving the list in place while others use it
+		r.servers = servers
+	} else {
+		servers = r.servers
 	}
-	servers = r.servers
 	r.lk.Unlock()
 	return r.query(ctx, servers, key, name, rrtype, rrclass)
 }
