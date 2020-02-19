@@ -10,14 +10,19 @@ import (
 	"tessier-ashpool.net/dns/resolver"
 )
 
-func printRecords(iface string, records []*dns.Record) {
-	fmt.Printf("; iface=%s\n", iface)
-	if len(records) > 0 {
-		for _, r := range records {
-			fmt.Println(r)
+func printRecords(rrsets resolver.IfaceRRSets) {
+	for iface, records := range rrsets {
+		if iface == "" && len(records) == 0 {
+			continue
 		}
-	} else {
-		fmt.Println("; none")
+		fmt.Printf("; iface=%s\n", iface)
+		if len(records) > 0 {
+			for _, r := range records {
+				fmt.Println(r)
+			}
+		} else {
+			fmt.Println("; none")
+		}
 	}
 	fmt.Println()
 }
@@ -29,9 +34,7 @@ func query(r *resolver.MResolver, questions []dns.Question) {
 			exitError(err)
 		}
 
-		for iface, records := range rrsets {
-			printRecords(iface, records)
-		}
+		printRecords(rrsets)
 	} else {
 		ctx, cancel := context.WithCancel(context.Background())
 		c := make(chan os.Signal, 1)
@@ -43,9 +46,7 @@ func query(r *resolver.MResolver, questions []dns.Question) {
 		}()
 
 		err := r.Query(ctx, questions, func(rrsets resolver.IfaceRRSets) error {
-			for iface, records := range rrsets {
-				printRecords(iface, records)
-			}
+			printRecords(rrsets)
 			return nil
 		})
 		cancel()
