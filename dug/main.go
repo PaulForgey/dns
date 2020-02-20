@@ -19,6 +19,7 @@ var rrclass = dns.INClass
 var rd = true
 var serial uint
 var updates string
+var x bool
 
 func exitError(msg interface{}) {
 	fmt.Fprintf(os.Stderr, "%s: %v\n", os.Args[0], msg)
@@ -38,6 +39,7 @@ func main() {
 	flag.BoolVar(&rd, "rd", true, "send recursive queries to -host")
 	flag.UintVar(&serial, "serial", serial, "if -type=ixfr, serial to use in SOA")
 	flag.StringVar(&updates, "updates", updates, "file to send ddns updates from (- for stdin)")
+	flag.BoolVar(&x, "x", x, "convert name to reverse IP in arpa zone")
 
 	flag.Parse()
 
@@ -47,9 +49,21 @@ func main() {
 		os.Exit(2)
 	}
 
-	name, err := dns.NameWithString(args[0])
-	if err != nil {
-		exitErrorf("cannot parse name '%s': %v", name, err)
+	var name dns.Name
+	var err error
+
+	if x {
+		var ip net.IP
+		ip = net.ParseIP(args[0])
+		if ip == nil {
+			exitErrorf("cannot parse '%s' as ip address", args[0])
+		}
+		name = resolver.ArpaName(ip)
+	} else {
+		name, err = dns.NameWithString(args[0])
+		if err != nil {
+			exitErrorf("cannot parse name '%s': %v", args[0], err)
+		}
 	}
 
 	var r *resolver.Resolver

@@ -19,9 +19,8 @@ primary, secondary, and hint zones.
 
 Has REST server allowing zones to be configured and loaded.
 
-mDNS functionality is coming along. Still needs higher level resolver interface for querying, browsing, announcing and 
-unannouncing services. This can be done as it is now, but it requires an understanding of all the resource records involved.
-
+mDNS functionality including a higher level sevice discovery interface and CLI. While not by default, will even using DDNS
+to publish services over traditional DNS.
 
 Interesting features
 --------------------

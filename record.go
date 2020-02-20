@@ -73,7 +73,7 @@ func (c *RRClass) Set(str string) error {
 			}
 			*c = RRClass(i)
 		} else {
-			return ErrUnknownString
+			return fmt.Errorf("%w: invalid class %s", ErrUnknownString, str)
 		}
 	}
 	return nil
@@ -250,7 +250,7 @@ func (r *RRType) Set(str string) error {
 			}
 			*r = RRType(i)
 		} else {
-			return ErrUnknownString
+			return fmt.Errorf("%w: invalid type '%s'", ErrUnknownString, str)
 		}
 	}
 	return nil
@@ -534,6 +534,20 @@ type Record struct {
 // Merge combines two sets of records, superceding duplicates with those from n
 func Merge(r, n []*Record) []*Record {
 	return append(Subtract(r, n), n...)
+}
+
+// Copy makes a new slice of the records with copied headers. Their data pointers remain the same.
+// mDNS headers will be downgraded to DNS with their CacheFlush() info lost. This is handy for sanitzing
+// mDNS data for legacy query responses.
+func Copy(records []*Record) []*Record {
+	n := make([]*Record, len(records))
+	for i, r := range records {
+		n[i] = &Record{
+			H: NewHeader(r.H.Name(), r.H.Type(), r.H.Class(), r.H.TTL()),
+			D: r.D,
+		}
+	}
+	return n
 }
 
 // Subract removes records present in n from r

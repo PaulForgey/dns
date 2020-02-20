@@ -122,14 +122,15 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 					continue
 				}
 
+				// sanitize records for legacy query:
+				// - cap TTL to 10 seconds
+				// - do not return mdns specifics in header format
+
 				msg.Answers = make([]*dns.Record, 0, len(a))
 				msg.Authority = nil
 				msg.Additional = nil
+
 				for _, r := range a {
-					// sanitize records for legacy query:
-					// - cap TTL to 10 seconds
-					// - do not return mdns specifics in header format
-					// - do not return NSEC
 					if r.Type() == dns.NSECType {
 						continue
 					}
@@ -146,15 +147,11 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 
 				s.zones.Additional(true, msg)
 
-				for i, r := range msg.Additional {
-					nr := &dns.Record{
-						H: dns.NewHeader(r.H.Name(), r.H.Type(), r.H.Class(), r.H.TTL()),
-						D: r.D,
+				msg.Additional = dns.Copy(msg.Additional)
+				for _, r := range msg.Additional {
+					if r.H.TTL() > time.Second*10 {
+						r.H.SetTTL(time.Second * 10)
 					}
-					if nr.H.TTL() > time.Second*10 {
-						nr.H.SetTTL(time.Second * 10)
-					}
-					msg.Additional[i] = nr
 				}
 
 				s.conn.WriteTo(msg, from, messageSize(s.conn, msg))
@@ -410,7 +407,7 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question) error {
 					}
 				}
 			}
-			if len(a) == 0 {
+			if len(a) == 0 || (len(a) == 1 && a[0].Type() == dns.NSECType) {
 				oneEmpty = true
 				exclusive = false
 			} else {
@@ -476,6 +473,7 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question) error {
 			s.mqueries = queries
 
 			if first && oneEmpty {
+				s.logger.Printf("%v (%s): sending initial query for unknown %v", s, s.conn.Network(), q)
 				queries := s.mqueries
 				s.mqueries = nil
 				s.lk.Unlock()

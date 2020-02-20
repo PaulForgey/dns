@@ -14,6 +14,7 @@ type OwnerName struct {
 	Z         ZoneAuthority // zone authority for the name
 	RRSets    IfaceRRSets   // RRSets for the name
 	Exclusive bool          // has CacheFlush records
+	RRClass   dns.RRClass   // class of included records
 }
 
 // the IfaceRRSet type contains a list of interface specific RRSets for each interface, indexed by interface name.
@@ -38,6 +39,7 @@ func (n OwnerNames) Enter(auth Authority, iface string, records []*dns.Record) e
 				Z:         z,
 				RRSets:    make(IfaceRRSets),
 				Exclusive: dns.CacheFlush(records[0].H),
+				RRClass:   records[0].Class(),
 			}
 			n[name.Key()] = owner
 		}
@@ -45,6 +47,9 @@ func (n OwnerNames) Enter(auth Authority, iface string, records []*dns.Record) e
 			if dns.CacheFlush(r.H) != owner.Exclusive {
 				return fmt.Errorf("%w: mix of exclusive and shared records in %v",
 					dns.FormError, name)
+			}
+			if r.H.Class() != owner.RRClass {
+				return fmt.Errorf("%w: mix of classes", dns.FormError)
 			}
 		}
 
@@ -105,5 +110,23 @@ func (s IfaceRRSets) Records(iface string) []*dns.Record {
 // Enter adds interface specific records to the set.
 // An error is returned if shared records are added to existing exclusive ones or vice versa.
 func (s IfaceRRSets) Add(iface string, records []*dns.Record) {
-	s[iface] = dns.Merge(s[iface], records)
+	if len(records) > 0 {
+		s[iface] = dns.Merge(s[iface], records)
+	}
+}
+
+// AllRecords returns a compound list of records across all interfaces. Use only for queries where the interface
+// of the result has no importance.
+func (s IfaceRRSets) AllRecords() []*dns.Record {
+	var result []*dns.Record
+	for _, records := range s {
+		result = dns.Merge(result, records)
+	}
+	return result
+}
+
+func (s IfaceRRSets) Merge(n IfaceRRSets) {
+	for iface, records := range n {
+		s[iface] = dns.Merge(s[iface], records)
+	}
 }

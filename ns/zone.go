@@ -241,7 +241,7 @@ func (z *Zone) MLookup(
 
 	// check our authority first, then the underlying cache
 	if (where & resolver.InAuth) != 0 {
-		for rrset == nil && db != nil {
+		for db != nil {
 			rrset, err = nsdb.Lookup(db, true, name, rrtype, rrclass)
 			if err != nil && !errors.Is(err, dns.NXDomain) {
 				return

@@ -116,6 +116,12 @@ func (r *Resolver) Debug(c dns.Codec) {
 
 // Transact sends and receives a DNS query to dest, filling in msg.EDNS as necessary
 func (r *Resolver) Transact(ctx context.Context, dest net.Addr, msg *dns.Message) (*dns.Message, error) {
+	if dest == nil {
+		servers := r.rotate()
+		if len(servers) > 0 {
+			dest = servers[0]
+		}
+	}
 	outSize := dnsconn.MinMessageSize
 	if r.conn.VC() {
 		outSize = dnsconn.MaxMessageSize
@@ -181,19 +187,7 @@ func (r *Resolver) Ask(
 	return msg, err
 }
 
-// Query sends a query returning the answer, authority, and additional sections or an error.
-// The appropriate zone is consulted first, which means the cache is also consulted.
-// If the resolver is using a udp network and the answer from the server is truncated with an empty answer section, the
-// query will be retried using tcp.
-// If the resolver has a list of client addresses, this list will be rotated, and multiple servers will be queried if there
-// is an error.
-func (r *Resolver) Query(
-	ctx context.Context,
-	key string,
-	name dns.Name,
-	rrtype dns.RRType,
-	rrclass dns.RRClass,
-) (a []*dns.Record, ns []*dns.Record, ar []*dns.Record, aa bool, err error) {
+func (r *Resolver) rotate() []net.Addr {
 	var servers []net.Addr
 	r.lk.Lock()
 	if len(r.servers) > 1 {
@@ -207,6 +201,23 @@ func (r *Resolver) Query(
 		servers = r.servers
 	}
 	r.lk.Unlock()
+	return servers
+}
+
+// Query sends a query returning the answer, authority, and additional sections or an error.
+// The appropriate zone is consulted first, which means the cache is also consulted.
+// If the resolver is using a udp network and the answer from the server is truncated with an empty answer section, the
+// query will be retried using tcp.
+// If the resolver has a list of client addresses, this list will be rotated, and multiple servers will be queried if there
+// is an error.
+func (r *Resolver) Query(
+	ctx context.Context,
+	key string,
+	name dns.Name,
+	rrtype dns.RRType,
+	rrclass dns.RRClass,
+) (a []*dns.Record, ns []*dns.Record, ar []*dns.Record, aa bool, err error) {
+	servers := r.rotate()
 	return r.query(ctx, servers, key, name, rrtype, rrclass)
 }
 
