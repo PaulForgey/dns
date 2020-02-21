@@ -32,7 +32,7 @@ type mquery struct {
 func NewMResolverClient(network, address string) (*MResolver, error) {
 	c, err := net.Dial(network, address)
 	if err != nil {
-		return nil, err
+		return nil, ConnectionError{err}
 	}
 	conn := dnsconn.NewStreamConn(c, network, "")
 	conn.MDNS()
@@ -148,6 +148,7 @@ func (r *MResolver) Query(ctx context.Context, q []dns.Question, result func(Ifa
 
 	err = r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize)
 	if err != nil {
+		err = ConnectionError{err}
 		delete(r.queries, msg.ID)
 	}
 
@@ -225,6 +226,7 @@ func (r *MResolver) Announce(ctx context.Context, names OwnerNames) error {
 			msg.Answers = owner.RRSets.Records(iface)
 
 			if err := r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize); err != nil {
+				err = ConnectionError{err}
 				return err
 			}
 		}
@@ -233,6 +235,7 @@ func (r *MResolver) Announce(ctx context.Context, names OwnerNames) error {
 	msg.Authority = nil
 	msg.Answers = nil
 	if err := r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize); err != nil {
+		err = ConnectionError{err}
 		return err
 	}
 

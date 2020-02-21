@@ -2,11 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"fmt"
 )
 
-var locateUsage = "locate name service protocol"
+const locateUsage = "locate name service protocol"
 
 func locate(args []string) {
 	if len(args) < 3 {
@@ -19,8 +18,8 @@ func locate(args []string) {
 		exitError(err)
 	}
 
-	for _, t := range txts {
-		fmt.Println(hex.Dump([]byte(t)))
+	for k, v := range txts {
+		fmt.Printf("%s=%q\n", k, v)
 	}
 
 	for _, a := range addrs {

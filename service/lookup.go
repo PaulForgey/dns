@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net"
 	"sort"
+	"strings"
 
 	"tessier-ashpool.net/dns"
 	"tessier-ashpool.net/dns/resolver"
@@ -32,9 +34,14 @@ func (s *Services) LookupAddr(ctx context.Context, addr net.IP) ([]string, error
 
 // LookupIPAddr resolves IP addresses for the given host
 func (s *Services) LookupIPAddr(ctx context.Context, host string) ([]*net.IPAddr, error) {
-	answers, err := s.Lookup(ctx, host, dns.AnyType, dns.INClass)
-	if err != nil {
-		return nil, err
+	answers := make(resolver.IfaceRRSets)
+
+	for _, t := range []dns.RRType{dns.AType, dns.AAAAType} {
+		a, err := s.Lookup(ctx, host, t, dns.INClass)
+		if err != nil && !errors.Is(err, dns.NXDomain) {
+			return nil, err
+		}
+		answers.Merge(a)
 	}
 
 	var addrs []*net.IPAddr
@@ -57,7 +64,7 @@ func (s *Services) LookupIPAddr(ctx context.Context, host string) ([]*net.IPAddr
 }
 
 // Locate returns a priority ordered list of addresses of the approriate protocol for a given service name, type, and protocol
-func (s *Services) Locate(ctx context.Context, name, serviceType, protocol string) ([]net.Addr, []string, error) {
+func (s *Services) Locate(ctx context.Context, name, serviceType, protocol string) ([]net.Addr, map[string]string, error) {
 	var protoName string
 
 	switch protocol {
@@ -69,7 +76,12 @@ func (s *Services) Locate(ctx context.Context, name, serviceType, protocol strin
 		return nil, nil, fmt.Errorf("%w: %s", ErrBadProtocol, protocol)
 	}
 
-	sname := fmt.Sprintf("%s._%s._%s", name, serviceType, protoName)
+	var sname string
+	if name != "" {
+		sname = fmt.Sprintf("%s._%s._%s", name, serviceType, protoName)
+	} else {
+		sname = fmt.Sprintf("_%s._%s", serviceType, protoName)
+	}
 	answers, err := s.Lookup(ctx, sname, dns.AnyType, dns.INClass)
 	if err != nil {
 		return nil, nil, err
@@ -88,10 +100,15 @@ func (s *Services) Locate(ctx context.Context, name, serviceType, protocol strin
 		}
 	}
 
-	// typically, there's only one value for the txt record
-	var txt []string
-	for _, t := range txtRecords {
-		txt = append(txt, t.Text...)
+	txt := make(map[string]string)
+	for _, r := range txtRecords {
+		for _, t := range r.Text {
+			t = strings.ToLower(t)
+			values := strings.SplitN(t, "=", 2)
+			if len(values) > 1 {
+				txt[values[0]] = values[1]
+			}
+		}
 	}
 
 	// randomize within priorities

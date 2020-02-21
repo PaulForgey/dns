@@ -12,8 +12,6 @@ import (
 	"tessier-ashpool.net/dns/resolver"
 )
 
-const mdnsSocket = "/var/run/mDNS/mDNS-socket"
-
 func defaultServices() *Services {
 	services := &Services{
 		domains: make(map[string][]Service),
@@ -62,26 +60,24 @@ func defaultServices() *Services {
 	if err == nil {
 		services.domains[""] = []Service{&dnsService{r}}
 	}
-	mr, err := resolver.NewMResolverClient("unix", mdnsSocket)
-	if err == nil {
-		service := &mdnsService{mr}
-		services.Search = append([]dns.Name{local}, services.Search...)
-		services.Update = []dns.Name{local}
-		services.domains[local.Key()] = []Service{service}
 
-		for _, r := range []string{
-			"254.169.in-addr.arpa",
-			"8.e.f.ip6.arpa",
-			"9.e.f.ip6.arpa",
-			"a.e.f.ip6.arpa",
-			"b.e.f.ip6.arpa",
-		} {
-			name, err := dns.NameWithString(r)
-			if err != nil {
-				panic(err)
-			}
-			services.domains[name.Key()] = []Service{service}
+	service := &mdnsService{}
+	services.Search = append([]dns.Name{local}, services.Search...)
+	services.Update = []dns.Name{local}
+	services.domains[local.Key()] = []Service{service}
+
+	for _, r := range []string{
+		"254.169.in-addr.arpa",
+		"8.e.f.ip6.arpa",
+		"9.e.f.ip6.arpa",
+		"a.e.f.ip6.arpa",
+		"b.e.f.ip6.arpa",
+	} {
+		name, err := dns.NameWithString(r)
+		if err != nil {
+			panic(err)
 		}
+		services.domains[name.Key()] = []Service{service}
 	}
 
 	return services

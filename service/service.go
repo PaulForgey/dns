@@ -40,6 +40,11 @@ type Services struct {
 
 var DefaultServices = defaultServices()
 
+// Hostname returns what each provider in the search list believes the hostname to be using default services
+func Hostname(ctx context.Context) []string {
+	return DefaultServices.Hostname()
+}
+
 // Lookup resolves a query using default services
 func Lookup(ctx context.Context, name string, rrtype dns.RRType, rrclass dns.RRClass) (resolver.IfaceRRSets, error) {
 	return DefaultServices.Lookup(ctx, name, rrtype, rrclass)
@@ -51,7 +56,7 @@ func Announce(
 	rrclass dns.RRClass,
 	name, serviceType, protocol string,
 	priority, weight, port uint16,
-	text string,
+	text map[string]string,
 ) error {
 	return DefaultServices.Announce(ctx, rrclass, name, serviceType, protocol, priority, weight, port, text)
 }
@@ -77,7 +82,7 @@ func LookupIPAddr(ctx context.Context, host string) ([]*net.IPAddr, error) {
 }
 
 // Locate locates a service using default services
-func Locate(ctx context.Context, name, serviceType, protocol string) ([]net.Addr, []string, error) {
+func Locate(ctx context.Context, name, serviceType, protocol string) ([]net.Addr, map[string]string, error) {
 	return DefaultServices.Locate(ctx, name, serviceType, protocol)
 }
 
@@ -92,6 +97,36 @@ func (s *Services) servicesForDomain(name dns.Name) []Service {
 		name = name.Suffix()
 	}
 	return nil
+}
+
+// AddService adds a service to the end of the list for the domain
+func (s *Services) AddService(domain dns.Name, service Service) {
+	s.domains[domain.Key()] = append(s.domains[domain.Key()], service)
+}
+
+// Hostname returns what each provider in the search list believes the hostname to be
+func (s *Services) Hostname() []string {
+	var result []string
+	for _, search := range s.Search {
+		for _, service := range s.servicesForDomain(search) {
+			name, err := service.Self()
+			if err != nil || name == nil {
+				continue
+			}
+			hostname := name.String()
+			found := false
+			for _, h := range result {
+				if strings.EqualFold(h, hostname) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				result = append(result, hostname)
+			}
+		}
+	}
+	return result
 }
 
 // Lookup resolves a query
@@ -135,7 +170,7 @@ func (s *Services) Announce(
 	name string,
 	serviceType, protocol string,
 	priority, weight, port uint16,
-	text string,
+	text map[string]string,
 ) error {
 	var err error
 	errch := make(chan error, 1)
@@ -155,9 +190,19 @@ func (s *Services) Announce(
 			return err
 		}
 
+		var textRecords []string
+		if len(text) == 0 {
+			textRecords = []string{"\000"}
+		} else {
+			for k, v := range text {
+				textRecords = append(textRecords, k+"="+v)
+			}
+		}
+
+		var connErr resolver.ConnectionError
 		for _, service := range s.servicesForDomain(u) {
 			self, err := service.Self()
-			if err != nil {
+			if err != nil && !errors.As(err, &connErr) {
 				return err
 			}
 			if len(self) == 0 {
@@ -173,7 +218,7 @@ func (s *Services) Announce(
 				},
 				&dns.Record{
 					H: dns.NewMDNSHeader(sname, dns.TXTType, rrclass, 75*time.Minute, true),
-					D: &dns.TXTRecord{Text: []string{text}},
+					D: &dns.TXTRecord{Text: textRecords},
 				},
 				&dns.Record{
 					H: dns.NewMDNSHeader(tname, dns.PTRType, rrclass, 75*time.Minute, false),
@@ -187,7 +232,7 @@ func (s *Services) Announce(
 			wg.Add(1)
 			go func(service Service) {
 				err := service.Announce(actx, u, names)
-				if err != nil {
+				if err != nil && !errors.As(err, &connErr) {
 					select {
 					case errch <- err:
 					default: // do not block. We will wake up on and use one arbitrarily
@@ -239,7 +284,8 @@ func (s *Services) Browse(
 			wg.Add(1)
 			go func(service Service, name dns.Name) {
 				err := service.Browse(bctx, name, dns.PTRType, rrclass, result)
-				if err != nil && !errors.Is(err, dns.NXDomain) {
+				var connErr resolver.ConnectionError
+				if err != nil && !errors.Is(err, dns.NXDomain) && !errors.As(err, &connErr) {
 					select {
 					case errc <- err:
 					default: // do not block

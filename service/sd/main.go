@@ -20,7 +20,7 @@ func exitUsage(cmd string) {
 	fmt.Fprintf(os.Stderr, "usage: %s ", os.Args[0])
 	if cmd == "" {
 		fmt.Fprintln(os.Stderr, "command:")
-		for _, c := range []string{lookupUsage, addrUsage, hostUsage, browseUsage, locateUsage} {
+		for _, c := range []string{hostnameUsage, lookupUsage, addrUsage, hostUsage, browseUsage, locateUsage} {
 			fmt.Fprintf(os.Stderr, "\t%s\n", c)
 		}
 	} else {
@@ -28,6 +28,8 @@ func exitUsage(cmd string) {
 	}
 	os.Exit(2)
 }
+
+const hostnameUsage = "hostname"
 
 var sd = service.DefaultServices
 
@@ -53,7 +55,16 @@ func main() {
 	case "locate":
 		locate(os.Args[2:])
 
+	case "hostname":
+		hostname(os.Args[2:])
+
 	default:
 		exitUsage("")
+	}
+}
+
+func hostname(args []string) {
+	for _, host := range sd.Hostname() {
+		fmt.Println(host)
 	}
 }

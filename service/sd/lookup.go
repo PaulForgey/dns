@@ -9,9 +9,9 @@ import (
 	"tessier-ashpool.net/dns/resolver"
 )
 
-var lookupUsage = "lookup name [type [class]]"
-var addrUsage = "addr ip-address"
-var hostUsage = "host hostname"
+const lookupUsage = "lookup name [type [class]]"
+const addrUsage = "addr ip-address"
+const hostUsage = "host hostname"
 
 func printAnswers(answers resolver.IfaceRRSets) error {
 	for iface, records := range answers {

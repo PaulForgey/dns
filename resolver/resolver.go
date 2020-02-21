@@ -15,6 +15,18 @@ import (
 var ErrLameDelegation = errors.New("lame delegation")
 var ErrNoRecursion = errors.New("recursion denied")
 
+type ConnectionError struct {
+	err error
+}
+
+func (e ConnectionError) Error() string {
+	return e.err.Error()
+}
+
+func (e ConnectionError) Unwrap() error {
+	return e.err
+}
+
 const qtimeout = 5 * time.Second
 
 type Resolver struct {
@@ -61,13 +73,13 @@ func NewResolverClient(auth Authority, network string, host string, servers []ne
 	if host != "" {
 		c, err := net.Dial(network, host)
 		if err != nil {
-			return nil, err
+			return nil, ConnectionError{err}
 		}
 		conn = dnsconn.NewStreamConn(c, network, "") // even for packet based to save demux overhead
 	} else {
 		c, err := net.ListenPacket(network, "")
 		if err != nil {
-			return nil, err
+			return nil, ConnectionError{err}
 		}
 		conn = dnsconn.NewPacketConn(c, network, "")
 	}

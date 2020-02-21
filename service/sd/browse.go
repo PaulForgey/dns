@@ -8,7 +8,7 @@ import (
 	"tessier-ashpool.net/dns"
 )
 
-var browseUsage = "browse [service protocol]"
+const browseUsage = "browse [service protocol]"
 
 func browse(args []string) {
 	var service, protocol string
