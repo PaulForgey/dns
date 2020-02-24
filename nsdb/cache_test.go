@@ -59,8 +59,10 @@ func TestCacheUpdate(t *testing.T) {
 		if err != nil && !errors.Is(err, dns.NXDomain) {
 			t.Fatal(err)
 		}
-		for _, v := range result {
-			records = append(records, v.Records...)
+		if result != nil {
+			for _, v := range result.Map {
+				records = append(records, v.Records...)
+			}
 		}
 	}
 

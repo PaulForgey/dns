@@ -126,8 +126,10 @@ func (z *Zone) Remove(name dns.Name) (IfaceRRSets, error) {
 		if err != nil && !errors.Is(err, dns.NXDomain) {
 			return nil, err
 		}
-		for _, rrset := range rrmap {
-			rrsets[iface] = append(rrsets[iface], rrset.Records...)
+		if rrmap != nil {
+			for _, rrset := range rrmap.Map {
+				rrsets[iface] = append(rrsets[iface], rrset.Records...)
+			}
 		}
 		if err := db.Enter(name, nil); err != nil {
 			return nil, err

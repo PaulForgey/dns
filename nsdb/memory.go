@@ -17,7 +17,7 @@ type Memory struct {
 	update    names            // update transaction
 }
 
-type names map[string]RRMap
+type names map[string]*RRMap
 
 // NewMemory creates an empty Memory instance
 func NewMemory() *Memory {
@@ -106,7 +106,7 @@ func (m *Memory) EndUpdate(abort bool) error {
 	return nil
 }
 
-func (m *Memory) Lookup(name dns.Name) (RRMap, error) {
+func (m *Memory) Lookup(name dns.Name) (*RRMap, error) {
 	key := name.Key()
 	m.lk.RLock()
 	defer m.lk.RUnlock()
@@ -120,13 +120,13 @@ func (m *Memory) Lookup(name dns.Name) (RRMap, error) {
 
 	ns, ok := db[key]
 
-	if !ok || len(ns) == 0 {
+	if !ok || len(ns.Map) == 0 {
 		return nil, dns.NXDomain
 	}
 	return ns, nil
 }
 
-func (m *Memory) Enter(name dns.Name, value RRMap) error {
+func (m *Memory) Enter(name dns.Name, value *RRMap) error {
 	key := name.Key()
 	m.lk.Lock()
 	defer m.lk.Unlock()
@@ -138,7 +138,7 @@ func (m *Memory) Enter(name dns.Name, value RRMap) error {
 		db = m.db
 	}
 
-	if len(value) == 0 {
+	if value == nil || len(value.Map) == 0 {
 		delete(db, key)
 	} else {
 		db[key] = value
@@ -159,18 +159,18 @@ func (m *Memory) Enumerate(serial uint32, f func(uint32, []*dns.Record) error) e
 
 	delta := func(serial uint32, snapshot, exclude names) error {
 		for key, ns := range snapshot {
-			var xs RRMap
+			var xs *RRMap
 			if exclude != nil {
 				xs, _ = exclude[key]
 			}
-			for t, rs := range ns {
+			for t, rs := range ns.Map {
 				if rs == nil {
 					// empty RRSet
 					continue
 				}
 				var xr *RRSet
 				if xs != nil {
-					xr, _ = xs[t]
+					xr, _ = xs.Map[t]
 				}
 				records := rs.Records
 				if xr != nil {

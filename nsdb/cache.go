@@ -20,11 +20,11 @@ func NewCache() *Cache {
 	}
 }
 
-func (c *Cache) Lookup(name dns.Name) (RRMap, error) {
+func (c *Cache) Lookup(name dns.Name) (*RRMap, error) {
 	return c.lookup(name, time.Now())
 }
 
-func (c *Cache) lookup(name dns.Name, now time.Time) (RRMap, error) {
+func (c *Cache) lookup(name dns.Name, now time.Time) (*RRMap, error) {
 	c.lk.Lock()
 	defer c.lk.Unlock()
 
@@ -33,7 +33,7 @@ func (c *Cache) lookup(name dns.Name, now time.Time) (RRMap, error) {
 		return nil, err
 	}
 	value.Expire(now)
-	if len(value) == 0 {
+	if len(value.Map) == 0 {
 		return nil, dns.NXDomain
 	}
 

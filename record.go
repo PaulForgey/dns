@@ -550,6 +550,16 @@ func Copy(records []*Record) []*Record {
 	return n
 }
 
+// Find returns index of matching record, or -1 if no match
+func Find(records []*Record, r *Record) int {
+	for n, rr := range records {
+		if rr.Equal(r) {
+			return n
+		}
+	}
+	return -1
+}
+
 // Subract removes records present in n from r
 func Subtract(r, n []*Record) []*Record {
 	if len(n) == 0 || len(r) == 0 {
@@ -736,6 +746,18 @@ func (o *Options) UnmarshalCodec(c Codec) error {
 }
 
 type Bitmap [][]byte
+
+func (b Bitmap) Equal(n Bitmap) bool {
+	if len(b) < 256 || len(n) < 256 {
+		return len(b) == len(n)
+	}
+	for i := 0; i < 256; i++ {
+		if bytes.Compare(b[i], n[i]) != 0 {
+			return false
+		}
+	}
+	return true
+}
 
 func (b Bitmap) MarshalCodec(c Codec) error {
 	for n, block := range b {
@@ -1412,11 +1434,11 @@ func (rr *NSECRecord) MarshalCodec(c Codec) error {
 	return EncodeSequence(c, rr.Next, rr.Types)
 }
 
-// XXX pseudo record
 func (m *NSECRecord) Less(n RecordData) bool {
 	return false
 }
 
-func (m *NSECRecord) Equal(n RecordData) bool {
-	return false
+func (m *NSECRecord) Equal(nn RecordData) bool {
+	n := nn.(*NSECRecord)
+	return m.Next.Equal(n.Next) && m.Types.Equal(n.Types)
 }

@@ -311,11 +311,6 @@ func namesForHost(host dns.Name, mzones *ns.Zones) (resolver.OwnerNames, error) 
 			)
 		}
 
-		records = append(records, &dns.Record{
-			H: dns.NewMDNSHeader(host, dns.NSECType, dns.INClass, 120*time.Second, true),
-			D: nsec,
-		})
-
 		err = names.Enter(mzones, ifi.Name, records)
 		if err != nil {
 			return nil, err

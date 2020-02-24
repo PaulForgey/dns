@@ -14,13 +14,15 @@ var ErrNotUpdating = errors.New("no update context")
 
 // the RRSet type is a value for a given name, type and class
 type RRSet struct {
-	Entered   time.Time // Used by Expire. Zero value means TTL is never adjusted.
-	Exclusive bool      // MDNS: name+type+class is not shared
-	Records   []*dns.Record
+	Entered time.Time // Used by Expire. Zero value means TTL is never adjusted.
+	Records []*dns.Record
 }
 
 // the RRMap type is a set of values for a given name (fundamental DB storage)
-type RRMap map[RRKey]*RRSet
+type RRMap struct {
+	Map       map[RRKey]*RRSet
+	Exclusive bool // MDNS: name is not shared
+}
 
 // the RRKey is the key value for an RRMAP
 type RRKey struct {
@@ -47,11 +49,11 @@ type Db interface {
 	// Lookup returns an RRSet. If not records exist for the name, returns NXDomain.
 	// Empty RRMaps are never returned, so existence check is simply a check against nil.
 	// CAUTION: the returned RRMap should be treated as immutable
-	Lookup(name dns.Name) (RRMap, error)
+	Lookup(name dns.Name) (*RRMap, error)
 
 	// Enter replaces an RRMap for a given name.
 	// CAUTION: the database instance takes over ownership of this RRMap
-	Enter(name dns.Name, value RRMap) error
+	Enter(name dns.Name, value *RRMap) error
 
 	// Snapshot snapshots the database at a given serial number. If not supported, Snapshot does nothing and
 	// returns no error. Snapshotting the same serial has no subsequent effect.
@@ -76,6 +78,12 @@ type Db interface {
 	Clear() error
 }
 
+func NewRRMap() *RRMap {
+	return &RRMap{
+		Map: make(map[RRKey]*RRSet),
+	}
+}
+
 // Lookup is a convenience function to wrap looking up an RRMap and then searching it
 func Lookup(db Db, exact bool, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (*RRSet, error) {
 	value, err := db.Lookup(name)
@@ -92,7 +100,7 @@ func Enter(db Db, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass, rr *RRS
 		return err
 	}
 	if value == nil {
-		value = make(RRMap)
+		value = NewRRMap()
 	} else {
 		value = value.Copy()
 	}
@@ -112,7 +120,7 @@ func Load(db Db, entered time.Time, records []*dns.Record) (bool, error) {
 				return err
 			}
 			if value == nil {
-				value = make(RRMap)
+				value = NewRRMap()
 			} else {
 				value = value.Copy()
 			}
@@ -170,44 +178,45 @@ func (r RRKey) Match(exact bool, rrtype dns.RRType, rrclass dns.RRClass) bool {
 }
 
 // Get returns an RRSet by type and class
-func (r RRMap) Get(rrtype dns.RRType, rrclass dns.RRClass) (*RRSet, bool) {
-	rrset, ok := r[RRKey{rrtype, rrclass}]
+func (r *RRMap) Get(rrtype dns.RRType, rrclass dns.RRClass) (*RRSet, bool) {
+	rrset, ok := r.Map[RRKey{rrtype, rrclass}]
 	return rrset, ok
 }
 
 // Copy creates a copy of r. The data of the actual records are not copied.
-func (r RRMap) Copy() RRMap {
-	n := make(RRMap)
-	for k, v := range r {
+func (r *RRMap) Copy() *RRMap {
+	n := NewRRMap()
+	for k, v := range r.Map {
 		if v != nil {
-			n[k] = v.Copy()
+			n.Map[k] = v.Copy()
 		}
 	}
+	n.Exclusive = r.Exclusive
 	return n
 }
 
 // Set replaces or deletes an rrset by type and class.
-func (r RRMap) Set(rrtype dns.RRType, rrclass dns.RRClass, rrset *RRSet) {
+func (r *RRMap) Set(rrtype dns.RRType, rrclass dns.RRClass, rrset *RRSet) {
 	key := RRKey{rrtype, rrclass}
 	if rrset == nil {
-		delete(r, key)
+		delete(r.Map, key)
 	} else {
-		r[key] = rrset
+		r.Map[key] = rrset
 	}
 }
 
 // Expire updates an RRMap backdating TTLs of surviving records and deleting others
-func (r RRMap) Expire(now time.Time) {
-	for k, v := range r {
+func (r *RRMap) Expire(now time.Time) {
+	for k, v := range r.Map {
 		if v.Expire(now) {
-			delete(r, k)
+			delete(r.Map, k)
 		}
 	}
 }
 
 // Lookup returns matching RRSet entries.
 // If exact is true, CNAMEs are not returned unless asked for.
-func (r RRMap) Lookup(exact bool, rrtype dns.RRType, rrclass dns.RRClass) *RRSet {
+func (r *RRMap) Lookup(exact bool, rrtype dns.RRType, rrclass dns.RRClass) *RRSet {
 	var rrset *RRSet
 
 	if !exact && rrclass != dns.AnyClass {
@@ -219,13 +228,8 @@ func (r RRMap) Lookup(exact bool, rrtype dns.RRType, rrclass dns.RRClass) *RRSet
 
 	if rrtype == dns.AnyType || rrclass == dns.AnyClass {
 		rrset = &RRSet{}
-		for t, rs := range r {
+		for t, rs := range r.Map {
 			if t.Match(exact, rrtype, rrclass) {
-				if rrset.Records == nil {
-					rrset.Exclusive = rs.Exclusive
-				} else {
-					rrset.Exclusive = rrset.Exclusive && rs.Exclusive
-				}
 				rrset.Records = append(rrset.Records, rs.Records...)
 			}
 		}
@@ -241,7 +245,7 @@ func (r RRMap) Lookup(exact bool, rrtype dns.RRType, rrclass dns.RRClass) *RRSet
 
 // Enter updates an RRMap with a new entry for the rrtype and rrclass.
 // If rrtype is AnyType or rrclass is AnyClass, delete the matching entries.
-func (r RRMap) Enter(rrtype dns.RRType, rrclass dns.RRClass, rrset *RRSet) error {
+func (r *RRMap) Enter(rrtype dns.RRType, rrclass dns.RRClass, rrset *RRSet) error {
 	if rrset != nil && len(rrset.Records) == 0 {
 		rrset = nil
 	}
@@ -249,9 +253,9 @@ func (r RRMap) Enter(rrtype dns.RRType, rrclass dns.RRClass, rrset *RRSet) error
 		if rrset != nil {
 			return ErrInvalidRRSet
 		}
-		for t := range r {
+		for t := range r.Map {
 			if t.Match(true, rrtype, rrclass) {
-				delete(r, t)
+				delete(r.Map, t)
 			}
 		}
 	} else {
@@ -262,12 +266,12 @@ func (r RRMap) Enter(rrtype dns.RRType, rrclass dns.RRClass, rrset *RRSet) error
 
 // Subtract removes records from r
 // return true if the map was actually mutated
-func (r RRMap) Subtract(records []*dns.Record) bool {
+func (r *RRMap) Subtract(records []*dns.Record) bool {
 	mutated := false
 	for _, d := range records {
 		if d.D != nil {
 			key := RRKey{d.H.Type(), d.H.Class()}
-			rrset, ok := r[key]
+			rrset, ok := r.Map[key]
 			if !ok {
 				continue
 			}
@@ -278,19 +282,18 @@ func (r RRMap) Subtract(records []*dns.Record) bool {
 				mutated = true
 			}
 			if nlen == 0 {
-				delete(r, key)
+				delete(r.Map, key)
 			} else {
-				r[key] = &RRSet{
-					Entered:   rrset.Entered,
-					Exclusive: rrset.Exclusive,
-					Records:   nr,
+				r.Map[key] = &RRSet{
+					Entered: rrset.Entered,
+					Records: nr,
 				}
 			}
 		} else {
-			for key, _ := range r {
+			for key, _ := range r.Map {
 				if key.Match(true, d.H.Type(), d.H.Class()) {
 					mutated = true
-					delete(r, key)
+					delete(r.Map, key)
 				}
 			}
 		}
@@ -298,43 +301,50 @@ func (r RRMap) Subtract(records []*dns.Record) bool {
 	return mutated
 }
 
+// Merge adds records from n
+func (r *RRMap) Merge(n *RRMap) {
+	r.Exclusive = r.Exclusive || n.Exclusive
+	for k, v := range n.Map {
+		rs, ok := r.Map[k]
+		if !ok {
+			r.Map[k] = n.Map[k].Copy()
+		} else {
+			rs.Merge(v.Records)
+		}
+	}
+}
+
 // Load enters a series of records into the map
 // entries with TTL 0 will be modified to TTL 1
-func (r RRMap) Load(entered time.Time, records []*dns.Record) bool {
+func (r *RRMap) Load(entered time.Time, records []*dns.Record) bool {
 	added := false
-	n := make(RRMap)
-	for _, r := range records {
-		key := RRKey{r.H.Type(), r.H.Class()}
-		rrset, ok := n[key]
+	n := NewRRMap()
+	for _, rr := range records {
+		key := RRKey{rr.H.Type(), rr.H.Class()}
+		rrset, ok := n.Map[key]
 		if !ok {
 			rrset = &RRSet{Entered: entered}
-			n[key] = rrset
+			n.Map[key] = rrset
 		}
-		if r.H.TTL() < time.Second {
-			r.H.SetTTL(time.Second)
+		if rr.H.TTL() < time.Second {
+			rr.H.SetTTL(time.Second)
 		}
-		if dns.CacheFlush(r.H) != rrset.Exclusive {
-			// discard non exclusive records if exclusive ones are present
-			if !rrset.Exclusive {
-				rrset.Exclusive = true
-				rrset.Records = nil
-			} else {
-				continue
-			}
+		if !r.Exclusive && dns.CacheFlush(rr.H) {
+			r.Exclusive = true
 		}
-		rrset.Records = append(rrset.Records, r)
+		rrset.Records = append(rrset.Records, rr)
 	}
-	for k, v := range n {
-		rrset, ok := r[k]
+	for k, v := range n.Map {
+		rrset, ok := r.Map[k]
 		if !ok {
-			r[k] = v
+			r.Map[k] = v
 			added = true
 		} else {
 			if rrset.Entered.IsZero() && !entered.IsZero() {
 				continue
 			}
-			if v.Exclusive {
-				r[k] = v
+			if r.Exclusive {
+				r.Map[k] = v
 			} else {
 				rrset.Merge(v.Records)
 			}
@@ -409,7 +419,7 @@ func (rs *RRSet) Subtract(records []*dns.Record) bool {
 
 // Copy creates a new RRSet shallow copy randomly rotated
 func (rs *RRSet) Copy() *RRSet {
-	nr := &RRSet{Entered: rs.Entered, Exclusive: rs.Exclusive}
+	nr := &RRSet{Entered: rs.Entered}
 	if len(rs.Records) > 0 {
 		l := len(rs.Records)
 		nr.Records = make([]*dns.Record, l)

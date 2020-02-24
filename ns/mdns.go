@@ -131,23 +131,25 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 				msg.Additional = nil
 
 				for _, r := range a {
-					if r.Type() == dns.NSECType {
-						continue
-					}
-
 					ttl := r.H.TTL()
 					if ttl > time.Second*10 {
 						ttl = time.Second * 10
 					}
-					msg.Answers = append(msg.Answers, &dns.Record{
+
+					ar := &dns.Record{
 						H: dns.NewHeader(r.H.Name(), r.H.Type(), r.H.Class(), ttl),
 						D: r.D,
-					})
+					}
+					if r.Type() == dns.NSECType {
+						msg.Additional = append(msg.Additional, ar)
+					} else {
+						msg.Answers = append(msg.Answers, ar)
+					}
 				}
 
 				s.zones.Additional(true, msg)
-
 				msg.Additional = dns.Copy(msg.Additional)
+
 				for _, r := range msg.Additional {
 					if r.H.TTL() > time.Second*10 {
 						r.H.SetTTL(time.Second * 10)
@@ -587,10 +589,10 @@ func (s *Server) probe(ctx context.Context, names resolver.OwnerNames) error {
 
 	dnsconn.EachIface(func(iface string) error {
 		msgs[iface] = &dns.Message{
-			QR: true, AA: true, NoTC: true,
+			NoTC:      true,
 			Iface:     iface,
 			Questions: questions,
-			Answers:   rrset.Records(iface),
+			Authority: rrset.Records(iface),
 		}
 		return nil
 	})

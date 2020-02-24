@@ -237,29 +237,24 @@ func (z *Zone) MLookup(
 	}
 	z.RUnlock()
 
-	var rrset *nsdb.RRSet
+	var rrmap *nsdb.RRMap
 
 	// check our authority first, then the underlying cache
 	if (where & resolver.InAuth) != 0 {
-		for db != nil {
-			rrset, err = nsdb.Lookup(db, true, name, rrtype, rrclass)
-			if err != nil && !errors.Is(err, dns.NXDomain) {
-				return
-			}
+		rrmap, err = z.lookup(db, name)
+		if err != nil && !errors.Is(err, dns.NXDomain) {
+			return
+		}
 
+		if rrmap != nil {
+			rrset := rrmap.Lookup(true, rrtype, rrclass)
 			if rrset != nil {
-				a = dns.Merge(a, rrset.Records)
-			}
-
-			if db != z.db {
-				db = z.db
-			} else {
-				db = nil
+				a = rrset.Records
 			}
 		}
 	}
 
-	if (where & resolver.InCache) != 0 {
+	if (where&resolver.InCache) != 0 && (rrmap == nil || !rrmap.Exclusive) {
 		var a2 []*dns.Record
 		a2, err = z.Zone.MLookup(key, where, name, rrtype, rrclass)
 		if err != nil {
@@ -270,9 +265,27 @@ func (z *Zone) MLookup(
 
 	err = nil
 
-	if len(a) == 0 && !rrtype.Asks(dns.NSECType) {
-		return z.MLookup(key, where, name, dns.NSECType, rrclass)
+	if rrmap != nil && rrmap.Exclusive {
+		types := make(map[dns.RRClass]*dns.Record)
+		for k, v := range rrmap.Map {
+			nsec, ok := types[k.RRClass]
+			if !ok {
+				nsec = &dns.Record{
+					H: dns.NewMDNSHeader(name, dns.NSECType, k.RRClass, 120*time.Minute, true),
+					D: &dns.NSECRecord{Next: name},
+				}
+				types[k.RRClass] = nsec
+			}
+			nsec.D.(*dns.NSECRecord).Types.Set(k.RRType)
+			if len(v.Records) > 0 {
+				nsec.H.SetTTL(v.Records[0].H.TTL())
+			}
+		}
+		for _, v := range types {
+			a = append(a, v)
+		}
 	}
+
 	return
 }
 
@@ -304,8 +317,10 @@ func (z *Zone) Remove(name dns.Name) (resolver.IfaceRRSets, error) {
 		if err != nil && !errors.Is(err, dns.NXDomain) {
 			return nil, err
 		}
-		for _, rrset := range rrmap {
-			rrsets[iface] = append(rrsets[iface], rrset.Records...)
+		if rrmap != nil {
+			for _, rrset := range rrmap.Map {
+				rrsets[iface] = append(rrsets[iface], rrset.Records...)
+			}
 		}
 		if err := db.Enter(name, nil); err != nil {
 			return nil, err
@@ -330,7 +345,7 @@ func (z *Zone) Lookup(
 ) ([]*dns.Record, []*dns.Record, error) {
 	// check the cache
 	a, ns, err := z.Zone.Lookup(key, name, rrtype, rrclass)
-	if z.db == nil || len(a) > 0 || (err != nil && !errors.Is(err, dns.NXDomain)) {
+	if len(a) > 0 || (err != nil && !errors.Is(err, dns.NXDomain)) {
 		return a, ns, err
 	}
 
@@ -341,6 +356,10 @@ func (z *Zone) Lookup(
 		db = z.db
 	}
 	z.RUnlock()
+
+	if db == nil {
+		return a, ns, err
+	}
 
 	a, ns2, err := z.LookupDb(db, name, rrtype, rrclass)
 	ns = append(ns, ns2...)
@@ -642,7 +661,14 @@ func (z *Zone) Update(key string, prereq, update []*dns.Record) (bool, error) {
 			return false, dns.FormError
 		}
 
-		rrset, _ := nsdb.Lookup(db, false, r.Name(), rrtype, rrclass)
+		rrmap, err := z.lookup(db, r.Name())
+		if err != nil && !errors.Is(err, dns.NXDomain) {
+			return false, err
+		}
+		var rrset *nsdb.RRSet
+		if rrmap != nil {
+			rrset = rrmap.Lookup(false, rrtype, rrclass)
+		}
 		match := rrset != nil
 		if match && r.D != nil {
 			match = false
@@ -842,6 +868,28 @@ func (z *Zone) postupdate_locked(updated bool, key string, update []*dns.Record)
 	return nil
 }
 
+func (z *Zone) lookup(db nsdb.Db, name dns.Name) (*nsdb.RRMap, error) {
+	rrmap, err := db.Lookup(name)
+	if err != nil && !errors.Is(err, dns.NXDomain) {
+		return nil, err
+	}
+	if db != z.db && z.db != nil {
+		rrmap2, err := z.db.Lookup(name)
+		if err != nil && !errors.Is(err, dns.NXDomain) {
+			return nil, err
+		}
+		if rrmap2 != nil {
+			if rrmap == nil {
+				rrmap = rrmap2
+			} else {
+				rrmap = rrmap.Copy()
+				rrmap.Merge(rrmap2)
+			}
+		}
+	}
+	return rrmap, nil
+}
+
 // Enter enters recods into the zone, such as from mDNS or other external means. If there is no existing backing db
 // for key, a Memory type db is created for it.
 // If now is non-zero, the updates are passed to the cache layer and are considered non authoritative unless there are
@@ -897,32 +945,27 @@ func (z *Zone) Enter(now time.Time, key string, records []*dns.Record) ([]*dns.R
 	} else {
 		var add, conflict []*dns.Record
 
-		for _, r := range records {
-			rrset, err := nsdb.Lookup(db, true, r.Name(), r.Type(), r.Class())
+		err := dns.RecordSets(records, func(name dns.Name, records []*dns.Record) error {
+			rrmap, err := z.lookup(db, name)
 			if err != nil && !errors.Is(err, dns.NXDomain) {
-				return nil, err
+				return err
 			}
-			if rrset == nil && db != z.db && z.db != nil {
-				rrset, err = nsdb.Lookup(z.db, true, r.Name(), r.Type(), r.Class())
-				if err != nil && !errors.Is(err, dns.NXDomain) {
-					return nil, err
+			if rrmap == nil || !rrmap.Exclusive {
+				add = append(add, records...)
+				return nil
+			}
+			for _, rr := range records {
+				rs := rrmap.Lookup(true, rr.Type(), rr.Class())
+				if dns.Find(rs.Records, rr) < 0 {
+					conflict = append(conflict, rr)
+				} else {
+					add = append(add, rr)
 				}
 			}
-			if rrset != nil && rrset.Exclusive {
-				found := false
-				for _, rr := range rrset.Records {
-					if rr.Equal(r) {
-						// not in conflict
-						found = true
-						break
-					}
-				}
-				if !found {
-					conflict = append(conflict, r)
-				}
-			} else {
-				add = append(add, r)
-			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
 
 		z.postupdate_locked(false, key, add)
@@ -930,7 +973,7 @@ func (z *Zone) Enter(now time.Time, key string, records []*dns.Record) ([]*dns.R
 		db = nil
 		z.Unlock()
 
-		_, err := z.Zone.Enter(now, key, add)
+		_, err = z.Zone.Enter(now, key, add)
 		return conflict, err
 	}
 }
@@ -1062,9 +1105,10 @@ func (zs *Zones) Zone(n dns.Name) *Zone {
 
 // Additional fills in the additional section if it can from either cache or authority
 func (zs *Zones) Additional(mdns bool, msg *dns.Message) {
-	records := make([]*dns.Record, len(msg.Authority), len(msg.Authority)+len(msg.Answers))
-	copy(records, msg.Authority)
+	records := make([]*dns.Record, 0, len(msg.Authority)+len(msg.Answers)+len(msg.Additional))
+	records = append(records, msg.Authority...)
 	records = append(records, msg.Answers...)
+	records = append(records, msg.Additional...)
 
 	for i := 0; i < len(records); i++ {
 		rec := records[i]
@@ -1122,14 +1166,7 @@ func (zs *Zones) Additional(mdns bool, msg *dns.Message) {
 			}
 			switch a.Type() {
 			case dns.AType, dns.AAAAType, dns.TXTType, dns.PTRType, dns.SRVType, dns.NSECType:
-				found := false
-				for _, r := range records {
-					if r.Equal(a) {
-						found = true
-						break
-					}
-				}
-				if !found {
+				if dns.Find(records, a) < 0 {
 					msg.Additional = append(msg.Additional, a)
 					records = append(records, a)
 				}
