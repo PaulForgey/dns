@@ -81,6 +81,16 @@ func LookupIPAddr(ctx context.Context, host string) ([]*net.IPAddr, error) {
 	return DefaultServices.LookupIPAddr(ctx, host)
 }
 
+// LookupSRV performs an SRV lookup using default services
+func LookupSRV(ctx context.Context, service, proto, name string) ([]*dns.SRVRecord, error) {
+	return DefaultServices.LookupSRV(ctx, service, proto, name)
+}
+
+// LookupMX performs an MX lookup using default services
+func LookupMX(ctx context.Context, name string) ([]*dns.MXRecord, error) {
+	return DefaultServices.LookupMX(ctx, name)
+}
+
 // Locate locates a service using default services
 func Locate(ctx context.Context, name, serviceType, protocol string) ([]net.Addr, map[string]string, error) {
 	return DefaultServices.Locate(ctx, name, serviceType, protocol)

@@ -63,8 +63,61 @@ func (s *Services) LookupIPAddr(ctx context.Context, host string) ([]*net.IPAddr
 	return addrs, nil
 }
 
+// LookupSRV resolves SRV records
+func (s *Services) LookupSRV(ctx context.Context, service, proto, name string) ([]*dns.SRVRecord, error) {
+	var sname string
+	if service != "" {
+		sname = "_" + service + "."
+	}
+	if proto != "" {
+		sname += "_" + proto + "."
+	}
+	sname += name
+
+	answers, err := s.Lookup(ctx, sname, dns.SRVType, dns.INClass)
+	if err != nil {
+		return nil, err
+	}
+
+	records := answers.AllRecords()
+	srvs := make([]*dns.SRVRecord, 0, len(records))
+	for _, r := range records {
+		if srv, ok := r.D.(*dns.SRVRecord); ok {
+			srvs = append(srvs, srv)
+		}
+	}
+
+	// randomize within priorities
+	rand.Shuffle(len(srvs), func(i, j int) { srvs[i], srvs[j] = srvs[j], srvs[i] })
+	sort.Slice(srvs, func(i, j int) bool { return srvs[i].Priority < srvs[j].Priority })
+
+	return srvs, nil
+}
+
+// LookupMX resolves MX records
+func (s *Services) LookupMX(ctx context.Context, name string) ([]*dns.MXRecord, error) {
+	answers, err := s.Lookup(ctx, name, dns.MXType, dns.INClass)
+	if err != nil {
+		return nil, err
+	}
+
+	records := answers.AllRecords()
+	mxs := make([]*dns.MXRecord, 0, len(records))
+	for _, r := range records {
+		if mx, ok := r.D.(*dns.MXRecord); ok {
+			mxs = append(mxs, mx)
+		}
+	}
+
+	sort.Slice(mxs, func(i, j int) bool { return mxs[i].Preference < mxs[j].Preference })
+	return mxs, nil
+}
+
 // Locate returns a priority ordered list of addresses of the approriate protocol for a given service name, type, and protocol
-func (s *Services) Locate(ctx context.Context, name, serviceType, protocol string) ([]net.Addr, map[string]string, error) {
+func (s *Services) Locate(
+	ctx context.Context,
+	name, serviceType, protocol string,
+) ([]net.Addr, map[string]string, error) {
 	var protoName string
 
 	switch protocol {
@@ -78,10 +131,9 @@ func (s *Services) Locate(ctx context.Context, name, serviceType, protocol strin
 
 	var sname string
 	if name != "" {
-		sname = fmt.Sprintf("%s._%s._%s", name, serviceType, protoName)
-	} else {
-		sname = fmt.Sprintf("_%s._%s", serviceType, protoName)
+		sname = name + "."
 	}
+	sname += "_" + serviceType + "._" + protoName
 	answers, err := s.Lookup(ctx, sname, dns.AnyType, dns.INClass)
 	if err != nil {
 		return nil, nil, err
