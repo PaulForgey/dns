@@ -264,11 +264,9 @@ func (p *PacketConn) WriteTo(msg *dns.Message, addr net.Addr, msgSize int) error
 
 	buffer, _ := p.conn.pool.Get().([]byte)
 	if len(buffer) < msgSize {
-		// be opportunistic sending, but do not put every random crazy ass size back in the pool
 		buffer = make([]byte, msgSize)
-	} else {
-		defer p.conn.pool.Put(buffer)
 	}
+	defer p.conn.pool.Put(buffer)
 
 	msgBuf = buffer[:msgSize]
 
