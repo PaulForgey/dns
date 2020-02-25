@@ -56,6 +56,54 @@ type Zone struct {
 	keys  map[string]*nsdb.Cache
 }
 
+// ResolveCNAME chases authoritative or cached CNAME results inside an Authority.
+// Hitting a dead end returns an empty result without error
+func ResolveCNAME(
+	a Authority,
+	key string,
+	name dns.Name,
+	rrtype dns.RRType,
+	rrclass dns.RRClass,
+) ([]*dns.Record, ZoneAuthority, error) {
+
+	var result []*dns.Record
+
+	cnames := make(map[string]bool)
+	cnames[name.Key()] = true
+
+	for name != nil {
+		z := a.Find(name)
+		if z == nil {
+			// dead end
+			return nil, nil, nil
+		}
+		a, _, err := z.Lookup(key, name, rrtype, rrclass)
+		if err != nil || len(a) == 0 {
+			if errors.Is(err, dns.NXDomain) {
+				err = nil
+			}
+			return nil, nil, err
+		}
+		result = append(result, a...)
+		if a[0].Type() != dns.CNAMEType {
+			return result, z, nil
+		}
+
+		name = nil
+
+		for _, r := range a {
+			cname := r.D.(*dns.CNAMERecord).Name
+			if !cnames[cname.Key()] {
+				cnames[cname.Key()] = true
+				name = cname
+				break
+			}
+		}
+	}
+
+	return nil, nil, nil
+}
+
 // NewZone creates a new zone with a given name
 func NewZone(name dns.Name, hint bool) *Zone {
 	zone := &Zone{
