@@ -76,11 +76,10 @@ func (r *MResolver) Serve(ctx context.Context) error {
 			err = nil
 
 			if r.allowQuery.Check(ctx, nil, msg.Iface, "") {
-				r.query(cctx, queries, msg)
+				go r.query(cctx, queries, msg)
 			} else {
-				err = dns.Refused
+				r.respond(msg.ID, "", nil, nil, false, dns.Refused)
 			}
-			r.respond(msg.ID, "", nil, nil, err)
 
 		case dns.Update: // publish records
 			if r.allowUpdate.Check(ctx, nil, iface, "") {
@@ -88,7 +87,7 @@ func (r *MResolver) Serve(ctx context.Context) error {
 			} else {
 				err = dns.Refused
 			}
-			r.respond(msg.ID, "", nil, nil, err)
+			r.respond(msg.ID, "", nil, nil, false, err)
 
 		default:
 			msg.QR = true
@@ -122,6 +121,8 @@ func (r *MResolver) query(ctx context.Context, queries map[uint16]*query, msg *d
 		}
 	}
 
+	wg := &sync.WaitGroup{} // one-shot wait
+
 	for _, q := range msg.Questions {
 		auth := r.zones.Find(q.Name())
 		if auth == nil {
@@ -132,74 +133,105 @@ func (r *MResolver) query(ctx context.Context, queries map[uint16]*query, msg *d
 			continue
 		}
 
-		for _, s := range r.servers {
-			go func(q dns.Question, s *Server) {
-				err := s.PersistentQuery(pq.ctx, q)
-				if err != nil {
-					r.respond(msg.ID, "", nil, nil, err)
-				}
-			}(q, s)
-		}
-
-		dnsconn.EachIface(func(iface string) error {
-			go func(z *Zone, q dns.Question) {
-				var debounce *time.Timer
-				var err error
-
-				c := make(chan struct{})
-				z.PersistentQuery(c, iface, q)
-				defer z.PersistentQuery(c, "", nil)
-
-				for err == nil {
-					a, err := z.MLookup(iface, resolver.InAny, q.Name(), q.Type(), q.Class())
+		if msg.RD {
+			for _, s := range r.servers {
+				go func(q dns.Question, s *Server) {
+					err := s.PersistentQuery(pq.ctx, q, true)
 					if err != nil {
-						r.logger.Printf("%s: MLookup %v: %v", iface, q, err)
-						if err = r.respond(msg.ID, iface, q, nil, err); err != nil {
+						r.respond(msg.ID, "", nil, nil, false, err)
+					}
+				}(q, s)
+			}
+
+			dnsconn.EachIface(func(iface string) error {
+				go func(z *Zone, q dns.Question) {
+					var debounce *time.Timer
+					var err error
+
+					c := make(chan struct{})
+					z.PersistentQuery(c, iface, q)
+					defer z.PersistentQuery(c, "", nil)
+
+					for err == nil {
+						a, _, err := z.MLookup(iface, resolver.InAny, q.Name(), q.Type(), q.Class())
+						if err != nil {
+							r.logger.Printf("%s: MLookup %v: %v", iface, q, err)
+							if err = r.respond(msg.ID, iface, q, nil, false, err); err != nil {
+								break
+							}
+						}
+						if err = r.respond(msg.ID, iface, q, a, true, nil); err != nil {
 							break
 						}
-					}
-					if err = r.respond(msg.ID, iface, q, a, nil); err != nil {
-						break
-					}
 
-					done := false
-					for !done {
-						var b <-chan time.Time
-						if debounce != nil {
-							b = debounce.C
-						}
-						select {
-						case <-b:
-							done = true
-							debounce = nil
-						case <-c:
-							if debounce == nil {
-								debounce = time.NewTimer(time.Second)
-								done = true
+						done := false
+						for !done {
+							var b <-chan time.Time
+							if debounce != nil {
+								b = debounce.C
 							}
+							select {
+							case <-b:
+								done = true
+								debounce = nil
+							case <-c:
+								if debounce == nil {
+									debounce = time.NewTimer(time.Second)
+									done = true
+								}
 
-						case <-ctx.Done():
-							done = true
-							err = ctx.Err()
+							case <-ctx.Done():
+								done = true
+								err = ctx.Err()
+							}
 						}
 					}
-				}
 
-				if debounce != nil && !debounce.Stop() {
-					<-debounce.C
-				}
-			}(z, q)
+					if debounce != nil && !debounce.Stop() {
+						<-debounce.C
+					}
+				}(z, q)
 
-			return nil
-		})
+				return nil
+			})
+		} else {
+			wg.Add(1)
+			go func(q dns.Question) {
+				wg2 := &sync.WaitGroup{}
+				for _, s := range r.servers {
+					wg2.Add(1)
+					go func(s *Server) {
+						err := s.PersistentQuery(pq.ctx, q, false)
+						if err != nil {
+							r.respond(msg.ID, "", nil, nil, false, err)
+						}
+						wg2.Done()
+					}(s)
+				}
+				wg2.Wait()
+				dnsconn.EachIface(func(iface string) error {
+					a, _, err := z.MLookup(iface, resolver.InAny, q.Name(), q.Type(), q.Class())
+					if err != nil {
+						r.logger.Printf("%s: MLookup %v: %v", iface, q, err)
+					}
+					return r.respond(msg.ID, iface, q, a, true, err)
+				})
+				wg.Done()
+			}(q)
+		}
+	}
+	if !msg.RD {
+		wg.Wait()
+		// end one-shot query
+		r.respond(msg.ID, "", nil, nil, false, nil)
 	}
 }
 
-func (r *MResolver) respond(id uint16, iface string, q dns.Question, records []*dns.Record, err error) error {
+func (r *MResolver) respond(id uint16, iface string, q dns.Question, records []*dns.Record, tc bool, err error) error {
 	r.lk.Lock()
 	defer r.lk.Unlock()
 
-	msg := &dns.Message{ID: id, Opcode: dns.StandardQuery, QR: true}
+	msg := &dns.Message{ID: id, Opcode: dns.StandardQuery, QR: true, TC: tc}
 
 	if q != nil {
 		msg.Questions = []dns.Question{q}
@@ -291,11 +323,11 @@ func (r *MResolver) update(ctx context.Context, owners map[uint16]*owner, msg *d
 					r.lk.Unlock()
 					if ok {
 						o.cancel()
-						r.respond(msg.ID, "", nil, nil, dns.YXDomain)
+						r.respond(msg.ID, "", nil, nil, false, dns.YXDomain)
 					}
 				})
 				if err != nil {
-					r.respond(msg.ID, "", nil, nil, err)
+					r.respond(msg.ID, "", nil, nil, false, err)
 				}
 			}(s)
 		}

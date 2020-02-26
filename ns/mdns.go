@@ -113,7 +113,7 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 			z := s.zones.Find(q.Name())
 			if z != nil {
 				msg.QR = true
-				a, err := z.MLookup(iface, resolver.InAuth, q.Name(), q.Type(), q.Class())
+				a, _, err := z.MLookup(iface, resolver.InAuth, q.Name(), q.Type(), q.Class())
 				if err != nil {
 					s.logger.Printf("%s: mdns lookup error %v: %v", iface, q, err)
 					continue
@@ -257,7 +257,7 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 					continue // ignore zones we don't serve
 				}
 
-				a, err := z.MLookup(iface, resolver.InAuth, q.Name(), q.Type(), q.Class())
+				a, _, err := z.MLookup(iface, resolver.InAuth, q.Name(), q.Type(), q.Class())
 				if err != nil {
 					s.logger.Printf("%s: mdns lookup error %v: %v", iface, q, err)
 					continue
@@ -375,7 +375,7 @@ func (s *Server) Unannounce(names resolver.OwnerNames) error {
 }
 
 // PersistentQuery starts a persistent query q until ctx is canceled
-func (s *Server) PersistentQuery(ctx context.Context, q dns.Question) error {
+func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, persistent bool) error {
 	var idle *time.Timer
 	var err error
 
@@ -385,68 +385,70 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question) error {
 
 	auth := s.zones.Find(q.Name())
 	if auth == nil {
-		return dns.NXDomain
+		return dns.NotZone
 	}
 
-	s.logger.Printf("%v (%s): persistent query %v", s, s.conn.Network(), q)
+	if persistent {
+		s.logger.Printf("%v (%s): persistent query %v", s, s.conn.Network(), q)
+	} else {
+		s.logger.Printf("%v (%s); one-shot query %v", s, s.conn.Network(), q)
+		backoff = 300 * time.Millisecond
+	}
 
 	for err == nil {
 		var rr []*dns.Record
 
-		oneEmpty := false
-		exclusive := true
+		exclusive := false
+		empty := false
 
 		err = dnsconn.EachIface(func(iface string) error {
-			a, err := auth.MLookup(iface, resolver.InAny, q.Name(), q.Type(), q.Class())
+			a, e, err := auth.MLookup(iface, resolver.InAny, q.Name(), q.Type(), q.Class())
 			if err != nil {
 				return err
 			}
-			if exclusive {
-				for _, r := range a {
-					exclusive = exclusive && dns.CacheFlush(r.H)
-					if !exclusive {
-						break
-					}
-				}
-			}
-			if len(a) == 0 || (len(a) == 1 && a[0].Type() == dns.NSECType) {
-				oneEmpty = true
-				exclusive = false
+			exclusive = exclusive || e
+			if len(a) == 0 {
+				empty = true
 			} else {
 				rr = append(rr, a...)
 			}
 			return nil
 		})
 
-		// refresh at idle backoff or half ttl, whichever is sooner
-		refresh := time.Hour
-		if len(rr) == 0 {
-			refresh = backoff
-		} else {
-			if exclusive {
-				// cancel any requery if we now know they are all exclusive
-				requery = false
-			} else {
-				// backoff timer on shared records
-				refresh = backoff
-			}
-			if !requery {
-				for _, r := range rr {
-					httl := r.H.OriginalTTL() >> 1
-					if httl < r.H.TTL() {
-						httl -= (r.H.OriginalTTL() - r.H.TTL())
-					} else {
-						httl = time.Second
-					}
-					if refresh > httl {
-						refresh = httl
-					}
-				}
+		refresh := backoff
+
+		if exclusive {
+			// cancel any requery if we now know they are all exclusive
+			requery = requery && empty
+			if persistent {
+				// have answers, not shared, so requery either 1h later or half ttl
+				refresh = time.Hour
 			}
 		}
-
-		if first && oneEmpty {
-			requery = true
+		if first && empty {
+			// requery now if we have nothing in the cache
+			if len(rr) == 0 || persistent {
+				// if this is a one-shot, partial answers are good answers
+				requery = true
+			}
+		}
+		if !requery {
+			if !persistent {
+				// if oneshot, have answers
+				break
+			}
+			for _, r := range rr {
+				// cut refresh time to half ttl if sooner than our backoff
+				httl := r.H.OriginalTTL() >> 1
+				if httl < r.H.TTL() {
+					httl -= (r.H.OriginalTTL() - r.H.TTL())
+				} else {
+					httl = time.Second
+				}
+				if refresh > httl {
+					refresh = httl
+				}
+			}
 		}
 
 		if requery {
@@ -474,8 +476,8 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question) error {
 			}
 			s.mqueries = queries
 
-			if first && oneEmpty {
-				s.logger.Printf("%v (%s): sending initial query for unknown %v", s, s.conn.Network(), q)
+			if !persistent || (first && empty) {
+				s.logger.Printf("%v (%s): sending immediate query for %v", s, s.conn.Network(), q)
 				queries := s.mqueries
 				s.mqueries = nil
 				s.lk.Unlock()
@@ -498,7 +500,6 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question) error {
 			}
 		}
 
-		first = false
 		idle = time.NewTimer(refresh)
 		if refresh == backoff && backoff < time.Hour {
 			backoff <<= 1
@@ -522,9 +523,16 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question) error {
 				mq.SetQU(false)
 			}
 		}
+
+		if !persistent {
+			break
+		}
+		first = false
 	}
 
-	s.logger.Printf("%v (%s): end persistent query %v: %v", s, s.conn.Network(), q, err)
+	if persistent {
+		s.logger.Printf("%v (%s): end persistent query %v: %v", s, s.conn.Network(), q, err)
+	}
 
 	if idle != nil && !idle.Stop() {
 		<-idle.C
@@ -846,7 +854,7 @@ func (s *Server) mquery(iface string, questions []dns.Question) error {
 
 		msg.Questions = append(msg.Questions, q)
 
-		a, err := auth.MLookup(iface, resolver.InCache, q.Name(), q.Type(), q.Class())
+		a, _, err := auth.MLookup(iface, resolver.InCache, q.Name(), q.Type(), q.Class())
 		if err != nil {
 			return err
 		}

@@ -2,7 +2,6 @@ package resolver
 
 import (
 	"context"
-	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -59,14 +58,18 @@ func NewMResolver(conn dnsconn.Conn) *MResolver {
 			}
 
 			r.lk.Lock()
-			qr, _ := r.queries[msg.ID]
+			qr, ok := r.queries[msg.ID]
+			if ok {
+				if msg.RCode != dns.NoError {
+					delete(r.queries, msg.ID)
+					qr.err <- err
+				}
+			}
 			o, ok := r.owners[msg.ID]
 			if ok {
 				if msg.RCode != dns.NoError {
 					delete(r.owners, msg.ID)
 					o <- msg.RCode
-				} else {
-					o = nil
 				}
 			}
 			r.lk.Unlock()
@@ -88,7 +91,16 @@ func NewMResolver(conn dnsconn.Conn) *MResolver {
 				}
 				qr.answers.Add(iface, msg.Answers)
 
-				if qr.t == nil {
+				if !msg.TC {
+					if qr.t == nil || qr.t.Stop() {
+						delete(r.queries, msg.ID)
+						answers := qr.answers
+						qr.answers = nil
+						qr.t = nil
+						r.lk.Unlock()
+						qr.err <- qr.result(answers)
+					}
+				} else if qr.t == nil {
 					qr.t = time.AfterFunc(200*time.Millisecond, func() {
 						r.lk.Lock()
 						answers := qr.answers
@@ -104,11 +116,11 @@ func NewMResolver(conn dnsconn.Conn) *MResolver {
 							qr.err <- err
 						}
 					})
+					r.lk.Unlock()
+				} else {
+					r.lk.Unlock()
 				}
-
-				r.lk.Unlock()
 			}
-
 		}
 
 		r.lk.Lock()
@@ -131,9 +143,14 @@ func (r *MResolver) Close() error {
 
 // Query runs a persistent query asking q until ctx is done.
 func (r *MResolver) Query(ctx context.Context, q []dns.Question, result func(IfaceRRSets) error) error {
+	return r.query(ctx, q, true, result)
+}
+
+func (r *MResolver) query(ctx context.Context, q []dns.Question, persistent bool, result func(IfaceRRSets) error) error {
 	var err error
 
-	msg := &dns.Message{Opcode: dns.StandardQuery, Questions: q}
+	// RD is overloaded to indicate a persistent query
+	msg := &dns.Message{Opcode: dns.StandardQuery, RD: persistent, Questions: q}
 	for msg.ID == 0 {
 		msg.ID = uint16(atomic.AddUint32(&r.qid, 1))
 	}
@@ -168,33 +185,32 @@ func (r *MResolver) Query(ctx context.Context, q []dns.Question, result func(Ifa
 		mq.t.Stop()
 	}
 	delete(r.queries, msg.ID)
-	msg.Questions = nil
-	msg.QR = true
-	r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize)
+	if persistent {
+		msg.Questions = nil
+		msg.QR = true
+		r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize)
+	}
 	r.lk.Unlock()
 
 	return err
 }
 
 // QueryOne does a one shot query
-var errOneShot = errors.New("once")
-
 func (r *MResolver) QueryOne(ctx context.Context, q []dns.Question) (IfaceRRSets, error) {
 	var result IfaceRRSets
 
 	qctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 
-	err := r.Query(qctx, q, func(answers IfaceRRSets) error {
+	err := r.query(qctx, q, false, func(answers IfaceRRSets) error {
 		result = answers
-		return errOneShot
+		return nil
 	})
 
 	cancel()
 
-	if !errors.Is(err, errOneShot) {
+	if err != nil {
 		return nil, err
 	}
-
 	return result, nil
 }
 
