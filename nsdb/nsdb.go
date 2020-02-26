@@ -11,6 +11,16 @@ import (
 var ErrInvalidRRSet = errors.New("invalid rrset")
 var ErrAlreadyUpdating = errors.New("already in update context")
 var ErrNotUpdating = errors.New("no update context")
+var ErrNegativeAnswer = &negativeAnswer{} // NXDomain with cached negative response
+
+type negativeAnswer struct{}
+
+func (e *negativeAnswer) Error() string {
+	return "negative cache answer"
+}
+func (e *negativeAnswer) Unwrap() error {
+	return dns.NXDomain
+}
 
 // the RRSet type is a value for a given name, type and class
 type RRSet struct {
@@ -21,7 +31,8 @@ type RRSet struct {
 // the RRMap type is a set of values for a given name (fundamental DB storage)
 type RRMap struct {
 	Map       map[RRKey]*RRSet
-	Exclusive bool // MDNS: name is not shared
+	Exclusive bool      // MDNS: name is not shared
+	Negative  time.Time // cache: expiration time of negative cache entry
 }
 
 // the RRKey is the key value for an RRMAP

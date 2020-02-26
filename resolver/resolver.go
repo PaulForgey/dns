@@ -10,6 +10,7 @@ import (
 
 	"tessier-ashpool.net/dns"
 	"tessier-ashpool.net/dns/dnsconn"
+	"tessier-ashpool.net/dns/nsdb"
 )
 
 var ErrLameDelegation = errors.New("lame delegation")
@@ -187,8 +188,19 @@ func (r *Resolver) Ask(
 	msg, err := r.Transact(readCtx, dest, msg)
 	cancel()
 
-	if msg != nil {
-		if zone != nil && msg.RCode == dns.NoError {
+	if msg != nil && zone != nil {
+		if msg.RCode == dns.NXDomain {
+			now := time.Now()
+			zone.Enter(now, "", msg.Authority)
+			for _, r := range msg.Authority {
+				if r.Type() == dns.SOAType {
+					if soa, _ := r.D.(*dns.SOARecord); soa != nil {
+						zone.NEnter(now.Add(soa.Minimum), name)
+						break
+					}
+				}
+			}
+		} else if msg.RCode == dns.NoError {
 			now := time.Now()
 			zone.Enter(now, "", msg.Answers)
 			zone.Enter(now, "", msg.Authority)
@@ -255,6 +267,10 @@ func (r *Resolver) query(
 			return
 		}
 		a, ns, err = zone.Lookup(key, name, rrtype, rrclass)
+		if errors.Is(err, nsdb.ErrNegativeAnswer) {
+			aa = true
+			return
+		}
 		if len(a) > 0 || len(servers) == 0 || !r.ra {
 			// cached answer, cache only, or delegation with recursion not allowed
 			return

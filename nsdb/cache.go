@@ -1,6 +1,7 @@
 package nsdb
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -29,6 +30,13 @@ func (c *Cache) lookup(name dns.Name, now time.Time) (*RRMap, error) {
 	defer c.lk.Unlock()
 
 	value, err := c.Memory.Lookup(name)
+	if errors.Is(err, dns.NXDomain) && value != nil {
+		if now.Before(value.Negative) {
+			err = ErrNegativeAnswer
+		} else {
+			c.Memory.Enter(name, nil)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -121,7 +121,7 @@ func (m *Memory) Lookup(name dns.Name) (*RRMap, error) {
 	ns, ok := db[key]
 
 	if !ok || len(ns.Map) == 0 {
-		return nil, dns.NXDomain
+		return ns, dns.NXDomain
 	}
 	return ns, nil
 }
@@ -138,7 +138,7 @@ func (m *Memory) Enter(name dns.Name, value *RRMap) error {
 		db = m.db
 	}
 
-	if value == nil || len(value.Map) == 0 {
+	if value == nil || (len(value.Map) == 0 && value.Negative.IsZero()) {
 		delete(db, key)
 	} else {
 		db[key] = value

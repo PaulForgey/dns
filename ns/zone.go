@@ -338,7 +338,7 @@ func (z *Zone) Lookup(
 ) ([]*dns.Record, []*dns.Record, error) {
 	// check the cache
 	a, ns, err := z.Zone.Lookup(key, name, rrtype, rrclass)
-	if len(a) > 0 || (err != nil && !errors.Is(err, dns.NXDomain)) {
+	if len(a) > 0 || (err != nil && (!errors.Is(err, dns.NXDomain) || errors.Is(err, nsdb.ErrNegativeAnswer))) {
 		return a, ns, err
 	}
 

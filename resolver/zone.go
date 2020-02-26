@@ -30,8 +30,10 @@ type ZoneAuthority interface {
 	Hint() bool
 	// Name returns the name of the zone
 	Name() dns.Name
-	// Enter enters recors into the cache.
+	// Enter enters records into the cache.
 	Enter(now time.Time, key string, records []*dns.Record) ([]*dns.Record, error)
+	// NEnter enters a name into negative cache.
+	NEnter(negative time.Time, name dns.Name) error
 }
 
 // the Authority interface defines a container finding closest a matching ZoneAuthority for a given Name
@@ -238,7 +240,7 @@ func (z *Zone) LookupDb(
 	if rrset != nil {
 		return rrset.Records, nil, nil
 	}
-	if err != nil && !errors.Is(err, dns.NXDomain) {
+	if err != nil && (!errors.Is(err, dns.NXDomain) || errors.Is(err, nsdb.ErrNegativeAnswer)) {
 		return nil, nil, err
 	}
 
@@ -283,4 +285,9 @@ func (z *Zone) Enter(now time.Time, key string, records []*dns.Record) ([]*dns.R
 	z.Unlock()
 	_, err := nsdb.Load(db, now, records)
 	return nil, err
+}
+
+// NEnter enters a name into negative cache. Lookups will return nsdb.ErrNegativeAnswer until time in negative
+func (z *Zone) NEnter(negative time.Time, name dns.Name) error {
+	return z.cache.Enter(name, &nsdb.RRMap{Negative: negative})
 }

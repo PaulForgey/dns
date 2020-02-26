@@ -68,3 +68,43 @@ func TestCacheUpdate(t *testing.T) {
 
 	compareRecords(t, "cache contents vs expected", true, records, parseText(t, cacheResult))
 }
+
+func TestNegativeCache(t *testing.T) {
+	now := time.Now()
+	db := NewCache()
+	name := makeName(t, "negative")
+
+	err := db.Enter(name, &RRMap{Negative: now.Add(5)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rrmap, err := db.lookup(name, now)
+	if !errors.Is(err, ErrNegativeAnswer) {
+		t.Fatalf("expected %v, got %v", ErrNegativeAnswer, err)
+	}
+	var rcode dns.RCode
+	if !errors.As(err, &rcode) {
+		t.Fatalf("%T is not RCode", err)
+	}
+	if rcode != dns.NXDomain {
+		t.Fatalf("expected %v, got %v", dns.NXDomain, rcode)
+	}
+
+	if rrmap != nil {
+		t.Fatal("rrmap != nil")
+	}
+
+	now = now.Add(5 * time.Second)
+
+	rrmap, err = db.lookup(name, now)
+	if !errors.Is(err, dns.NXDomain) {
+		t.Fatalf("expected %v, got %v", dns.NXDomain, err)
+	}
+	if errors.Is(err, ErrNegativeAnswer) {
+		t.Fatalf("%v is still %v", err, ErrNegativeAnswer)
+	}
+	if rrmap != nil {
+		t.Fatal("rrmap != nil")
+	}
+}
