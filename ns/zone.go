@@ -238,8 +238,6 @@ func (z *Zone) MLookup(
 	db2 := z.db
 	z.RUnlock()
 
-	var rrmap *nsdb.RRMap
-
 	// check our authority first, then the underlying cache
 	if (where & resolver.InAuth) != 0 {
 		for db != nil {
@@ -255,14 +253,6 @@ func (z *Zone) MLookup(
 				if rrset != nil {
 					a = dns.Merge(a, rrset.Records)
 				}
-
-				if exclusive {
-					if rrmap != nil {
-						rrmap.Merge(rm)
-					} else {
-						rrmap = rm.Copy()
-					}
-				}
 			}
 
 			if db != db2 && db2 != nil {
@@ -273,7 +263,7 @@ func (z *Zone) MLookup(
 		}
 	}
 
-	if (where&resolver.InCache) != 0 && (rrmap == nil || !rrmap.Exclusive) {
+	if (where&resolver.InCache) != 0 && !exclusive {
 		var a2 []*dns.Record
 		a2, exclusive, err = z.Zone.MLookup(key, where, name, rrtype, rrclass)
 		if err != nil {
@@ -282,30 +272,13 @@ func (z *Zone) MLookup(
 		a = dns.Merge(a2, a)
 	}
 
-	err = nil
-
-	if rrmap != nil && rrmap.Exclusive {
-		types := make(map[dns.RRClass]*dns.Record)
-		for k, v := range rrmap.Map {
-			nsec, ok := types[k.RRClass]
-			if !ok {
-				ttl := 120 * time.Minute
-				if len(v.Records) > 0 {
-					ttl = v.Records[0].H.TTL()
-				}
-				nsec = &dns.Record{
-					H: dns.NewMDNSHeader(name, dns.NSECType, k.RRClass, ttl, true),
-					D: &dns.NSECRecord{Next: name},
-				}
-				types[k.RRClass] = nsec
-			}
-			nsec.D.(*dns.NSECRecord).Types.Set(k.RRType)
-		}
-		for _, v := range types {
-			a = append(a, v)
-		}
+	if exclusive && rrtype != dns.NSECType {
+		var a2 []*dns.Record
+		a2, _, err = z.MLookup("", where, name, dns.NSECType, rrclass)
+		a = dns.Merge(a, a2)
 	}
 
+	err = nil
 	return
 }
 

@@ -283,7 +283,7 @@ func (r *MResolver) update(ctx context.Context, owners map[uint16]*owner, msg *d
 
 	if len(msg.Authority) > 0 {
 		a := msg.Authority[0]
-		if txt, _ := a.D.(*dns.TXTRecord); txt != nil && len(txt.Text) == 1 {
+		if txt, _ := a.D.(*dns.TXTRecord); txt != nil && len(txt.Text) > 0 {
 			iface = txt.Text[0]
 		} else {
 			return dns.FormError

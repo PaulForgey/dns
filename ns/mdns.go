@@ -760,12 +760,21 @@ func (s *Server) announce(names resolver.OwnerNames) error {
 	defer s.lk.Unlock()
 
 	for nk, owner := range names {
+		var nsec *dns.NSECRecord
 		if owner.Exclusive {
 			if o, _ := s.owners[nk]; o == nil {
 				continue // skip abandoned exclusive names
 			}
+			nsec = &dns.NSECRecord{Next: owner.Name}
 		}
+		ttl := 120 * time.Second
 		for iface, irecords := range owner.RRSets {
+			if nsec != nil {
+				for _, r := range irecords {
+					ttl = r.H.TTL() // be arbitrary if not all the same
+					nsec.Types.Set(r.Type())
+				}
+			}
 			_, err := owner.Z.Enter(time.Time{}, iface, irecords)
 			if err != nil {
 				s.logger.Printf("%s: %v: error entering authoritative records to db: %v",
@@ -773,6 +782,14 @@ func (s *Server) announce(names resolver.OwnerNames) error {
 				return err
 			}
 			answers.Add(iface, irecords)
+		}
+		if nsec != nil {
+			owner.Z.Enter(time.Time{}, "", []*dns.Record{
+				&dns.Record{
+					H: dns.NewMDNSHeader(owner.Name, dns.NSECType, owner.RRClass, ttl, true),
+					D: nsec,
+				},
+			})
 		}
 	}
 
