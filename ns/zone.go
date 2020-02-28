@@ -121,7 +121,7 @@ func (z *Zone) Attach(key string, db nsdb.Db) error {
 		if err != nil && !errors.Is(err, dns.NXDomain) {
 			return err
 		}
-		if rrset != nil {
+		if rrset != nil && len(rrset.Records) > 0 {
 			z.soa = rrset.Records[0]
 		}
 		z.db = db
@@ -354,7 +354,7 @@ func (z *Zone) Lookup(
 		return a, ns, err
 	}
 
-	a, ns2, err := z.LookupDb(db, name, rrtype, rrclass)
+	a, ns2, err := z.LookupDb(db, false, name, rrtype, rrclass)
 	ns = append(ns, ns2...)
 	if db == z.db || len(a) > 0 || (err != nil && !errors.Is(err, dns.NXDomain)) {
 		if len(ns) > 0 && err != nil {
@@ -368,7 +368,7 @@ func (z *Zone) Lookup(
 	}
 
 	// base database (unkeyed)
-	a, ns2, err = z.LookupDb(z.db, name, rrtype, rrclass)
+	a, ns2, err = z.LookupDb(z.db, false, name, rrtype, rrclass)
 	ns = append(ns, ns2...)
 	if len(ns) > 0 && err != nil {
 		if errors.Is(err, dns.NXDomain) {

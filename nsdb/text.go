@@ -84,6 +84,11 @@ func (t *Text) Save() error {
 	if err != nil {
 		return err
 	}
+	defer func() {
+		if out != nil {
+			out.Close()
+		}
+	}()
 
 	bw := bufio.NewWriter(out)
 	w := dns.NewTextWriter(bw)
@@ -123,6 +128,7 @@ func (t *Text) Save() error {
 		return err
 	}
 	out.Close()
+	out = nil
 
 	return os.Rename(tmpfile, t.pathname)
 }

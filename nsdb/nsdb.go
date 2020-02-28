@@ -33,6 +33,7 @@ type RRMap struct {
 	Map       map[RRKey]*RRSet
 	Exclusive bool      // MDNS: name is not shared
 	Negative  time.Time // cache: expiration time of negative cache entry
+	Sticky    bool      // cache: never expire
 }
 
 // the RRKey is the key value for an RRMAP
@@ -85,7 +86,6 @@ type Db interface {
 	Save() error
 
 	// Clear resets the database.
-	// XXX This method presumes populating from a zone file, which will ultimately be handled by the backend
 	Clear() error
 }
 
@@ -137,6 +137,9 @@ func Load(db Db, entered time.Time, records []*dns.Record) (bool, error) {
 			}
 			if value.Load(entered, records) {
 				added = true
+			}
+			if entered.IsZero() {
+				value.Sticky = true
 			}
 			return db.Enter(name, value)
 		},
@@ -217,12 +220,13 @@ func (r *RRMap) Set(rrtype dns.RRType, rrclass dns.RRClass, rrset *RRSet) {
 }
 
 // Expire updates an RRMap backdating TTLs of surviving records and deleting others
-func (r *RRMap) Expire(now time.Time) {
+func (r *RRMap) Expire(now time.Time) bool {
 	for k, v := range r.Map {
 		if v.Expire(now) {
 			delete(r.Map, k)
 		}
 	}
+	return len(r.Map) == 0
 }
 
 // Lookup returns matching RRSet entries.
@@ -243,6 +247,9 @@ func (r *RRMap) Lookup(exact bool, rrtype dns.RRType, rrclass dns.RRClass) *RRSe
 			if t.Match(exact, rrtype, rrclass) {
 				rrset.Records = append(rrset.Records, rs.Records...)
 			}
+		}
+		if len(rrset.Records) == 0 {
+			rrset = nil
 		}
 	} else {
 		rrset, _ = r.Get(rrtype, rrclass)

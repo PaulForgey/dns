@@ -202,9 +202,10 @@ func (r *Resolver) Ask(
 			}
 		} else if msg.RCode == dns.NoError {
 			now := time.Now()
-			zone.Enter(now, "", msg.Answers)
-			zone.Enter(now, "", msg.Authority)
-			zone.Enter(now, "", msg.Additional)
+			// Enter will sort the records
+			zone.Enter(now, "", dns.Copy(msg.Answers))
+			zone.Enter(now, "", dns.Copy(msg.Authority))
+			zone.Enter(now, "", dns.Copy(msg.Additional))
 		}
 	}
 
@@ -469,18 +470,23 @@ func (r *Resolver) resolve(
 			}
 
 			suffix := name // name to query NS record for
+			if rrtype == dns.NSType {
+				suffix = suffix.Suffix()
+			}
 			if len(ns) == 0 {
 				// we have no ns records for suffix, so keep going down until we do
 				for len(suffix) > 0 {
-					suffix = suffix.Suffix()
 					a, ns, _, _, err = r.query(ctx, nsaddrs, key, suffix, dns.NSType, rrclass)
 					if err != nil {
 						return nil, err
 					}
 					if len(a) > 0 || len(ns) > 0 {
 						// either an answer happend or we have delgation
-						break
+						if len(a) == 0 || a[0].Type() != dns.CNAMEType {
+							break
+						}
 					}
+					suffix = suffix.Suffix()
 				}
 			}
 			// at this point, we have the list of ns records for suffix
@@ -506,7 +512,7 @@ func (r *Resolver) resolve(
 
 			if len(authority) == 0 {
 				// no delegation
-				return nil, dns.NXDomain
+				return nil, fmt.Errorf("%w: no delegation for %v", dns.NXDomain, name)
 			}
 			if !suffix.HasSuffix(aname) || !aname.HasSuffix(progress) {
 				// got wrong delegation

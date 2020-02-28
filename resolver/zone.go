@@ -215,7 +215,7 @@ func (z *Zone) Lookup(
 	var err error
 
 	for db != nil {
-		a, ns, err = z.LookupDb(db, name, rrtype, rrclass)
+		a, ns, err = z.LookupDb(db, false, name, rrtype, rrclass)
 		if errors.Is(err, dns.NXDomain) {
 			if db != z.cache {
 				db = z.cache
@@ -232,11 +232,13 @@ func (z *Zone) Lookup(
 
 func (z *Zone) LookupDb(
 	db nsdb.Db,
+	exact bool,
 	name dns.Name,
 	rrtype dns.RRType,
 	rrclass dns.RRClass,
 ) ([]*dns.Record, []*dns.Record, error) {
-	rrset, err := nsdb.Lookup(db, false, name, rrtype, rrclass)
+	rrset, err := nsdb.Lookup(db, exact, name, rrtype, rrclass)
+
 	if rrset != nil {
 		return rrset.Records, nil, nil
 	}
@@ -258,7 +260,7 @@ func (z *Zone) LookupDb(
 			return nil, nil, err
 		}
 
-		rrset, nsset, err2 := z.LookupDb(db, name, dns.NSType, rrclass)
+		rrset, nsset, err2 := z.LookupDb(db, true, name, dns.NSType, rrclass)
 		if rrset != nil || (err2 != nil && !errors.Is(err2, dns.NXDomain)) {
 			// delegation response or error getting it
 			return nil, rrset, err2

@@ -2,6 +2,7 @@ package nsdb
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -39,7 +40,7 @@ func TestCacheUpdate(t *testing.T) {
 
 	now = now.Add(2 * time.Second)
 	for _, r := range parseText(t, cacheUpdate) {
-		result, err := db.lookup(r.H.Name(), now)
+		result, err := db.lookup(now, r.H.Name())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -55,7 +56,7 @@ func TestCacheUpdate(t *testing.T) {
 
 	for _, n := range []string{"one", "two", "red", "blue"} {
 		name := makeName(t, n)
-		result, err := db.lookup(name, now)
+		result, err := db.lookup(now, name)
 		if err != nil && !errors.Is(err, dns.NXDomain) {
 			t.Fatal(err)
 		}
@@ -79,7 +80,7 @@ func TestNegativeCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rrmap, err := db.lookup(name, now)
+	rrmap, err := db.lookup(now, name)
 	if !errors.Is(err, ErrNegativeAnswer) {
 		t.Fatalf("expected %v, got %v", ErrNegativeAnswer, err)
 	}
@@ -97,7 +98,7 @@ func TestNegativeCache(t *testing.T) {
 
 	now = now.Add(5 * time.Second)
 
-	rrmap, err = db.lookup(name, now)
+	rrmap, err = db.lookup(now, name)
 	if !errors.Is(err, dns.NXDomain) {
 		t.Fatalf("expected %v, got %v", dns.NXDomain, err)
 	}
@@ -106,5 +107,39 @@ func TestNegativeCache(t *testing.T) {
 	}
 	if rrmap != nil {
 		t.Fatal("rrmap != nil")
+	}
+}
+
+func generateRecords(t *testing.T, i, j int) []*dns.Record {
+	records := make([]*dns.Record, 0, (j-i)+1)
+	for n := i; n <= j; n++ {
+		txt := fmt.Sprintf("record%d", n)
+		name := makeName(t, txt)
+		records = append(records, &dns.Record{
+			H: dns.NewHeader(name, dns.TXTType, dns.INClass, time.Hour),
+			D: &dns.TXTRecord{Text: []string{"value"}},
+		})
+	}
+	return records
+}
+
+func TestCacheLimit(t *testing.T) {
+	MaxItems = 10
+	LowItems = 5
+
+	db := NewCache()
+
+	_, err := Load(db, time.Now(), generateRecords(t, 1, MaxItems))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(db.items) != MaxItems {
+		t.Fatalf("expected %d items, got %d", MaxItems, len(db.items))
+	}
+
+	_, err = Load(db, time.Now(), generateRecords(t, MaxItems+1, MaxItems+1))
+	if len(db.items) != LowItems {
+		t.Fatalf("expected %d items, got %d", LowItems, len(db.items))
 	}
 }

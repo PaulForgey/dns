@@ -46,7 +46,7 @@ func parseText(t *testing.T, s string) []*dns.Record {
 			if errors.Is(err, io.EOF) {
 				break
 			}
-			t.Fatal(err)
+			panic(err)
 		}
 		records = append(records, r)
 	}
