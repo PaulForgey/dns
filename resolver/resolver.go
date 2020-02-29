@@ -537,10 +537,11 @@ func (r *Resolver) resolve(
 			a = nil
 
 			var ips []dns.IPRecordType
-			var err error
 
 			// look up the server to ask next iteration
 			for _, auth := range authority {
+				var err error
+
 				if auth.NS().HasSuffix(aname) {
 					// avoid an endless cycle if the glue record is missing
 					if ips, err = r.resolveIP(ctx, nsaddrs, key, auth.NS(), rrclass); err != nil {
@@ -555,9 +556,6 @@ func (r *Resolver) resolve(
 					continue
 				}
 				break
-			}
-			if err != nil {
-				return nil, err
 			}
 			if len(ips) == 0 {
 				return nil, fmt.Errorf("%w: no nameserver ips", dns.NXDomain)
