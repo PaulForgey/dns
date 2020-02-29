@@ -16,6 +16,8 @@ import (
 var ErrLameDelegation = errors.New("lame delegation")
 var ErrNoRecursion = errors.New("recursion denied")
 
+var debugLk sync.Mutex
+
 type ConnectionError struct {
 	err error
 }
@@ -154,6 +156,10 @@ func (r *Resolver) Receive(ctx context.Context, id uint16) (*dns.Message, error)
 	msg, _, err := r.conn.ReadFromIf(ctx, func(m *dns.Message) bool {
 		return m.QR && m.ID == id
 	})
+	if r.debug != nil {
+		debugLk.Lock()
+		defer debugLk.Unlock()
+	}
 	if msg != nil {
 		if r.debug != nil {
 			r.debug.Encode(msg)
@@ -280,37 +286,61 @@ func (r *Resolver) query(
 
 	// if servers is empty, we did a cache only query
 	var msg *dns.Message
-	for _, dest := range servers {
-		msg, err = r.Ask(ctx, zone, dest, name, rrtype, rrclass)
-		if msg == nil {
-			// transport error
-			continue
+	if len(servers) > 0 {
+		qctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		msgs := make(chan *dns.Message, len(servers))
+		errs := make(chan error, len(servers))
+
+		for _, dest := range servers {
+			go func(dest net.Addr) {
+				msg, err := r.Ask(qctx, zone, dest, name, rrtype, rrclass)
+				// see if we are being coerced into a TCP query
+				if err == nil && len(msg.Answers) == 0 && len(msg.Authority) == 0 && msg.TC {
+					if udpaddr, ok := dest.(*net.UDPAddr); ok {
+						var tcp *Resolver
+						tcp, err = NewResolverClient(r.auth, "tcp", udpaddr.String(), nil, r.rd)
+						if err == nil {
+							msg, err = tcp.Ask(qctx, zone, dest, name, rrtype, rrclass)
+							tcp.Close()
+						}
+					}
+				}
+				if err == nil {
+					cancel()
+				}
+				msgs <- msg
+				errs <- err
+			}(dest)
 		}
 
-		// see if we are being coerced into a TCP query
-		if err == nil && len(msg.Answers) == 0 && len(msg.Authority) == 0 && msg.TC {
-			if udpaddr, ok := dest.(*net.UDPAddr); ok {
-				var tcp *Resolver
-				tcp, err = NewResolverClient(r.auth, "tcp", udpaddr.String(), nil, r.rd)
-				if err != nil {
-					continue
-				}
-				tcp.Debug(r.debug)
-				a, ns, ar, aa, err = tcp.Query(ctx, key, name, rrtype, rrclass)
-				tcp.Close()
-
-				msg = nil
+		// first successful answer, failing that, first error
+		for _ = range servers {
+			msg = <-msgs
+			if msg != nil {
+				err = nil
+				break
 			}
 		}
-		// use first successful answer
-		if err == nil {
-			break
+		if msg == nil {
+			for _ = range servers {
+				err = <-errs
+				if err != nil {
+					break
+				}
+			}
 		}
+		cancel()
 	}
 
 	if msg != nil {
 		// answer from server
 		a, ns, ar, aa = msg.Answers, msg.Authority, msg.Additional, msg.AA
+		if msg.RCode != dns.NoError {
+			err = msg.RCode
+		} else {
+			err = nil
+		}
 	}
 
 	return
