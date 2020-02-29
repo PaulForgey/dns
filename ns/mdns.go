@@ -644,7 +644,7 @@ func (s *Server) probe(ctx context.Context, names resolver.OwnerNames) error {
 		for i := 0; len(resp) == 0 && i < 3; i++ {
 			for iface, msg := range msgs {
 				if err := s.conn.WriteTo(msg, nil, 0); err != nil {
-					s.logger.Printf("%s (%s): error sending probe query: %v", iface, s.conn.Network(), err)
+					s.logger.Printf("%v (%s): error sending probe query: %v", iface, s.conn.Network(), err)
 					return err
 				}
 			}
@@ -799,10 +799,6 @@ func (s *Server) announce(names resolver.OwnerNames) error {
 			return nil
 		}
 
-		for _, r := range records {
-			s.logger.Printf("%s (%s): announcing %v", iface, s.conn.Network(), r)
-		}
-
 		if err := s.respond(iface, nil, records); err != nil {
 			s.logger.Printf("%s (%s): error announcing records: %v", iface, s.conn.Network(), err)
 			return err
@@ -845,6 +841,7 @@ func (s *Server) respond(iface string, to net.Addr, response []*dns.Record) erro
 		} else {
 			msg.Additional = append(msg.Additional, r)
 		}
+		s.logger.Printf("%v (%s): responding %v", iface, s.conn.Network(), r)
 	}
 	s.zones.Additional(true, msg)
 	return s.conn.WriteTo(msg, to, 0)

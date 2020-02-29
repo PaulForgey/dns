@@ -386,7 +386,7 @@ func (rs *RRSet) Expire(now time.Time) bool {
 	since := now.Sub(rs.Entered)
 	for _, r := range rs.Records {
 		expires := rs.Entered.Add(r.H.TTL())
-		if !now.Before(expires) { // now >= expires
+		if !now.Add(500 * time.Millisecond).Before(expires) { // now >= expires
 			continue
 		}
 		// add the surviving record back in after adjusting
