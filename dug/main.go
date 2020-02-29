@@ -20,6 +20,7 @@ var rd = true
 var serial uint
 var updates string
 var x bool
+var loop int
 
 func exitError(msg interface{}) {
 	fmt.Fprintf(os.Stderr, "%s: %v\n", os.Args[0], msg)
@@ -40,6 +41,7 @@ func main() {
 	flag.UintVar(&serial, "serial", serial, "if -type=ixfr, serial to use in SOA")
 	flag.StringVar(&updates, "updates", updates, "file to send ddns updates from (- for stdin)")
 	flag.BoolVar(&x, "x", x, "convert name to reverse IP in arpa zone")
+	flag.IntVar(&loop, "loop", loop, "(debug) run query multiple times for subsequent cache hit")
 
 	flag.Parse()
 
@@ -85,18 +87,17 @@ func main() {
 		r.Debug(textCodec)
 	}
 
-	if updates != "" {
-		update(name, r)
-		return
-	}
+	for i := 0; i <= loop; i++ {
+		if updates != "" {
+			update(name, r)
+		} else {
+			switch rrtype {
+			case dns.AXFRType, dns.IXFRType:
+				xfer(name, r)
 
-	switch rrtype {
-	case dns.AXFRType, dns.IXFRType:
-		xfer(name, r)
-		return
-
-	default:
-		query(name, r)
-		return
+			default:
+				query(name, r)
+			}
+		}
 	}
 }

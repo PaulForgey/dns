@@ -194,6 +194,9 @@ func (r RRKey) Match(exact bool, rrtype dns.RRType, rrclass dns.RRClass) bool {
 // Get returns an RRSet by type and class
 func (r *RRMap) Get(rrtype dns.RRType, rrclass dns.RRClass) (*RRSet, bool) {
 	rrset, ok := r.Map[RRKey{rrtype, rrclass}]
+	if rrset != nil && len(rrset.Records) == 0 {
+		rrset = nil
+	}
 	return rrset, ok
 }
 
@@ -240,7 +243,6 @@ func (r *RRMap) Lookup(exact bool, rrtype dns.RRType, rrclass dns.RRClass) *RRSe
 			return rrset
 		}
 	}
-
 	if rrtype == dns.AnyType || rrclass == dns.AnyClass {
 		rrset = &RRSet{}
 		for t, rs := range r.Map {

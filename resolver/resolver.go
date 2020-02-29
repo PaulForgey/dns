@@ -551,13 +551,16 @@ func (r *Resolver) resolve(
 						continue
 					}
 				}
+				if len(ips) == 0 {
+					continue
+				}
 				break
 			}
 			if err != nil {
 				return nil, err
 			}
 			if len(ips) == 0 {
-				return nil, dns.NXDomain
+				return nil, fmt.Errorf("%w: no nameserver ips", dns.NXDomain)
 			}
 
 			for _, ip := range ips {

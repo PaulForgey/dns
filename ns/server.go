@@ -191,8 +191,12 @@ func (s *Server) answer(err error, clear bool, msg *dns.Message, to net.Addr) er
 	if err != nil {
 		if !errors.As(err, &msg.RCode) {
 			msg.RCode = dns.ServerFailure
-			s.logger.Printf("responding to %v: %v", to, err)
 		}
+		var q dns.Question
+		if len(msg.Questions) > 0 {
+			q = msg.Questions[0]
+		}
+		s.logger.Printf("responding to %v: %v %v", to, q, err)
 	}
 
 	if clear {
