@@ -115,6 +115,9 @@ func Enter(db Db, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass, rr *RRS
 	} else {
 		value = value.Copy()
 	}
+	if rr != nil && rr.Entered.IsZero() {
+		value.Sticky = true
+	}
 	value.Enter(rrtype, rrclass, rr)
 	return db.Enter(name, value)
 }
@@ -209,6 +212,8 @@ func (r *RRMap) Copy() *RRMap {
 		}
 	}
 	n.Exclusive = r.Exclusive
+	n.Sticky = r.Sticky
+	n.Negative = r.Negative
 	return n
 }
 
