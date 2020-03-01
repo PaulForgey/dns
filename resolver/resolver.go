@@ -301,7 +301,7 @@ func (r *Resolver) query(
 						var tcp *Resolver
 						tcp, err = NewResolverClient(r.auth, "tcp", udpaddr.String(), nil, r.rd)
 						if err == nil {
-							msg, err = tcp.Ask(qctx, zone, dest, name, rrtype, rrclass)
+							msg, err = tcp.Ask(qctx, zone, nil, name, rrtype, rrclass)
 							tcp.Close()
 						}
 					}
@@ -563,7 +563,6 @@ func (r *Resolver) resolve(
 				)
 			}
 			progress = aname
-			nsaddrs = nil
 			a = nil
 
 			var ips []dns.IPRecordType
@@ -591,11 +590,12 @@ func (r *Resolver) resolve(
 				return nil, fmt.Errorf("%w: no nameserver ips", dns.NXDomain)
 			}
 
-			for _, ip := range ips {
-				nsaddrs = append(nsaddrs, &net.UDPAddr{
+			nsaddrs = make([]net.Addr, len(ips))
+			for i, ip := range ips {
+				nsaddrs[i] = &net.UDPAddr{
 					IP:   ip.IP(),
 					Port: 53,
-				})
+				}
 			}
 		}
 	}
