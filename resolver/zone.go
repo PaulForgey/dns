@@ -70,10 +70,7 @@ func ResolveCNAME(
 
 	var result []*dns.Record
 
-	cnames := make(map[string]bool)
-	cnames[name.Key()] = true
-
-	for name != nil {
+	for i := 0; i < MaxCNAME; i++ {
 		z := a.Find(name)
 		if z == nil {
 			// dead end
@@ -87,19 +84,31 @@ func ResolveCNAME(
 			return nil, nil, err
 		}
 		result = append(result, a...)
-		if a[0].Type() != dns.CNAMEType {
-			return result, z, nil
-		}
 
-		name = nil
-
-		for _, r := range a {
-			cname := r.D.(*dns.CNAMERecord).Name
-			if !cnames[cname.Key()] {
-				cnames[cname.Key()] = true
-				name = cname
+		nname := name
+		for n := len(a) - 1; n > 0; n-- {
+			cname, _ := a[n].D.(*dns.CNAMERecord)
+			if cname == nil {
 				break
 			}
+
+			found := false
+			for _, r := range result {
+				if r.Name().Equal(cname.Name) {
+					found = true
+					break
+				}
+			}
+
+			if !found {
+				nname = cname.Name
+				break
+			}
+		}
+		if !nname.Equal(name) {
+			name = nname
+		} else {
+			return nil, nil, nil
 		}
 	}
 

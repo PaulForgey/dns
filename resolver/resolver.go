@@ -16,6 +16,8 @@ import (
 var ErrLameDelegation = errors.New("lame delegation")
 var ErrNoRecursion = errors.New("recursion denied")
 
+const MaxCNAME = 20 // maximum length of CNAME chain to follow
+
 var debugLk sync.Mutex
 
 type ConnectionError struct {
@@ -423,43 +425,44 @@ func (r *Resolver) Resolve(
 	var records []*dns.Record
 	var err error
 
-	seen := make(map[string]bool)
-	names := []dns.Name{name}
-
-	for len(names) > 0 {
-		n := names[0]
-		names = names[1:]
-
+	for cnames := 0; cnames < MaxCNAME; cnames++ {
 		var result []*dns.Record
-		if result, err = r.resolve(ctx, key, n, rrtype, rrclass); err != nil {
-			continue
+
+		result, err = r.resolve(ctx, key, name, rrtype, rrclass)
+		if err != nil {
+			break
 		}
+
 		records = append(records, result...)
-
-		// handle CNAMEs, being careful to chase them once.
-		// CNAMEs should not point to CNAMEs, but they can.
-		// Just return the CNAME records if we are specifically asking for them, of course.
-		if rrtype != dns.CNAMEType && len(result) > 0 {
-			var cnames []dns.Name
-
-			for _, r := range result {
-				seen[r.Name().Key()] = true // seen in answer
+		if rrtype == dns.CNAMEType || len(result) == 0 {
+			break
+		}
+		nname := name
+		// if there is more than one cname result, it would be because a chain was given to us
+		// (or there are actually more than one, but that would be undefined and bogus)
+		// so start at the end to help avoid turning this into n*m
+		for n := len(result) - 1; n >= 0; n-- {
+			cname, _ := result[n].D.(*dns.CNAMERecord)
+			if cname == nil {
+				break
 			}
 
-			// do not chase names which:
-			// 1) we already chased
-			// 2) had their names already provided in this result or a prior one
-			for _, r := range result {
-				if c, ok := r.D.(*dns.CNAMERecord); ok {
-					if !seen[c.Name.Key()] {
-						seen[c.Name.Key()] = true // chased
-						cnames = append(cnames, c.Name)
-					}
+			found := false
+			for _, r := range records {
+				if r.Name().Equal(cname.Name) {
+					found = true
+					break
 				}
 			}
-
-			// ideally, cnames should have 0 or 1 entries
-			names = append(names, cnames...)
+			if !found {
+				nname = cname.Name
+				break
+			}
+		}
+		if !nname.Equal(name) {
+			name = nname
+		} else {
+			break
 		}
 	}
 
