@@ -3,6 +3,7 @@ package ns
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -114,14 +115,32 @@ func (s *Server) Serve(ctx context.Context) error {
 				switch msg.Opcode {
 				case dns.Update:
 					if zone.AllowUpdate == nil || !zone.AllowUpdate.Check(ctx, from, iface, "") {
-						s.answer(dns.Refused, true, msg, from)
+						s.answer(
+							fmt.Errorf("%w: no update in %v from %v",
+								dns.Refused,
+								zone.Name(),
+								from,
+							),
+							true,
+							msg,
+							from,
+						)
 						continue
 					}
 					s.update(ctx, iface, msg, from, zone)
 
 				case dns.Notify:
 					if zone.AllowNotify == nil || !zone.AllowNotify.Check(ctx, from, iface, "") {
-						s.answer(dns.Refused, true, msg, from)
+						s.answer(
+							fmt.Errorf("%w: no notify in %v from %v",
+								dns.Refused,
+								zone.Name(),
+								from,
+							),
+							true,
+							msg,
+							from,
+						)
 						continue
 					}
 					s.notify(ctx, iface, msg, from, zone)
@@ -133,7 +152,17 @@ func (s *Server) Serve(ctx context.Context) error {
 			case dns.AXFRType, dns.IXFRType:
 				if zone = s.zones.Zone(q.Name()); zone != nil {
 					if zone.AllowTransfer == nil || !zone.AllowTransfer.Check(ctx, from, iface, "") {
-						s.answer(dns.Refused, true, msg, from)
+						s.answer(
+							fmt.Errorf(
+								"%w: no transfer in %v to %v",
+								dns.Refused,
+								zone.Name(),
+								from,
+							),
+							true,
+							msg,
+							from,
+						)
 						continue
 					}
 					go s.ixfr(ctx, msg, from, zone)
@@ -142,7 +171,17 @@ func (s *Server) Serve(ctx context.Context) error {
 			default:
 				if zone, _ = s.zones.Find(q.Name()).(*Zone); zone != nil {
 					if zone.AllowQuery == nil || !zone.AllowQuery.Check(ctx, from, iface, "") {
-						s.answer(dns.Refused, true, msg, from)
+						s.answer(
+							fmt.Errorf(
+								"%w: no query in %v from %v",
+								dns.Refused,
+								zone.Name(),
+								from,
+							),
+							true,
+							msg,
+							from,
+						)
 						continue
 					}
 					go s.query(ctx, msg, from, zone)
@@ -150,12 +189,12 @@ func (s *Server) Serve(ctx context.Context) error {
 			}
 
 		default:
-			s.answer(dns.NotImplemented, true, msg, from)
+			s.answer(fmt.Errorf("%w: opcode=%d", dns.NotImplemented, msg.Opcode), true, msg, from)
 			continue
 		}
 
 		if zone == nil {
-			s.answer(dns.Refused, true, msg, from)
+			s.answer(fmt.Errorf("%w: nil zone for %v", dns.Refused, q.Name()), true, msg, from)
 		}
 	}
 

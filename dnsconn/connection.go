@@ -115,8 +115,9 @@ type PacketConn struct {
 // the StreamConn type is a stream oriented Connection
 type StreamConn struct {
 	*conn
-	c    net.Conn
-	mdns bool
+	c      net.Conn
+	remote net.Addr // a single instance of the connected peer for quick comparison
+	mdns   bool
 }
 
 func ifname(ifindex int) string {
@@ -443,7 +444,8 @@ func NewStreamConn(c net.Conn, network, iface string) *StreamConn {
 			iface:   iface,
 			pool:    &maxBufferPool,
 		},
-		c: c,
+		c:      c,
+		remote: c.RemoteAddr(),
 	}
 
 	return s
@@ -471,7 +473,7 @@ func (s *StreamConn) WriteTo(msg *dns.Message, addr net.Addr, msgSize int) error
 	if msgSize < MinMessageSize || msgSize > MaxMessageSize {
 		panic("rediculous msgSize")
 	}
-	if addr != nil {
+	if addr != nil && addr != s.remote {
 		return ErrIsConn
 	}
 
@@ -550,7 +552,7 @@ func (s *StreamConn) ReadFromIf(ctx context.Context, match func(*dns.Message) bo
 		msg.Iface = s.iface
 
 		if err != nil || match == nil || match(msg) {
-			return msg, nil, err
+			return msg, s.remote, err
 		}
 	}
 }
