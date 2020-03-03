@@ -2,6 +2,7 @@ package ns
 
 import (
 	"context"
+	"fmt"
 	"net"
 
 	"tessier-ashpool.net/dns"
@@ -11,12 +12,22 @@ import (
 func (s *Server) update(ctx context.Context, iface string, msg *dns.Message, from net.Addr, zone *Zone) {
 	q := msg.Questions[0]
 	if q.Type() != dns.SOAType {
-		s.answer(dns.FormError, true, msg, from)
+		s.answer(fmt.Errorf("%w: qtype is %v, not SOA", dns.FormError, q.Type()), true, msg, from)
 		return
 	}
 	if !q.Class().Asks(zone.Class()) {
-		s.logger.Printf("%v: update qclass %v, zone is %v", zone.Name(), q.Class(), zone.Class())
-		s.answer(dns.Refused, true, msg, from)
+		s.answer(
+			fmt.Errorf(
+				"%w: %v update qclass is %v but zone is %v",
+				dns.Refused,
+				zone.Name(),
+				q.Class(),
+				zone.Class(),
+			),
+			true,
+			msg,
+			from,
+		)
 		return
 	}
 
@@ -24,8 +35,17 @@ func (s *Server) update(ctx context.Context, iface string, msg *dns.Message, fro
 		// forward the update query to the primary ns
 		r, err := resolver.NewResolverClient(nil, s.conn.Network(), zone.Primary, nil, false)
 		if err != nil {
-			s.logger.Printf("%v: cannot create resolver to primary: %v", zone.Name(), err)
-			s.answer(dns.ServerFailure, true, msg, from)
+			s.answer(
+				fmt.Errorf(
+					"%w: cannot create resolver to %v: %v",
+					dns.ServerFailure,
+					zone.Primary,
+					err,
+				),
+				true,
+				msg,
+				from,
+			)
 			return
 		}
 		go func() {

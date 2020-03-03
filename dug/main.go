@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime/trace"
 
 	"tessier-ashpool.net/dns"
 	"tessier-ashpool.net/dns/dnsconn"
@@ -21,6 +22,7 @@ var serial uint
 var updates string
 var x bool
 var loop int
+var traceFile string
 
 func exitError(msg interface{}) {
 	fmt.Fprintf(os.Stderr, "%s: %v\n", os.Args[0], msg)
@@ -42,6 +44,7 @@ func main() {
 	flag.StringVar(&updates, "updates", updates, "file to send ddns updates from (- for stdin)")
 	flag.BoolVar(&x, "x", x, "convert name to reverse IP in arpa zone")
 	flag.IntVar(&loop, "loop", loop, "(debug) run query multiple times for subsequent cache hit")
+	flag.StringVar(&traceFile, "trace", traceFile, "trace output file")
 
 	flag.Parse()
 
@@ -49,6 +52,20 @@ func main() {
 	if len(args) < 1 {
 		fmt.Fprintf(os.Stderr, "usage: %s [flags] name\n", os.Args[0])
 		os.Exit(2)
+	}
+
+	if traceFile != "" {
+		f, err := os.Create(traceFile)
+		if err != nil {
+			exitErrorf("cannot create trace file: %v", err)
+		}
+		if err := trace.Start(f); err != nil {
+			exitErrorf("cannot start trace: %v", err)
+		}
+		defer func() {
+			trace.Stop()
+			f.Close()
+		}()
 	}
 
 	var name dns.Name

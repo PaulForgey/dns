@@ -505,7 +505,7 @@ func (e *EDNSHeader) ExtRCode() uint8 {
 }
 
 func (e *EDNSHeader) SetExtRCode(r uint8) {
-	e.ttl = uint32(r<<24) | (e.ttl & 0x00ffffff)
+	e.ttl = uint32(r)<<24 | (e.ttl & 0x00ffffff)
 }
 
 func (e *EDNSHeader) Version() uint8 {
@@ -742,7 +742,6 @@ func (o *Options) UnmarshalCodec(c Codec) error {
 		}
 		(*o)[code] = data
 	}
-	return nil
 }
 
 type Bitmap [][]byte

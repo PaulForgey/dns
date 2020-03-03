@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime/trace"
 	"sync"
 	"time"
 
@@ -262,6 +263,8 @@ func (r *Resolver) query(
 	rrtype dns.RRType,
 	rrclass dns.RRClass,
 ) (a []*dns.Record, ns []*dns.Record, ar []*dns.Record, aa bool, err error) {
+	ctx, task := trace.NewTask(ctx, "res query")
+	defer task.End()
 
 	// always go for the cache or our own authority first
 	var zone ZoneAuthority
@@ -479,6 +482,9 @@ func (r *Resolver) resolve(
 	var a, ns []*dns.Record
 	var err error
 	var aa bool
+
+	ctx, task := trace.NewTask(ctx, "resolve")
+	defer task.End()
 
 	if !r.recursive {
 		// query external recursive server

@@ -290,8 +290,6 @@ func (s *Server) ServeMDNS(ctx context.Context) error {
 			}
 		}
 	}
-
-	return nil // unreached
 }
 
 // Announce announces related records, probing exclusive ones before annoucing the set.
@@ -362,10 +360,10 @@ func (s *Server) Unannounce(names resolver.OwnerNames) error {
 			return nil
 		}
 		for _, r := range records {
-			s.logger.Printf("%s: unannouncing %v", iface, r)
+			s.logger.Printf("%s (%s): unannouncing %v", iface, s.conn.Network(), r)
 		}
 		if err := s.respond(iface, nil, records); err != nil {
-			s.logger.Printf("%s: error unannouncing: %v", iface, err)
+			s.logger.Printf("%s (%s): error unannouncing: %v", iface, s.conn.Network(), err)
 			return err
 		}
 		return nil
@@ -389,9 +387,9 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, persistent
 	}
 
 	if persistent {
-		s.logger.Printf("%v (%s): persistent query %v", s, s.conn.Network(), q)
+		s.logger.Printf("%s: persistent query %v", s.conn.Network(), q)
 	} else {
-		s.logger.Printf("%v (%s); one-shot query %v", s, s.conn.Network(), q)
+		s.logger.Printf("%s: one-shot query %v", s.conn.Network(), q)
 		backoff = 300 * time.Millisecond
 	}
 
@@ -477,7 +475,7 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, persistent
 			s.mqueries = queries
 
 			if !persistent || (first && empty) {
-				s.logger.Printf("%v (%s): sending immediate query for %v", s, s.conn.Network(), q)
+				s.logger.Printf("%s: sending immediate query for %v", s.conn.Network(), q)
 				queries := s.mqueries
 				s.mqueries = nil
 				s.lk.Unlock()
@@ -531,7 +529,7 @@ func (s *Server) PersistentQuery(ctx context.Context, q dns.Question, persistent
 	}
 
 	if persistent {
-		s.logger.Printf("%v (%s): end persistent query %v: %v", s, s.conn.Network(), q, err)
+		s.logger.Printf("%s: end persistent query %v: %v", s.conn.Network(), q, err)
 	}
 
 	if idle != nil && !idle.Stop() {
@@ -841,7 +839,7 @@ func (s *Server) respond(iface string, to net.Addr, response []*dns.Record) erro
 		} else {
 			msg.Additional = append(msg.Additional, r)
 		}
-		s.logger.Printf("%v (%s): responding %v", iface, s.conn.Network(), r)
+		s.logger.Printf("%s (%s): responding %v", iface, s.conn.Network(), r)
 	}
 	s.zones.Additional(true, msg)
 	return s.conn.WriteTo(msg, to, 0)

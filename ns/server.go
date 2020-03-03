@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"runtime/trace"
 	"sync"
 	"time"
 
@@ -96,16 +97,23 @@ func (s *Server) Serve(ctx context.Context) error {
 			s.logger.Printf("listener %v exiting: %v", s.conn, err)
 			return err
 		}
+
 		iface := msg.Iface
 
 		if len(msg.Questions) != 1 {
 			// XXX this needs to change if we ever support an op with no Q section or multiple questions
-			s.answer(dns.FormError, true, msg, from)
+			s.answer(
+				fmt.Errorf("%w: %d questions in question section", dns.FormError, len(msg.Questions)),
+				true,
+				msg,
+				from,
+			)
 			continue
 		}
 		q := msg.Questions[0]
-
-		s.logger.Printf("%s:%v:%v: %v", iface, from, msg.Opcode, msg.Questions[0])
+		tctx, task := trace.NewTask(ctx, "query")
+		category := msg.Opcode.String()
+		trace.Logf(tctx, category, "msg.ID=%d %v", msg.ID, q)
 
 		var zone *Zone
 
@@ -114,7 +122,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			if zone = s.zones.Zone(q.Name()); zone != nil {
 				switch msg.Opcode {
 				case dns.Update:
-					if zone.AllowUpdate == nil || !zone.AllowUpdate.Check(ctx, from, iface, "") {
+					if zone.AllowUpdate == nil || !zone.AllowUpdate.Check(tctx, from, iface, "") {
 						s.answer(
 							fmt.Errorf("%w: no update in %v from %v",
 								dns.Refused,
@@ -125,12 +133,17 @@ func (s *Server) Serve(ctx context.Context) error {
 							msg,
 							from,
 						)
+						task.End()
 						continue
 					}
-					s.update(ctx, iface, msg, from, zone)
+					go func() {
+						defer trace.StartRegion(tctx, category).End()
+						trace.Logf(tctx, category, "zone=%v", zone.Name())
+						s.update(tctx, iface, msg, from, zone)
+					}()
 
 				case dns.Notify:
-					if zone.AllowNotify == nil || !zone.AllowNotify.Check(ctx, from, iface, "") {
+					if zone.AllowNotify == nil || !zone.AllowNotify.Check(tctx, from, iface, "") {
 						s.answer(
 							fmt.Errorf("%w: no notify in %v from %v",
 								dns.Refused,
@@ -141,9 +154,14 @@ func (s *Server) Serve(ctx context.Context) error {
 							msg,
 							from,
 						)
+						task.End()
 						continue
 					}
-					s.notify(ctx, iface, msg, from, zone)
+					go func() {
+						defer trace.StartRegion(tctx, category).End()
+						trace.Logf(tctx, category, "zone=%v", zone.Name())
+						s.notify(tctx, iface, msg, from, zone)
+					}()
 				}
 			}
 
@@ -151,7 +169,7 @@ func (s *Server) Serve(ctx context.Context) error {
 			switch q.Type() {
 			case dns.AXFRType, dns.IXFRType:
 				if zone = s.zones.Zone(q.Name()); zone != nil {
-					if zone.AllowTransfer == nil || !zone.AllowTransfer.Check(ctx, from, iface, "") {
+					if zone.AllowTransfer == nil || !zone.AllowTransfer.Check(tctx, from, iface, "") {
 						s.answer(
 							fmt.Errorf(
 								"%w: no transfer in %v to %v",
@@ -163,14 +181,19 @@ func (s *Server) Serve(ctx context.Context) error {
 							msg,
 							from,
 						)
+						task.End()
 						continue
 					}
-					go s.ixfr(ctx, msg, from, zone)
+					go func() {
+						defer trace.StartRegion(tctx, "xfr").End()
+						trace.Logf(tctx, "xfr", "zone=%v", zone.Name())
+						s.ixfr(tctx, msg, from, zone)
+					}()
 				}
 
 			default:
 				if zone, _ = s.zones.Find(q.Name()).(*Zone); zone != nil {
-					if zone.AllowQuery == nil || !zone.AllowQuery.Check(ctx, from, iface, "") {
+					if zone.AllowQuery == nil || !zone.AllowQuery.Check(tctx, from, iface, "") {
 						s.answer(
 							fmt.Errorf(
 								"%w: no query in %v from %v",
@@ -182,23 +205,28 @@ func (s *Server) Serve(ctx context.Context) error {
 							msg,
 							from,
 						)
+						task.End()
 						continue
 					}
-					go s.query(ctx, msg, from, zone)
+					go func() {
+						defer trace.StartRegion(tctx, category).End()
+						trace.Logf(tctx, category, "zone=%v", zone.Name())
+						s.query(tctx, msg, from, zone)
+					}()
 				}
 			}
 
 		default:
 			s.answer(fmt.Errorf("%w: opcode=%d", dns.NotImplemented, msg.Opcode), true, msg, from)
+			task.End()
 			continue
 		}
 
 		if zone == nil {
 			s.answer(fmt.Errorf("%w: nil zone for %v", dns.Refused, q.Name()), true, msg, from)
 		}
+		task.End()
 	}
-
-	return nil // unreached
 }
 
 func messageSize(conn dnsconn.Conn, msg *dns.Message) int {

@@ -10,8 +10,8 @@ import (
 )
 
 // MaxItems and LowItems may be changed at runtime
-var MaxItems = 200 // maximum cache entries
-var LowItems = 150 // entries purge down to
+var MaxItems = 2000 // maximum cache entries
+var LowItems = 1500 // entries purge down to
 
 // the Cache type is a specialization of Memory which expires records
 type Cache struct {

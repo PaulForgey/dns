@@ -96,8 +96,6 @@ func (r *MResolver) Serve(ctx context.Context) error {
 			r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize)
 		}
 	}
-
-	return nil // unreached
 }
 
 func (r *MResolver) query(ctx context.Context, queries map[uint16]*query, msg *dns.Message) {
@@ -257,8 +255,8 @@ func (r *MResolver) respond(id uint16, iface string, q dns.Question, records []*
 	if err != nil {
 		if !errors.As(err, &msg.RCode) {
 			msg.RCode = dns.ServerFailure
-			r.logger.Printf("mDNS query id %d: %v", id, err)
 		}
+		r.logger.Printf("mDNS IPC %d: %v", id, err)
 	}
 
 	return r.conn.WriteTo(msg, nil, dnsconn.MaxMessageSize)

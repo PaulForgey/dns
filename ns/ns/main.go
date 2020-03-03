@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/trace"
 	"strings"
 	"sync"
 	"time"
@@ -33,7 +34,8 @@ const (
 )
 
 var logStderr bool
-var confFile string
+var confFile = "ns.json"
+var traceFile string
 var cache = ns.NewCacheZone(resolver.NewRootZone())
 var logger *log.Logger
 var res *resolver.Resolver
@@ -395,8 +397,9 @@ func main() {
 	var err error
 	var conf Conf
 
-	flag.BoolVar(&logStderr, "stderr", false, "log using stderr")
-	flag.StringVar(&confFile, "conf", "ns.json", "configuration file location")
+	flag.BoolVar(&logStderr, "stderr", logStderr, "log using stderr")
+	flag.StringVar(&confFile, "conf", confFile, "configuration file location")
+	flag.StringVar(&traceFile, "trace", traceFile, "trace output file")
 
 	flag.Parse()
 
@@ -413,6 +416,20 @@ func main() {
 			fmt.Fprintf(os.Stderr, "unable to connect to syslog: %v", err)
 			os.Exit(1)
 		}
+	}
+
+	if traceFile != "" {
+		f, err := os.Create(traceFile)
+		if err != nil {
+			logger.Fatalf("cannot open trace file: %v", err)
+		}
+		if err := trace.Start(f); err != nil {
+			logger.Fatalf("cannot start trace: %v", err)
+		}
+		defer func() {
+			trace.Stop()
+			f.Close()
+		}()
 	}
 
 	c, err := os.Open(confFile)
