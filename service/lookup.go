@@ -63,6 +63,49 @@ func (s *Services) LookupIPAddr(ctx context.Context, host string) ([]*net.IPAddr
 	return addrs, nil
 }
 
+// LookupHost resolves addresses of the given network and host
+func (s *Services) LookupHost(ctx context.Context, network, host string) ([]net.Addr, error) {
+	var types []dns.RRType
+	answers := make(resolver.IfaceRRSets)
+
+	switch network {
+	case "udp", "tcp", "ip":
+		types = []dns.RRType{dns.AAAAType, dns.AType}
+	case "udp4", "tcp4", "ip4":
+		types = []dns.RRType{dns.AType}
+	case "udp6", "tcp6", "ip6":
+		types = []dns.RRType{dns.AAAAType}
+	default:
+		return nil, fmt.Errorf("%w: %s", ErrBadProtocol, network)
+	}
+
+	for _, t := range types {
+		a, err := s.Lookup(ctx, host, t, dns.INClass)
+		if err != nil && !errors.Is(err, dns.NXDomain) {
+			return nil, err
+		}
+		answers.Merge(a)
+	}
+
+	var addrs []net.Addr
+	for iface, records := range answers {
+		for _, r := range records {
+			if iprecord, ok := r.D.(dns.IPRecordType); ok {
+				var addr net.IPAddr
+
+				addr.IP = iprecord.IP()
+				if addr.IP.IsLinkLocalUnicast() || addr.IP.IsLinkLocalMulticast() {
+					addr.Zone = iface
+				}
+
+				addrs = append(addrs, &addr)
+			}
+		}
+	}
+
+	return addrs, nil
+}
+
 // LookupSRV resolves SRV records
 func (s *Services) LookupSRV(ctx context.Context, service, proto, name string) ([]*dns.SRVRecord, error) {
 	var sname string
@@ -167,49 +210,18 @@ func (s *Services) Locate(
 	rand.Shuffle(len(srvRecords), func(i, j int) { srvRecords[i], srvRecords[j] = srvRecords[j], srvRecords[i] })
 	sort.Slice(srvRecords, func(i, j int) bool { return srvRecords[i].Priority < srvRecords[j].Priority })
 
-	hostAddrs := make(map[string][]*net.IPAddr)
+	hostAddrs := make(map[string][]net.Addr)
 	var addrs []net.Addr
 
 	for _, srv := range srvRecords {
 		ips, _ := hostAddrs[srv.Name.Key()]
 		if ips == nil {
-			ips, err = s.LookupIPAddr(ctx, srv.Name.String())
+			ips, err = s.LookupHost(ctx, protocol, srv.Name.String())
 			if err != nil {
 				return nil, nil, err
 			}
 			hostAddrs[srv.Name.Key()] = ips
-		}
-
-		var addr net.Addr
-
-		for _, ip := range ips {
-			ip4 := ip.IP.To4()
-
-			switch protocol {
-			case "udp", "udp4", "udp6":
-				if (protocol == "udp4" && ip4 == nil) || (protocol == "udp6" && ip4 != nil) {
-					continue
-				}
-				addr = &net.UDPAddr{
-					IP:   ip.IP,
-					Zone: ip.Zone,
-					Port: int(srv.Port),
-				}
-
-			case "tcp", "tcp4", "tcp6":
-				if (protocol == "tcp4" && ip4 == nil) || (protocol == "tcp6" && ip4 != nil) {
-					continue
-				}
-				addr = &net.TCPAddr{
-					IP:   ip.IP,
-					Zone: ip.Zone,
-					Port: int(srv.Port),
-				}
-			}
-
-			if addr != nil {
-				addrs = append(addrs, addr)
-			}
+			addrs = append(addrs, ips...)
 		}
 	}
 

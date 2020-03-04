@@ -11,7 +11,7 @@ import (
 
 const lookupUsage = "lookup name [type [class]]"
 const addrUsage = "addr ip-address"
-const hostUsage = "host hostname"
+const hostUsage = "host hostname [network]"
 
 func printAnswers(answers resolver.IfaceRRSets) error {
 	for iface, records := range answers {
@@ -74,8 +74,12 @@ func lookupHost(args []string) {
 	if len(args) < 1 {
 		exitUsage(hostUsage)
 	}
+	network := "ip"
+	if len(args) > 1 {
+		network = args[1]
+	}
 
-	addrs, err := sd.LookupIPAddr(context.Background(), args[0])
+	addrs, err := sd.LookupHost(context.Background(), network, args[0])
 	if err != nil {
 		exitError(err)
 	}

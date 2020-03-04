@@ -19,7 +19,7 @@ import (
 )
 
 var ErrNotImplemented = errors.New("not implemented or applicable")
-var ErrBadProtocol = errors.New("unknown protocol")
+var ErrBadProtocol = errors.New("unknown protocol or network")
 
 type Service interface {
 	Lookup(ctx context.Context, name dns.Name, rrtype dns.RRType, rrclass dns.RRClass) (resolver.IfaceRRSets, error)
@@ -79,6 +79,11 @@ func LookupAddr(ctx context.Context, addr net.IP) ([]string, error) {
 // LookupIPAddr performs a host lookup using default services
 func LookupIPAddr(ctx context.Context, host string) ([]*net.IPAddr, error) {
 	return DefaultServices.LookupIPAddr(ctx, host)
+}
+
+// LookupHost performs a host lookup for a specified network using default services
+func LookupHost(ctx context.Context, network, host string) ([]net.Addr, error) {
+	return DefaultServices.LookupHost(ctx, network, host)
 }
 
 // LookupSRV performs an SRV lookup using default services
