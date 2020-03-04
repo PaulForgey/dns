@@ -134,6 +134,7 @@ func (r *Resolver) Debug(c dns.Codec) {
 
 // Transact sends and receives a DNS query to dest, filling in msg.EDNS as necessary
 func (r *Resolver) Transact(ctx context.Context, dest net.Addr, msg *dns.Message) (*dns.Message, error) {
+	defer trace.StartRegion(ctx, "transact").End()
 	if dest == nil {
 		servers := r.rotate()
 		if len(servers) > 0 {
@@ -266,6 +267,8 @@ func (r *Resolver) query(
 	ctx, task := trace.NewTask(ctx, "res query")
 	defer task.End()
 
+	trace.Logf(ctx, "res query", "%v %v %v", name, rrtype, rrclass)
+
 	// always go for the cache or our own authority first
 	var zone ZoneAuthority
 
@@ -278,7 +281,9 @@ func (r *Resolver) query(
 			err = ErrNoRecursion
 			return
 		}
+		region := trace.StartRegion(ctx, "cache")
 		a, ns, err = zone.Lookup(key, name, rrtype, rrclass)
+		region.End()
 		if errors.Is(err, nsdb.ErrNegativeAnswer) {
 			aa = true
 			return
@@ -292,6 +297,8 @@ func (r *Resolver) query(
 	// if servers is empty, we did a cache only query
 	var msg *dns.Message
 	if len(servers) > 0 {
+		region := trace.StartRegion(ctx, "query")
+
 		qctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 		msgs := make(chan *dns.Message, len(servers))
@@ -336,6 +343,7 @@ func (r *Resolver) query(
 			}
 		}
 		cancel()
+		region.End()
 	}
 
 	if msg != nil {
@@ -360,23 +368,14 @@ func (r *Resolver) ResolveIP(
 	rrclass dns.RRClass,
 ) ([]dns.IPRecordType, error) {
 	var results []dns.IPRecordType
-	var types []dns.RRType
 
-	if r.hostType == dns.AnyType {
-		types = []dns.RRType{dns.AType, dns.AAAAType}
-	} else {
-		types = []dns.RRType{r.hostType}
+	a, err := r.Resolve(ctx, key, name, r.hostType, rrclass)
+	if err != nil {
+		return nil, err
 	}
-
-	for _, t := range types {
-		a, err := r.Resolve(ctx, key, name, t, rrclass)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range a {
-			if ip, ok := r.D.(dns.IPRecordType); ok {
-				results = append(results, ip)
-			}
+	for _, r := range a {
+		if ip, ok := r.D.(dns.IPRecordType); ok {
+			results = append(results, ip)
 		}
 	}
 
@@ -509,10 +508,10 @@ func (r *Resolver) resolve(
 			}
 
 			suffix := name // name to query NS record for
-			if rrtype == dns.NSType {
-				suffix = suffix.Suffix()
-			}
 			if len(ns) == 0 {
+				if rrtype == dns.NSType {
+					suffix = suffix.Suffix()
+				}
 				// we have no ns records for suffix, so keep going down until we do
 				for len(suffix) > 0 {
 					a, ns, _, _, err = r.query(ctx, nsaddrs, key, suffix, dns.NSType, rrclass)
@@ -576,7 +575,7 @@ func (r *Resolver) resolve(
 
 			var ips []dns.IPRecordType
 
-			// look up the server to ask next iteration
+			// look up the servers to ask next iteration
 			for _, auth := range authority {
 				var err error
 

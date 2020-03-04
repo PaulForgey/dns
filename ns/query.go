@@ -20,7 +20,6 @@ func (s *Server) query(ctx context.Context, msg *dns.Message, from net.Addr, zon
 	// try our own authority first
 	region := trace.StartRegion(ctx, "lookup")
 	msg.Answers, msg.Authority, err = zone.Lookup(msg.Iface, q.Name(), q.Type(), q.Class())
-	region.End()
 
 	// do a limited CNAME chase if its within our zone or cache
 	if q.Type() != dns.CNAMEType && len(msg.Answers) > 0 && msg.Answers[0].Type() == dns.CNAMEType {
@@ -28,7 +27,7 @@ func (s *Server) query(ctx context.Context, msg *dns.Message, from net.Addr, zon
 		var z resolver.ZoneAuthority
 		cname := msg.Answers[0].D.(*dns.CNAMERecord).Name
 
-		region := trace.StartRegion(ctx, "lookup:cname")
+		region := trace.StartRegion(ctx, "cname")
 		a, z, err = resolver.ResolveCNAME(s.zones, msg.Iface, cname, q.Type(), q.Class())
 		msg.Answers = append(msg.Answers, a...)
 		region.End()
@@ -40,6 +39,7 @@ func (s *Server) query(ctx context.Context, msg *dns.Message, from net.Addr, zon
 			msg.AA = !z.Hint()
 		}
 	}
+	region.End()
 
 	if err == nil && len(msg.Answers) == 0 && msg.RD && msg.RA {
 		// go ahead and recurse if this is a hint zone or we have a delegation
