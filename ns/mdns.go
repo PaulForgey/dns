@@ -839,7 +839,11 @@ func (s *Server) respond(iface string, to net.Addr, response []*dns.Record) erro
 		} else {
 			msg.Additional = append(msg.Additional, r)
 		}
-		s.logger.Printf("%s (%s): responding %v", iface, s.conn.Network(), r)
+		where := "mcast"
+		if to != nil {
+			where = to.String()
+		}
+		s.logger.Printf("%s (%s): responding %s %v", iface, s.conn.Network(), where, r)
 	}
 	s.zones.Additional(true, msg)
 	return s.conn.WriteTo(msg, to, 0)
