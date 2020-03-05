@@ -412,29 +412,6 @@ func (rs *RRSet) Merge(records []*dns.Record) {
 	rs.Records = dns.Merge(rs.Records, records)
 }
 
-// Exclude returns records not in rs
-func (rs *RRSet) Exclude(records []*dns.Record) []*dns.Record {
-	var nr []*dns.Record
-
-	for _, rr := range records {
-		found := false
-		if rr.D == nil {
-			continue
-		}
-		for _, or := range rs.Records {
-			if or.D.Equal(rr.D) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			nr = append(nr, rr)
-		}
-	}
-
-	return nr
-}
-
 // Subtract removes records from rs.
 // returns true if the operation completely clears the rrset
 func (rs *RRSet) Subtract(records []*dns.Record) bool {

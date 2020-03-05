@@ -174,7 +174,7 @@ func (m *Memory) Enumerate(serial uint32, f func(uint32, []*dns.Record) error) e
 				}
 				records := rs.Records
 				if xr != nil {
-					records = xr.Exclude(records)
+					records = dns.Subtract(records, xr.Records)
 				}
 				if len(records) > 0 {
 					if err := f(serial, records); err != nil {
