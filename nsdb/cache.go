@@ -132,6 +132,7 @@ func (c *Cache) lookup(now time.Time, name dns.Name) (*RRMap, error) {
 			atomic.AddInt32(&c.stats.Ejections, 1)
 			c.Memory.Enter(name, nil)
 		}
+		return nil, err
 	}
 	if err != nil {
 		atomic.AddInt32(&c.stats.Misses, 1)
@@ -139,6 +140,7 @@ func (c *Cache) lookup(now time.Time, name dns.Name) (*RRMap, error) {
 	}
 	if value.Expire(now) {
 		atomic.AddInt32(&c.stats.Ejections, 1)
+		c.Memory.Enter(name, nil)
 		return nil, dns.NXDomain
 	}
 	if !value.Sticky {
