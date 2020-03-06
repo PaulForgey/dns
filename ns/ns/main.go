@@ -492,6 +492,7 @@ func main() {
 				},
 				Conf:           &conf,
 				Zones:          zones,
+				MZones:         mzones,
 				ShutdownServer: cancel,
 			}
 			s.Serve(ctx)

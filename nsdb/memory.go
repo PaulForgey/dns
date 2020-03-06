@@ -2,6 +2,7 @@ package nsdb
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"tessier-ashpool.net/dns"
 )
@@ -15,6 +16,17 @@ type Memory struct {
 	snaplist  []uint32         // snapshots in creation order, oldest first
 	db        names            // actual database
 	update    names            // update transaction
+	stats     *MemoryStats
+}
+
+// the MemoryStats type is the actual type returned by the Stats interface method
+type MemoryStats struct {
+	Entries    int32
+	Snapshots  int32
+	NXDomain   int32
+	Retrievals int32
+	Updates    int32
+	Deletes    int32
 }
 
 type names map[string]*RRMap
@@ -25,7 +37,12 @@ func NewMemory() *Memory {
 		lk:        &sync.RWMutex{},
 		snapshots: make(map[uint32]names),
 		db:        make(names),
+		stats:     &MemoryStats{},
 	}
+}
+
+func (m *Memory) Stats() interface{} {
+	return m.stats
 }
 
 func (m *Memory) Save() error {
@@ -51,6 +68,7 @@ func (m *Memory) Clear() error {
 	for k, _ := range db {
 		delete(db, k)
 	}
+	atomic.StoreInt32(&m.stats.Entries, 0)
 	return nil
 }
 
@@ -78,6 +96,7 @@ func (m *Memory) Snapshot(snapshot uint32) error {
 		m.snaplist = append(m.snaplist, snapshot)
 	}
 	m.snapshots[snapshot] = m.snapshot_locked()
+	atomic.StoreInt32(&m.stats.Snapshots, int32(len(m.snaplist)))
 	return nil
 }
 
@@ -121,8 +140,10 @@ func (m *Memory) Lookup(name dns.Name) (*RRMap, error) {
 	ns, ok := db[key]
 
 	if !ok || len(ns.Map) == 0 {
+		atomic.AddInt32(&m.stats.NXDomain, 1)
 		return ns, dns.NXDomain
 	}
+	atomic.AddInt32(&m.stats.Retrievals, 1)
 	return ns, nil
 }
 
@@ -139,10 +160,13 @@ func (m *Memory) Enter(name dns.Name, value *RRMap) error {
 	}
 
 	if value == nil || (len(value.Map) == 0 && value.Negative.IsZero()) {
+		atomic.AddInt32(&m.stats.Deletes, 1)
 		delete(db, key)
 	} else {
+		atomic.AddInt32(&m.stats.Updates, 1)
 		db[key] = value
 	}
+	atomic.StoreInt32(&m.stats.Entries, int32(len(db)))
 
 	return nil
 }

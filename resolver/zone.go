@@ -34,6 +34,8 @@ type ZoneAuthority interface {
 	Enter(now time.Time, key string, records []*dns.Record) ([]*dns.Record, error)
 	// NEnter enters a name into negative cache.
 	NEnter(negative time.Time, name dns.Name) error
+	// Stats returns private implementation specific statistics
+	Stats() interface{}
 }
 
 // the Authority interface defines a container finding closest a matching ZoneAuthority for a given Name
@@ -125,6 +127,16 @@ func NewZone(name dns.Name, hint bool) *Zone {
 	zone.cache = nsdb.NewCache()
 	zone.keys[""] = zone.cache
 	return zone
+}
+
+func (z *Zone) Stats() interface{} {
+	stats := make(map[string]interface{})
+	z.RLock()
+	for key, db := range z.keys {
+		stats[key] = db.Stats()
+	}
+	z.RUnlock()
+	return stats
 }
 
 func (z *Zone) Hint() bool {

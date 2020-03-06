@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"net"
@@ -23,6 +24,7 @@ var updates string
 var x bool
 var loop int
 var traceFile string
+var stats bool
 
 func exitError(msg interface{}) {
 	fmt.Fprintf(os.Stderr, "%s: %v\n", os.Args[0], msg)
@@ -45,6 +47,7 @@ func main() {
 	flag.BoolVar(&x, "x", x, "convert name to reverse IP in arpa zone")
 	flag.IntVar(&loop, "loop", loop, "(debug) run query multiple times for subsequent cache hit")
 	flag.StringVar(&traceFile, "trace", traceFile, "trace output file")
+	flag.BoolVar(&stats, "stats", stats, "dump cache stats")
 
 	flag.Parse()
 
@@ -86,14 +89,17 @@ func main() {
 	}
 
 	var r *resolver.Resolver
+	var cache resolver.Authority
 	if host != "" {
-		r, err = resolver.NewResolverClient(resolver.EmptyCache, network, host, nil, rd)
+		cache = resolver.EmptyCache
+		r, err = resolver.NewResolverClient(cache, network, host, nil, rd)
 	} else {
 		conn, err := net.ListenUDP(network, nil)
 		if err != nil {
 			exitErrorf("cannot create resolver socket: %v", err)
 		}
-		r = resolver.NewResolver(resolver.RootCache, dnsconn.NewConn(conn, network, ""), true)
+		cache = resolver.RootCache
+		r = resolver.NewResolver(cache, dnsconn.NewConn(conn, network, ""), true)
 	}
 	if err != nil {
 		exitErrorf("cannot create resolver: %v", err)
@@ -116,5 +122,9 @@ func main() {
 				query(name, r)
 			}
 		}
+	}
+
+	if stats {
+		json.NewEncoder(os.Stdout).Encode(cache.Find(nil).Stats())
 	}
 }

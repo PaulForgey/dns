@@ -87,6 +87,9 @@ type Db interface {
 
 	// Clear resets the database.
 	Clear() error
+
+	// Stats returns private, implementation specific statistics
+	Stats() interface{}
 }
 
 func NewRRMap() *RRMap {

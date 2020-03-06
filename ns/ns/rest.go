@@ -20,6 +20,7 @@ const (
 	zoneReload = "/dns/v1/zone/reload/"
 	zoneConf   = "/dns/v1/zone/conf/"
 	zoneData   = "/dns/v1/zone/data/"
+	zoneStats  = "/dns/v1/zone/stats/"
 	shutdown   = "/dns/v1/shutdown"
 )
 
@@ -34,6 +35,7 @@ type RestServer struct {
 
 	Conf           *Conf
 	Zones          *ns.Zones
+	MZones         *ns.Zones
 	ShutdownServer context.CancelFunc
 }
 
@@ -54,19 +56,14 @@ type requestAuth struct {
 func (ra *requestAuth) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	auth := false
 
-	var ip net.IP
 	var addr net.Addr
 
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
-		ip = net.ParseIP(host)
+		addr, err = net.ResolveIPAddr("ip", host)
 	}
-	if ip == nil {
+	if addr == nil {
 		logger.Printf("cannot determine source addr of %s: %v", r.RemoteAddr, err)
-	} else {
-		addr = &net.IPAddr{
-			IP: ip,
-		}
 	}
 	// if addr is nil at this point and an ACE needs the ip, the check will deny
 
@@ -114,6 +111,7 @@ func (s *RestServer) Serve(ctx context.Context) {
 	addHandler(h, zoneReload, http.HandlerFunc(s.doZoneReload))
 	addHandler(h, zoneConf, http.HandlerFunc(s.doZoneConf))
 	addHandler(h, zoneData, http.HandlerFunc(s.doZoneData))
+	addHandler(h, zoneStats, http.HandlerFunc(s.doZoneStats))
 	addHandler(h, shutdown, http.HandlerFunc(s.doShutdown))
 
 	s.Handler = &requestAuth{&requestLogger{h}, s}
@@ -131,23 +129,32 @@ func (s *RestServer) Serve(ctx context.Context) {
 	logger.Printf("REST server exiting: %v", err)
 }
 
+func (s *RestServer) zoneWithPath(w http.ResponseWriter, path string) (*ns.Zone, error) {
+	n, err := dns.NameWithString(path)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(err.Error()))
+		return nil, err
+	}
+	zone := s.Zones.Zone(n)
+	if zone == nil {
+		zone = s.MZones.Zone(n)
+	}
+	if zone == nil {
+		w.WriteHeader(http.StatusNotFound)
+	}
+	return zone, nil
+}
+
 func (s *RestServer) doZoneReload(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
-		n, err := dns.NameWithString(r.URL.Path)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(err.Error()))
-			return
+		zone, _ := s.zoneWithPath(w, r.URL.Path)
+		if zone != nil {
+			logger.Printf("%v: zone reload request", zone.Name())
+			zone.Reload()
+			w.WriteHeader(http.StatusNoContent)
 		}
-		zone := s.Zones.Zone(n)
-		if zone == nil {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		logger.Printf("%v: zone reload request", zone.Name())
-		zone.Reload()
-		w.WriteHeader(http.StatusNoContent)
 
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -159,6 +166,9 @@ func (s *RestServer) doZoneConf(w http.ResponseWriter, r *http.Request) {
 	defer s.Conf.Unlock()
 
 	path := r.URL.Path // must match the configuration json key exactly
+	if path == "" {
+		path = "."
+	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -213,18 +223,8 @@ func (s *RestServer) doZoneConf(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *RestServer) doZoneData(w http.ResponseWriter, r *http.Request) {
-	var zone *ns.Zone
-
-	path := r.URL.Path // must match the configuration json key exactly
-	s.Conf.Lock()
-	c, ok := s.Conf.Zones[path]
-	if ok {
-		zone = c.zone
-	}
-	s.Conf.Unlock()
-
+	zone, _ := s.zoneWithPath(w, r.URL.Path)
 	if zone == nil {
-		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
@@ -259,6 +259,22 @@ func (s *RestServer) doZoneData(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 
 	// XXX MethodPatch with update style fields
+
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *RestServer) doZoneStats(w http.ResponseWriter, r *http.Request) {
+	zone, _ := s.zoneWithPath(w, r.URL.Path)
+	if zone == nil {
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(zone.Stats())
 
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)

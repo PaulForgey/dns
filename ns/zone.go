@@ -65,6 +65,12 @@ type Zone struct {
 	queries map[chan<- struct{}]mdnsQuery
 }
 
+// the ZoneStats type is the type returned by the Stats interface method
+type ZoneStats struct {
+	Db    interface{}
+	Cache interface{}
+}
+
 type mdnsQuery struct {
 	iface string
 	q     dns.Question
@@ -97,6 +103,17 @@ func NewCacheZone(cache *resolver.Zone) *Zone {
 	}
 	z.init()
 	return z
+}
+
+func (z *Zone) Stats() interface{} {
+	m := make(map[string]interface{})
+	stats := &ZoneStats{Cache: z.Zone.Stats(), Db: m}
+	z.RLock()
+	for k, db := range z.keys {
+		m[k] = db.Stats()
+	}
+	z.RUnlock()
+	return stats
 }
 
 // PersistentQuery installs a notification on the zone for q. If q is nil, the channel is removed from notifications.
@@ -385,6 +402,8 @@ func (z *Zone) Lookup(
 // The current serial will be snapshotted for future history if it was not already.
 func (z *Zone) Dump(serial uint32, rrclass dns.RRClass, next func(*dns.Record) error) (uint32, error) {
 	var toSerial uint32
+	var toSOA, fromSOA *dns.Record
+	var soaD *dns.SOARecord
 
 	z.Lock()
 
@@ -393,38 +412,43 @@ func (z *Zone) Dump(serial uint32, rrclass dns.RRClass, next func(*dns.Record) e
 		return 0, ErrNoKey
 	}
 	soa := z.soa_locked()
-	if soa == nil {
+	if soa == nil && serial != 0 {
 		z.Unlock()
 		return 0, ErrNoSOA
 	}
-	soaD := soa.D.(*dns.SOARecord)
-	toSerial = soaD.Serial
-	fromSOA := &dns.Record{
-		H: soa.H,
-		D: &dns.SOARecord{
-			MName:   soaD.MName,
-			ReName:  soaD.ReName,
-			Serial:  serial,
-			Refresh: soaD.Refresh,
-			Retry:   soaD.Retry,
-			Expire:  soaD.Expire,
-			Minimum: soaD.Minimum,
-		},
+
+	if soa != nil {
+		soaD = soa.D.(*dns.SOARecord)
+		toSerial = soaD.Serial
+		fromSOA = &dns.Record{
+			H: soa.H,
+			D: &dns.SOARecord{
+				MName:   soaD.MName,
+				ReName:  soaD.ReName,
+				Serial:  serial,
+				Refresh: soaD.Refresh,
+				Retry:   soaD.Retry,
+				Expire:  soaD.Expire,
+				Minimum: soaD.Minimum,
+			},
+		}
+		toSOA = soa
 	}
-	toSOA := soa
 
 	z.Unlock()
 
-	if err := next(soa); err != nil {
-		return toSerial, err
-	}
+	if soa != nil {
+		if err := next(soa); err != nil {
+			return toSerial, err
+		}
 
-	if serial == toSerial {
-		return toSerial, nil
-	}
+		if serial == toSerial {
+			return toSerial, nil
+		}
 
-	if err := z.db.Snapshot(soaD.Serial); err != nil {
-		return toSerial, err
+		if err := z.db.Snapshot(soaD.Serial); err != nil {
+			return toSerial, err
+		}
 	}
 
 	err := z.db.Enumerate(serial, func(serial uint32, records []*dns.Record) error {
@@ -455,8 +479,11 @@ func (z *Zone) Dump(serial uint32, rrclass dns.RRClass, next func(*dns.Record) e
 	if err != nil {
 		return toSerial, err
 	}
-	if err = next(soa); err != nil {
-		return toSerial, err
+
+	if soa != nil {
+		if err = next(soa); err != nil {
+			return toSerial, err
+		}
 	}
 
 	return toSerial, nil
