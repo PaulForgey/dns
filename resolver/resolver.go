@@ -311,6 +311,7 @@ func (r *Resolver) query(
 				if err == nil && len(msg.Answers) == 0 && len(msg.Authority) == 0 && msg.TC {
 					if udpaddr, ok := dest.(*net.UDPAddr); ok {
 						var tcp *Resolver
+						trace.Log(ctx, "query", "TCP requery")
 						tcp, err = NewResolverClient(r.auth, "tcp", udpaddr.String(), nil, r.rd)
 						if err == nil {
 							msg, err = tcp.Ask(qctx, zone, nil, name, rrtype, rrclass)
@@ -510,95 +511,108 @@ func (r *Resolver) resolve(
 			}
 
 			suffix := name // name to query NS record for
-			if len(ns) == 0 {
-				if rrtype == dns.NSType {
-					suffix = suffix.Suffix()
-				}
-				// we have no ns records for suffix, so keep going down until we do
-				for len(suffix) > 0 {
-					a, ns, _, _, err = r.query(ctx, nsaddrs, key, suffix, dns.NSType, rrclass)
-					if err != nil {
-						return nil, err
-					}
-					if len(a) > 0 || len(ns) > 0 {
-						// either an answer happend or we have delgation
-						if len(a) == 0 || a[0].Type() != dns.CNAMEType {
-							break
-						}
-					}
-					suffix = suffix.Suffix()
-				}
+			if rrtype == dns.NSType && len(ns) == 0 {
+				suffix = suffix.Suffix() // ..unless we just did
 			}
-			// at this point, we have the list of ns records for suffix
-
-			var authority []dns.NSRecordType
-			var aname dns.Name
-
-			for _, record := range append(a, ns...) {
-				if auth, ok := record.D.(dns.NSRecordType); ok {
-					if len(aname) == 0 {
-						aname = record.Name()
-					} else if !aname.Equal(record.Name()) {
-						return nil, fmt.Errorf(
-							"%w: authority section contains %v != %v",
-							ErrLameDelegation,
-							record.Name(),
-							aname,
-						)
-					}
-					authority = append(authority, auth)
-				}
-			}
-
-			if len(authority) == 0 {
-				// no delegation
-				return nil, fmt.Errorf("%w: no delegation for %v", dns.NXDomain, name)
-			}
-			if !suffix.HasSuffix(aname) || !aname.HasSuffix(progress) {
-				// got wrong delegation
-				return nil, fmt.Errorf(
-					"%w: authority section contains %v, looking for %v (last got %v)",
-					ErrLameDelegation,
-					aname,
-					suffix,
-					progress,
-				)
-			}
-			if len(progress) > 0 && len(progress) == len(aname) {
-				// did not make forward progress
-				return nil, fmt.Errorf(
-					"%w: delegation was not helpful making progress from %v",
-					ErrLameDelegation,
-					progress,
-				)
-			}
-			progress = aname
-			a = nil
 
 			var ips []dns.IPRecordType
+			var aname dns.Name
 
-			// look up the servers to ask next iteration
-			for _, auth := range authority {
-				if auth.NS().HasSuffix(aname) {
-					// avoid an endless cycle if the glue record is missing
-					if i, err := r.resolveIP(ctx, nsaddrs, key, auth.NS(), rrclass); err != nil {
-						continue
-					} else {
-						ips = append(ips, i...)
-					}
-				} else {
-					if i, err := r.ResolveIP(ctx, key, auth.NS(), rrclass); err != nil {
-						continue
-					} else {
-						ips = append(ips, i...)
+			for len(ips) == 0 {
+				if len(ns) == 0 {
+					// we have no ns records for suffix, so keep going down until we do
+					for len(suffix) > 0 {
+						a, ns, _, _, err = r.query(ctx, nsaddrs, key, suffix, dns.NSType, rrclass)
+						if err != nil {
+							return nil, err
+						}
+						if len(a) > 0 || len(ns) > 0 {
+							// either an answer happend or we have delgation
+							if len(a) == 0 || a[0].Type() != dns.CNAMEType {
+								break
+							}
+						}
+						suffix = suffix.Suffix()
 					}
 				}
-			}
-			if len(ips) == 0 {
-				return nil, fmt.Errorf("%w: no nameserver ips", dns.NXDomain)
+				// at this point, we have the list of ns records for suffix
+
+				var authority []dns.NSRecordType
+				aname = nil
+
+				for _, record := range append(a, ns...) {
+					if auth, ok := record.D.(dns.NSRecordType); ok {
+						if len(aname) == 0 {
+							aname = record.Name()
+						} else if !aname.Equal(record.Name()) {
+							return nil, fmt.Errorf(
+								"%w: authority section contains %v != %v",
+								ErrLameDelegation,
+								record.Name(),
+								aname,
+							)
+						}
+						authority = append(authority, auth)
+					}
+				}
+
+				if len(authority) == 0 {
+					// no delegation
+					return nil, fmt.Errorf("%w: no delegation for %v", dns.NXDomain, name)
+				}
+				if !suffix.HasSuffix(aname) || !aname.HasSuffix(progress) {
+					// got wrong delegation
+					return nil, fmt.Errorf(
+						"%w: authority section contains %v, looking for %v (last got %v)",
+						ErrLameDelegation,
+						aname,
+						suffix,
+						progress,
+					)
+				}
+				if len(progress) > 0 && len(progress) == len(aname) {
+					// did not make forward progress
+					return nil, fmt.Errorf(
+						"%w: delegation was not helpful making progress from %v",
+						ErrLameDelegation,
+						progress,
+					)
+				}
+
+				// look up the servers to ask next iteration
+				for _, auth := range authority {
+					if auth.NS().HasSuffix(aname) {
+						// avoid an endless cycle if the glue record is missing
+						if i, err := r.resolveIP(ctx, nsaddrs, key, auth.NS(), rrclass); err != nil {
+							continue
+						} else {
+							ips = append(ips, i...)
+						}
+					} else {
+						if i, err := r.ResolveIP(ctx, key, auth.NS(), rrclass); err != nil {
+							continue
+						} else {
+							ips = append(ips, i...)
+						}
+					}
+				}
+				if len(ips) == 0 {
+					if len(nsaddrs) != 0 || len(suffix) == 0 {
+						return nil, fmt.Errorf("%w: no nameserver ips", dns.NXDomain)
+					}
+					// if this was all in the cache only, dig further
+					trace.Logf(ctx, "resolve", "cached NS for %v has no cached A/AAAA", suffix)
+					suffix = suffix.Suffix()
+					ns = nil
+				}
 			}
 
+			progress = aname
+			trace.Logf(ctx, "resolve", "progress = %v", progress)
+			a = nil
+
 			nsaddrs = make([]net.Addr, len(ips))
+
 			for i, ip := range ips {
 				nsaddrs[i] = &net.UDPAddr{
 					IP:   ip.IP(),
@@ -611,6 +625,7 @@ func (r *Resolver) resolve(
 	if rrtype == dns.AnyType && len(a) > 0 {
 		for _, rr := range a {
 			if hinfo, ok := rr.D.(*dns.HINFORecord); ok && hinfo.CPU == "RFC8482" {
+				trace.Log(ctx, "resolve", "RFC8482 answer")
 				a, err = r.resolve(ctx, key, name, dns.AType, rrclass)
 				if err != nil {
 					return nil, err
@@ -631,8 +646,7 @@ func (r *Resolver) resolve(
 						return nil, err
 					}
 					a = append(a, aaaarec...)
-				}
-				if !cname {
+
 					mxrec, err := r.resolve(ctx, key, name, dns.MXType, rrclass)
 					if err != nil {
 						return nil, err
