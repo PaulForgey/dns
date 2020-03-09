@@ -580,22 +580,29 @@ func (r *Resolver) resolve(
 				}
 
 				// look up the servers to ask next iteration
+				wg := &sync.WaitGroup{}
+				c := make(chan []dns.IPRecordType, len(authority))
+
 				for _, auth := range authority {
 					if auth.NS().HasSuffix(aname) {
-						// avoid an endless cycle if the glue record is missing
-						if i, err := r.resolveIP(ctx, nsaddrs, key, auth.NS(), rrclass); err != nil {
-							continue
-						} else {
-							ips = append(ips, i...)
-						}
+						wg.Add(1)
+						go func(name dns.Name) {
+							a, _ := r.resolveIP(ctx, nsaddrs, key, name, rrclass)
+							c <- a
+							wg.Done()
+						}(auth.NS())
 					} else {
-						if i, err := r.ResolveIP(ctx, key, auth.NS(), rrclass); err != nil {
-							continue
-						} else {
-							ips = append(ips, i...)
-						}
+						a, _ := r.ResolveIP(ctx, key, auth.NS(), rrclass)
+						c <- a
 					}
 				}
+				wg.Wait()
+				close(c)
+
+				for i := range c {
+					ips = append(ips, i...)
+				}
+
 				if len(ips) == 0 {
 					if len(nsaddrs) != 0 || len(suffix) == 0 {
 						return nil, fmt.Errorf("%w: no nameserver ips", dns.NXDomain)
