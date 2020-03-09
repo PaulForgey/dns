@@ -320,8 +320,10 @@ func (r *Resolver) query(
 				}
 				if err == nil {
 					cancel()
+					msgs <- msg
+				} else {
+					msgs <- nil
 				}
-				msgs <- msg
 				errs <- err
 			}(dest)
 		}
@@ -577,22 +579,20 @@ func (r *Resolver) resolve(
 
 			// look up the servers to ask next iteration
 			for _, auth := range authority {
-				var err error
-
 				if auth.NS().HasSuffix(aname) {
 					// avoid an endless cycle if the glue record is missing
-					if ips, err = r.resolveIP(ctx, nsaddrs, key, auth.NS(), rrclass); err != nil {
+					if i, err := r.resolveIP(ctx, nsaddrs, key, auth.NS(), rrclass); err != nil {
 						continue
+					} else {
+						ips = append(ips, i...)
 					}
 				} else {
-					if ips, err = r.ResolveIP(ctx, key, auth.NS(), rrclass); err != nil {
+					if i, err := r.ResolveIP(ctx, key, auth.NS(), rrclass); err != nil {
 						continue
+					} else {
+						ips = append(ips, i...)
 					}
 				}
-				if len(ips) == 0 {
-					continue
-				}
-				break
 			}
 			if len(ips) == 0 {
 				return nil, fmt.Errorf("%w: no nameserver ips", dns.NXDomain)
