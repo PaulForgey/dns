@@ -1,15 +1,13 @@
 package ns
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"reflect"
-	"strings"
 	"testing"
-	"time"
 
 	"tessier-ashpool.net/dns"
+	"tessier-ashpool.net/dns/ns/test"
 	"tessier-ashpool.net/dns/nsdb"
 )
 
@@ -62,64 +60,38 @@ var steps = []*zoneDelta{
 }
 
 func compareZone(t *testing.T, z1, z2 *Zone) {
-	var r1 []*dns.Record
+	var r1, r2 []*dns.Record
 	z1.Dump(0, dns.AnyClass, func(r *dns.Record) error {
 		r1 = append(r1, r)
 		return nil
 	})
+	z2.Dump(0, dns.AnyClass, func(r *dns.Record) error {
+		r2 = append(r2, r)
+		return nil
+	})
 
-	for _, r := range r1 {
-		r2, _, _ := z2.Lookup("", r.Name(), r.Type(), r.Class())
-		if len(r2) < 1 {
-			t.Fatalf("z2 did not contain %v %v %v", r.Name(), r.Type(), r.Class())
-		}
-		found := false
-		for _, rr := range r2 {
-			if reflect.DeepEqual(rr.D, r.D) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("did not find %v in z2", r)
-		}
+	if !test.SameRecordSet(r1, r2) {
+		t.Fatal("zones are different")
 	}
 }
 
-func reloadZoneText(t *testing.T, z *Zone, db nsdb.Db, s string) {
-	if err := db.Clear(); err != nil {
-		t.Fatal(err)
-	}
-	c := dns.NewTextReader(strings.NewReader(s), z.Name())
-	records := []*dns.Record{}
-	for {
-		r := &dns.Record{}
-		if err := c.Decode(r); err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			t.Fatal(err)
+func loadZoneText(z *Zone, s string) {
+	db := z.Db("")
+	if db == nil {
+		db = nsdb.NewMemory()
+	} else {
+		if err := db.Clear(); err != nil {
+			panic(err)
 		}
-		records = append(records, r)
 	}
-	if _, err := nsdb.Load(db, time.Time{}, records); err != nil {
-		t.Fatal(err)
-	}
-	if err := z.Attach("", db); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func loadZoneText(t *testing.T, z *Zone, s string) {
-	m := nsdb.NewMemory()
-	reloadZoneText(t, z, m, s)
+	test.LoadDb(db, z.Name(), s)
+	z.Attach("", db)
 }
 
 func TestIXFR(t *testing.T) {
-	z := NewZone(nameWithString(t, "jain.ad.jp"), false)
-	m := nsdb.NewMemory()
+	z := NewZone(test.NewName("jain.ad.jp"), false)
 	for i, r := range revisions {
-		reloadZoneText(t, z, m, r)
+		loadZoneText(z, r)
 		if _, err := z.Dump(0, dns.AnyClass, func(r *dns.Record) error {
 			fmt.Println(i, r)
 			return nil
@@ -129,8 +101,8 @@ func TestIXFR(t *testing.T) {
 	}
 
 	// secondary with initial revision
-	zz := NewZone(nameWithString(t, "jain.ad.jp"), false)
-	loadZoneText(t, zz, revisions[0])
+	zz := NewZone(test.NewName("jain.ad.jp"), false)
+	loadZoneText(zz, revisions[0])
 
 	// request ixfr from 1 -> current
 	var ixfr []*dns.Record
@@ -216,10 +188,9 @@ func parseTransfer(t *testing.T, serial uint32, records []*dns.Record) []*zoneDe
 }
 
 func TestZoneDump(t *testing.T) {
-	z := NewZone(nameWithString(t, "jain.ad.jp"), false)
-	m := nsdb.NewMemory()
+	z := NewZone(test.NewName("jain.ad.jp"), false)
 	for n, r := range revisions {
-		reloadZoneText(t, z, m, r)
+		loadZoneText(z, r)
 
 		t.Logf("from %d to %d", n, n+1)
 

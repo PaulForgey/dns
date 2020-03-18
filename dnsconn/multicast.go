@@ -1,7 +1,6 @@
 package dnsconn
 
 import (
-	"errors"
 	"fmt"
 	"net"
 	"sync"
@@ -24,9 +23,6 @@ const (
 	FlagsMask = net.FlagUp | net.FlagMulticast | net.FlagPointToPoint | net.FlagLoopback
 	FlagsMDNS = net.FlagUp | net.FlagMulticast
 )
-
-// Attempt to create a listener on an unknown or ambiguous network
-var ErrBadNetwork = errors.New("bad network name")
 
 var mdnsPool = sync.Pool{
 	New: func() interface{} {

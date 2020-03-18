@@ -28,11 +28,6 @@ const (
 
 var UDPMessageSize = 8192 // preferred message size. may be changed at runtime
 
-var ErrClosed = errors.New("closed")
-var ErrNotConn = errors.New("not connected")
-var ErrIsConn = errors.New("connected")
-var ErrUnknownInterface = errors.New("unknown interface")
-
 var maxBufferPool = sync.Pool{
 	New: func() interface{} {
 		return make([]byte, 65536)

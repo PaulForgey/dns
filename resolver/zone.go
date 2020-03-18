@@ -74,16 +74,18 @@ func ResolveCNAME(
 
 	for i := 0; i < MaxCNAME; i++ {
 		z := a.Find(name)
+
 		if z == nil {
 			// dead end
-			return nil, nil, nil
+			return result, nil, nil
 		}
 		a, _, err := z.Lookup(key, name, rrtype, rrclass)
+
 		if err != nil || len(a) == 0 {
 			if errors.Is(err, dns.NXDomain) {
 				err = nil
 			}
-			return nil, nil, err
+			return result, z, err
 		}
 		result = append(result, a...)
 
@@ -91,7 +93,7 @@ func ResolveCNAME(
 		for n := len(a) - 1; n > 0; n-- {
 			cname, _ := a[n].D.(*dns.CNAMERecord)
 			if cname == nil {
-				break
+				return result, z, nil
 			}
 
 			found := false
@@ -110,11 +112,11 @@ func ResolveCNAME(
 		if !nname.Equal(name) {
 			name = nname
 		} else {
-			return nil, nil, nil
+			return result, z, nil
 		}
 	}
 
-	return nil, nil, nil
+	return result, nil, nil
 }
 
 // NewZone creates a new zone with a given name

@@ -4,22 +4,15 @@ import (
 	"testing"
 
 	"tessier-ashpool.net/dns"
+	"tessier-ashpool.net/dns/ns/test"
 	"tessier-ashpool.net/dns/resolver"
 )
 
-func nameWithString(t *testing.T, n string) dns.Name {
-	name, err := dns.NameWithString(n)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return name
-}
-
 func TestZoneSearch(t *testing.T) {
-	dot := &Zone{Zone: resolver.NewZone(nameWithString(t, "."), true)}
-	zone1 := &Zone{Zone: resolver.NewZone(nameWithString(t, "tessier-ashpool.net"), false)}
-	zone2 := &Zone{Zone: resolver.NewZone(nameWithString(t, "shoesinonehour.com"), false)}
-	zone3 := &Zone{Zone: resolver.NewZone(nameWithString(t, "horses.shoesinonehour.com"), false)}
+	dot := &Zone{Zone: resolver.NewZone(test.NewName("."), true)}
+	zone1 := &Zone{Zone: resolver.NewZone(test.NewName("tessier-ashpool.net"), false)}
+	zone2 := &Zone{Zone: resolver.NewZone(test.NewName("shoesinonehour.com"), false)}
+	zone3 := &Zone{Zone: resolver.NewZone(test.NewName("horses.shoesinonehour.com"), false)}
 
 	zones := NewZones()
 
@@ -41,15 +34,15 @@ func TestZoneSearch(t *testing.T) {
 		{"horses.shoesinonehour.com", zone3},
 	}
 
-	for _, test := range tests {
-		zone := zones.Find(nameWithString(t, test.name))
-		if zone != test.zone {
+	for _, tc := range tests {
+		zone := zones.Find(test.NewName(tc.name))
+		if zone != tc.zone {
 			var name dns.Name
 			if zone != nil {
 				name = zone.Name()
 			}
-			t.Fatalf("expected to find %v in %p, found in %p (%v)", test.name, test.zone, zone, name)
+			t.Fatalf("expected to find %v in %p, found in %p (%v)", tc.name, tc.zone, zone, name)
 		}
-		t.Logf("found %v in %v", test.name, zone.Name())
+		t.Logf("found %v in %v", tc.name, zone.Name())
 	}
 }
