@@ -126,7 +126,6 @@ func TestIXFR(t *testing.T) {
 	}
 
 	compareZone(t, z, zz)
-	compareZone(t, zz, z)
 }
 
 func parseTransfer(t *testing.T, serial uint32, records []*dns.Record) []*zoneDelta {

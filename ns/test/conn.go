@@ -46,6 +46,7 @@ const (
 	normal state = iota
 	closed
 	listen
+	connecting
 )
 
 type conn struct {
@@ -86,28 +87,34 @@ func Dial(lname, rname string) (*Conn, error) {
 	}
 
 	rconn.Lock()
-
 	if rconn.state != listen || (rconn.addr != nil && rconn.addr.Net != "test") {
 		rconn.Unlock()
 		return nil, dnsconn.ErrInvalidState
 	}
-
-	conn := &Conn{
-		conn: newConn(normal, nil, &Addr{Name: lname, Net: "test"}),
-	}
-
-	ch := make(chan struct{})
-	rconn.waiters = append(rconn.waiters, ch)
-
-	closed := rconn.closed
 	rconn.Unlock()
 
-	rconn.writeFrom(nil, conn.conn)
+	conn := &Conn{
+		conn: newConn(connecting, nil, &Addr{Name: lname, Net: "test"}),
+	}
 
-	select {
-	case <-ch:
-	case <-closed:
-		return nil, dnsconn.ErrInvalidState
+	err := rconn.writeFrom(nil, conn.conn)
+	if err != nil {
+		return nil, err
+	}
+
+	conn.Lock()
+	err = conn.waitQueue_locked()
+	if err == nil {
+		_, conn.peer, err = conn.input.readFrom(nil)
+		if conn.state == connecting {
+			conn.state = normal
+		}
+	}
+	conn.Unlock()
+
+	if err != nil {
+		conn.Close()
+		return nil, err
 	}
 
 	return conn, nil
@@ -151,7 +158,8 @@ func (l *Listener) AcceptConn() (*Conn, error) {
 	a := &Conn{
 		conn: newConn(normal, peer, l.conn.addr),
 	}
-	peer.peer = a.conn
+
+	peer.writeFrom(nil, a.conn)
 
 	return a, nil
 }
@@ -388,6 +396,12 @@ func (c *PacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
 }
 
 func (c *Conn) Write(b []byte) (int, error) {
+	c.Lock()
+	defer c.Unlock()
+
+	if c.peer == nil {
+		return 0, dnsconn.ErrNotConn
+	}
 	err := c.peer.writeFrom(b, nil)
 	if err != nil {
 		return 0, err

@@ -3,6 +3,7 @@ package ns
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"testing"
 
@@ -13,7 +14,7 @@ import (
 	"tessier-ashpool.net/dns/resolver"
 )
 
-func exampleZone(origin dns.Name) *Zone {
+func newZone(origin dns.Name) *Zone {
 	z := NewZone(origin, false)
 	z.AllowQuery = AllAccess
 	z.AllowUpdate = AllAccess
@@ -21,16 +22,38 @@ func exampleZone(origin dns.Name) *Zone {
 	z.AllowNotify = AllAccess
 
 	db := nsdb.NewMemory()
+	z.Attach("", db)
+
+	return z
+}
+
+func exampleZone(origin dns.Name) *Zone {
+	z := newZone(origin)
+	db := z.Db("")
+
 	test.LoadDb(db, origin, `
-@ 1h IN SOA hostmaster ns1 (
+@ 1h IN 	SOA hostmaster ns1 (
 		1	; serial
 		24h	; refresh
 		2h	; retry
 		1000h	; expire
 		48h	; mininum
 )
+
+@		NS	ns1
+		NS	ns2
 ns1		A 	192.168.0.1
 ns2		A 	192.168.0.2
+
+delegation	NS	ns1.delegation
+		NS	ns2.delegation
+ns1.delegation	A 	192.168.0.1
+ns2.delegation	A 	192.168.0.2
+
+other		NS	ns1.other
+		NS	ns2.other
+ns1.other	A	192.168.0.1
+ns2.other	A	192.168.0.2
 
 www		CNAME	web
 web		A	192.168.0.10
@@ -44,28 +67,86 @@ bert		A	192.168.0.20
 ernie		A	192.168.0.2
 
 files._smb._tcp	SRV	0 0 445 arbys
+files._smb._tcp	TXT	"\000"
 arbys		A	192.168.0.30
+`)
+
+	z.Attach("", db) // updates SOA
+	return z
+}
+
+// origin is the containing zone name, this zone will be delegation.origin
+func delegationZone(origin dns.Name) *Zone {
+	name := test.NewName("delegation").Append(origin)
+	z := newZone(name)
+	db := z.Db("")
+
+	test.LoadDb(db, name, `
+@ 1h IN 	SOA hostmaster ns1 (
+		1	; serial
+		24h	; refresh
+		2h	; retry
+		1000h	; expire
+		48h	; mininum
+)
+
+@		NS	ns1
+		NS	ns2
+ns1		A	192.168.0.1
+ns2		A	192.168.0.2
+
+host		A	192.168.0.20
 `)
 
 	z.Attach("", db)
 	return z
 }
 
-func newServer(t *testing.T, zones *Zones) (*Server, func() error) {
+func newServer(t *testing.T, zones *Zones) func() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	p, err := test.ListenPacketConn("ns")
 	if err != nil {
 		panic(err)
 	}
-	s := NewServer(test.NewLog(t), dnsconn.NewPacketConn(p, "testpacket", ""), zones, nil, NoAccess)
+	ps := NewServer(test.NewLog(t), dnsconn.NewPacketConn(p, "testpacket", ""), zones, nil, NoAccess)
 	wg := &sync.WaitGroup{}
+
 	wg.Add(1)
 	go func() {
-		err = s.Serve(ctx)
+		err = ps.Serve(ctx)
+		ps.Close()
 		wg.Done()
 	}()
-	return s, func() error {
+
+	c, err := test.Listen("ns")
+	if err != nil {
+		panic(err)
+	}
+
+	wg.Add(1)
+	go func() {
+		for {
+			a, err := c.AcceptConn()
+			if err != nil {
+				t.Logf("AcceptConn: %v", err)
+				break
+			}
+			wg.Add(1)
+			go func(a *test.Conn) {
+				cs := NewServer(test.NewLog(t), dnsconn.NewConn(a, "test", ""), zones, nil, NoAccess)
+				err := cs.Serve(ctx)
+				cs.Close()
+				t.Logf("Conn server exited: %v", err)
+				wg.Done()
+			}(a)
+		}
+
+		wg.Done()
+	}()
+
+	return func() error {
 		cancel()
+		c.Close()
 		wg.Wait()
 		if errors.Is(err, context.Canceled) {
 			err = nil
@@ -75,11 +156,10 @@ func newServer(t *testing.T, zones *Zones) (*Server, func() error) {
 }
 
 func TestServerShutdown(t *testing.T) {
-	s, shutdown := newServer(t, NewZones())
+	shutdown := newServer(t, NewZones())
 	if err := shutdown(); err != nil {
 		t.Fatal(err)
 	}
-	s.Close()
 }
 
 type queryCase struct {
@@ -95,38 +175,110 @@ func compareSection(t *testing.T, q dns.Question, section string, records []*dns
 	if len(expected) == 0 {
 		return
 	}
+	t.Logf("%v: %s", q, section)
+	for _, r := range records {
+		t.Log(r)
+	}
+
 	if !test.IncludedRecordSet(records, expected) {
-		t.Logf("%v did not provide expected %s section", q, section)
-		t.Log("got:")
-		for _, r := range records {
-			t.Log(r)
-		}
 		t.Log("expected:")
 		for _, r := range expected {
 			t.Log(r)
 		}
 		t.FailNow()
 	}
-
 }
 
 func TestServerQuery(t *testing.T) {
 	zones := NewZones()
 	origin := test.NewName("horsegrinders.com")
 	zones.Insert(exampleZone(origin), true)
-	s, shutdown := newServer(t, zones)
+	zones.Insert(delegationZone(origin), true)
+	shutdown := newServer(t, zones)
 
 	cases := []*queryCase{
 		&queryCase{
-			test.NewName("www").Append(origin),
-			dns.AType,
-			dns.NoError,
-			test.NewRecordSet(origin, `
+			name:   test.NewName("www").Append(origin),
+			rrtype: dns.AType,
+			rcode:  dns.NoError,
+			answers: test.NewRecordSet(origin, `
 www IN CNAME web
 web IN A 192.168.0.10
 `),
-			nil,
-			nil,
+		},
+		&queryCase{
+			name:   origin,
+			rrtype: dns.MXType,
+			rcode:  dns.NoError,
+			answers: test.NewRecordSet(origin, `
+@ IN MX 1 bert
+@ IN MX 10 ernie
+`),
+			additional: test.NewRecordSet(origin, `
+bert IN A 192.168.0.20
+ernie IN A 192.168.0.2
+`),
+		},
+		&queryCase{
+			name:   test.NewName("files._smb._tcp").Append(origin),
+			rrtype: dns.SRVType,
+			rcode:  dns.NoError,
+			answers: test.NewRecordSet(origin, `
+files._smb._tcp IN SRV 0 0 445 arbys
+`),
+			additional: test.NewRecordSet(origin, `
+arbys IN A 192.168.0.30
+`),
+		},
+		&queryCase{
+			name:   test.NewName("www").Append(origin),
+			rrtype: dns.TXTType,
+			rcode:  dns.NoError,
+			answers: test.NewRecordSet(origin, `
+www in CNAME web
+`),
+		},
+		&queryCase{
+			name:   origin,
+			rrtype: dns.NSType,
+			rcode:  dns.NoError,
+			answers: test.NewRecordSet(origin, `
+@ IN NS ns1
+@ IN NS ns2
+`),
+			additional: test.NewRecordSet(origin, `
+ns1 IN A 192.168.0.1
+ns2 IN A 192.168.0.2
+`),
+		},
+		&queryCase{
+			name:   test.NewName("bogus").Append(origin),
+			rrtype: dns.AType,
+			rcode:  dns.NXDomain,
+			authority: test.NewRecordSet(origin, `
+@ 1h IN SOA hostmaster ns1 1 24h 2h 1000h 48h
+`),
+		},
+		&queryCase{
+			name:   test.NewName("host.other").Append(origin),
+			rrtype: dns.AType,
+			rcode:  dns.NoError,
+			authority: test.NewRecordSet(origin, `
+other IN NS ns1.other
+other IN NS ns2.other
+`),
+			additional: test.NewRecordSet(origin, `
+ns1.other IN A 192.168.0.1
+ns2.other IN A 192.168.0.2
+`),
+		},
+		&queryCase{
+			name:   test.NewName("host.delegation").Append(origin),
+			rrtype: dns.AType,
+			rcode:  dns.NoError,
+			answers: test.NewRecordSet(origin, `
+host.delegation IN A 192.168.0.20
+`),
 		},
 	}
 
@@ -149,6 +301,12 @@ web IN A 192.168.0.10
 		if !resp.QR {
 			t.Fatal("QR is false")
 		}
+		if resp.RA {
+			t.Fatal("RA is true")
+		}
+		if !resp.AA {
+			t.Fatal("AA is false")
+		}
 		if resp.ID != msg.ID {
 			t.Fatalf("answer id %d != question id %d", resp.ID, msg.ID)
 		}
@@ -160,10 +318,63 @@ web IN A 192.168.0.10
 		compareSection(t, q, "authority", resp.Authority, c.authority)
 		compareSection(t, q, "additional", resp.Additional, c.additional)
 	}
+	res.Close()
 
 	if err := shutdown(); err != nil {
 		t.Fatal(err)
 	}
+}
 
-	s.Close()
+func TestZoneTransfer(t *testing.T) {
+	zones := NewZones()
+	origin := test.NewName("horsegrinders.com")
+	primary := exampleZone(origin)
+	secondary := newZone(origin)
+	zones.Insert(primary, true)
+	shutdown := newServer(t, zones)
+
+	c, err := test.Dial("xfer", "ns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := resolver.NewResolver(nil, dnsconn.NewConn(c, "test", ""), false)
+
+	msg := &dns.Message{
+		Opcode: dns.StandardQuery,
+		Questions: []dns.Question{
+			dns.NewDNSQuestion(origin, dns.AXFRType, dns.INClass),
+		},
+	}
+
+	msg, err = res.Transact(context.Background(), nil, msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := msg.Answers
+
+	err = secondary.Xfer(false, func() (*dns.Record, error) {
+		if len(records) == 0 {
+			msg, err = res.Receive(context.Background(), msg.ID)
+			if err != nil {
+				return nil, err
+			}
+			records = msg.Answers
+			if len(records) == 0 {
+				return nil, io.ErrUnexpectedEOF
+			}
+		}
+		r := records[0]
+		records = records[1:]
+		return r, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res.Close()
+
+	compareZone(t, primary, secondary)
+
+	if err := shutdown(); err != nil {
+		t.Fatal(err)
+	}
 }
