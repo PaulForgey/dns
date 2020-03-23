@@ -6,6 +6,7 @@ import (
 	"io"
 	"sync"
 	"testing"
+	"time"
 
 	"tessier-ashpool.net/dns"
 	"tessier-ashpool.net/dns/dnsconn"
@@ -64,6 +65,7 @@ web		A	192.168.0.10
 		MX	100 mx.example.com
 
 bert		A	192.168.0.20
+bert		AAAA	fe80::1
 ernie		A	192.168.0.2
 
 files._smb._tcp	SRV	0 0 445 arbys
@@ -102,7 +104,7 @@ host		A	192.168.0.20
 	return z
 }
 
-func newServer(t *testing.T, zones *Zones) func() error {
+func newServer(t *testing.T, zones *Zones) func() {
 	ctx, cancel := context.WithCancel(context.Background())
 	p, err := test.ListenPacketConn("ns")
 	if err != nil {
@@ -144,22 +146,22 @@ func newServer(t *testing.T, zones *Zones) func() error {
 		wg.Done()
 	}()
 
-	return func() error {
+	return func() {
 		cancel()
 		c.Close()
 		wg.Wait()
 		if errors.Is(err, context.Canceled) {
 			err = nil
 		}
-		return err
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
 func TestServerShutdown(t *testing.T) {
 	shutdown := newServer(t, NewZones())
-	if err := shutdown(); err != nil {
-		t.Fatal(err)
-	}
+	shutdown()
 }
 
 type queryCase struct {
@@ -195,6 +197,7 @@ func TestServerQuery(t *testing.T) {
 	zones.Insert(exampleZone(origin), true)
 	zones.Insert(delegationZone(origin), true)
 	shutdown := newServer(t, zones)
+	defer shutdown()
 
 	cases := []*queryCase{
 		&queryCase{
@@ -319,19 +322,16 @@ host.delegation IN A 192.168.0.20
 		compareSection(t, q, "additional", resp.Additional, c.additional)
 	}
 	res.Close()
-
-	if err := shutdown(); err != nil {
-		t.Fatal(err)
-	}
 }
 
-func TestZoneTransfer(t *testing.T) {
+func TestServerZoneTransfer(t *testing.T) {
 	zones := NewZones()
 	origin := test.NewName("horsegrinders.com")
 	primary := exampleZone(origin)
 	secondary := newZone(origin)
 	zones.Insert(primary, true)
 	shutdown := newServer(t, zones)
+	defer shutdown()
 
 	c, err := test.Dial("xfer", "ns")
 	if err != nil {
@@ -373,8 +373,168 @@ func TestZoneTransfer(t *testing.T) {
 	res.Close()
 
 	compareZone(t, primary, secondary)
+}
 
-	if err := shutdown(); err != nil {
+type updateCase struct {
+	prereq []*dns.Record
+	update []*dns.Record
+	rcode  dns.RCode
+}
+
+func compareUpdate(t *testing.T, res *resolver.Resolver, update []*dns.Record) {
+	for _, u := range update {
+		t.Logf("update %v", u)
+		msg := &dns.Message{
+			Opcode: dns.StandardQuery,
+			Questions: []dns.Question{
+				dns.NewDNSQuestion(u.Name(), u.Type(), dns.INClass),
+			},
+		}
+		msg, err := res.Transact(context.Background(), nil, msg)
+		if msg == nil {
+			t.Fatal(err)
+		}
+
+		if msg.RCode != dns.NoError && msg.RCode != dns.NXDomain {
+			t.Fatal(msg.RCode)
+		}
+
+		switch {
+		// delete all rrsets
+		case u.Class() == dns.AnyClass && u.Type() == dns.AnyType:
+			if msg.RCode != dns.NXDomain {
+				t.Fatalf("expected %v, got %v", dns.NXDomain, msg.RCode)
+			}
+
+			// delete an rrset
+		case u.Class() == dns.AnyClass && u.Type() != dns.AnyType:
+			for _, r := range msg.Answers {
+				if r.Type() == u.Type() {
+					t.Fatalf("rrset %v should be gone, found %v", u.Type(), r)
+				}
+			}
+
+			// delete an rr from an rrset
+		case u.Class() == dns.NoneClass && u.Type() != dns.AnyType:
+			r := &dns.Record{
+				H: dns.NewHeader(u.Name(), u.Type(), dns.INClass, time.Hour),
+				D: u.D,
+			}
+			if !test.ExcludedRecordSet(msg.Answers, []*dns.Record{r}) {
+				t.Fatalf("%v should be gone", r)
+			}
+
+			// add to an rrset
+		case u.Class() == dns.INClass && u.Type() != dns.AnyType:
+			r := &dns.Record{
+				H: dns.NewHeader(u.Name(), u.Type(), dns.INClass, time.Hour),
+				D: u.D,
+			}
+			if !test.IncludedRecordSet(msg.Answers, []*dns.Record{r}) {
+				t.Fatalf("%v should be present", r)
+			}
+
+		default:
+			t.Fatalf("illegal update %v", u)
+		}
+	}
+}
+
+func TestServerUpdate(t *testing.T) {
+	origin := test.NewName("horsegrinders.com")
+	zones := NewZones()
+	zones.Insert(exampleZone(origin), true)
+	shutdown := newServer(t, zones)
+	defer shutdown()
+
+	cases := []*updateCase{
+		&updateCase{
+			prereq: test.NewRecordSet(origin, `
+grover ANY ANY
+`),
+			update: test.NewRecordSet(origin, `
+grover IN A 192.168.0.23
+`),
+			rcode: dns.NXDomain,
+		},
+		&updateCase{
+			prereq: test.NewRecordSet(origin, `
+ernie ANY AAAA
+`),
+			update: test.NewRecordSet(origin, `
+ernie IN AAAA fe80::2
+`),
+			rcode: dns.NXRRSet,
+		},
+		&updateCase{
+			prereq: test.NewRecordSet(origin, `
+bert NONE ANY
+`),
+			update: test.NewRecordSet(origin, `
+bert IN A 192.168.0.20
+`),
+			rcode: dns.YXDomain,
+		},
+		&updateCase{
+			prereq: test.NewRecordSet(origin, `
+bert NONE A
+`),
+			update: test.NewRecordSet(origin, `
+bert IN A 192.168.0.20
+`),
+			rcode: dns.YXRRSet,
+		},
+		&updateCase{
+			prereq: test.NewRecordSet(origin, `
+bert IN A 192.168.0.21
+`),
+			update: test.NewRecordSet(origin, `
+bert IN A 192.168.0.20
+`),
+			rcode: dns.NXRRSet,
+		},
+		&updateCase{
+			update: test.NewRecordSet(test.NewName("tessier-ashpool.net"), `
+grover IN A 192.168.0.30
+`),
+			rcode: dns.NotZone,
+		},
+		&updateCase{
+			update: test.NewRecordSet(origin, `
+ernie IN AAAA fe80::2
+web NONE A 192.168.0.11
+bert ANY A
+arbys ANY ANY
+`),
+		},
+	}
+
+	p, err := test.DialPacketConn("client", "ns")
+	if err != nil {
 		t.Fatal(err)
 	}
+	res := resolver.NewResolver(zones, dnsconn.NewPacketConn(p, "testpacket", ""), false)
+
+	for n, c := range cases {
+		msg := &dns.Message{
+			Opcode: dns.Update,
+			Questions: []dns.Question{
+				dns.NewDNSQuestion(origin, dns.SOAType, dns.INClass),
+			},
+			Answers:   c.prereq,
+			Authority: c.update,
+		}
+		msg, err := res.Transact(context.Background(), nil, msg)
+		if msg == nil {
+			t.Fatal(err)
+		}
+		if msg.RCode != c.rcode {
+			t.Fatalf("case %d: expected %v, got %v", n, c.rcode, msg.RCode)
+		}
+		if msg.RCode == dns.NoError {
+			compareUpdate(t, res, c.update)
+		}
+	}
+
+	res.Close()
 }
