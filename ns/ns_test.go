@@ -104,7 +104,7 @@ host		A	192.168.0.20
 	return z
 }
 
-func newServer(t *testing.T, zones *Zones) func() {
+func newServer(t testing.TB, zones *Zones) func() {
 	ctx, cancel := context.WithCancel(context.Background())
 	p, err := test.ListenPacketConn("ns")
 	if err != nil {

@@ -5,13 +5,15 @@ import (
 	"testing"
 )
 
-type writer testing.T
+type writer struct {
+	testing.TB
+}
 
-func (w *writer) Write(b []byte) (int, error) {
+func (w writer) Write(b []byte) (int, error) {
 	w.Logf("%s", string(b))
 	return len(b), nil
 }
 
-func NewLog(t *testing.T) *log.Logger {
-	return log.New((*writer)(t), "", log.Lshortfile)
+func NewLog(t testing.TB) *log.Logger {
+	return log.New(writer{t}, "", log.Lshortfile)
 }

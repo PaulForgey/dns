@@ -411,13 +411,15 @@ func (c *Conn) Write(b []byte) (int, error) {
 
 func (c *PacketConn) Write(b []byte) (int, error) {
 	c.Lock()
-	defer c.Unlock()
+	peer := c.peer
+	conn := c.conn
+	c.Unlock()
 
-	if c.peer == nil {
+	if peer == nil {
 		return 0, dnsconn.ErrNotConn
 	}
 
-	err := c.peer.writeFrom(b, c.conn)
+	err := peer.writeFrom(b, conn)
 	if err != nil {
 		return 0, err
 	}
@@ -431,21 +433,25 @@ func (c *PacketConn) WriteTo(b []byte, to net.Addr) (int, error) {
 	}
 
 	c.Lock()
-	defer c.Unlock()
 
-	if c.peer != nil {
+	peer := c.peer
+	conn := c.conn
+
+	c.Unlock()
+
+	if peer != nil {
 		return 0, dnsconn.ErrIsConn
 	}
 
 	endpointLock.RLock()
-	peer, ok := endpoints[*name]
+	peer, ok = endpoints[*name]
 	endpointLock.RUnlock()
 
 	if !ok {
 		return 0, dnsconn.ErrNoAddr
 	}
 
-	err := peer.writeFrom(b, c.conn)
+	err := peer.writeFrom(b, conn)
 	if err != nil {
 		return 0, err
 	}
