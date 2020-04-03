@@ -225,7 +225,7 @@ func NewPacketConn(c net.PacketConn, network, iface string) *PacketConn {
 			for _, c := range p.waiters {
 				close(c)
 			}
-			p.waiters = nil
+			p.waiters = p.waiters[:0]
 			p.lk.Unlock()
 		}
 	}(p)

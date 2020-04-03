@@ -67,7 +67,7 @@ func (l *Label) String() string {
 }
 
 // Length returns the wire length of the label
-func (l *Label) Length() int {
+func (l *Label) Len() int {
 	return len(l.data)
 }
 
@@ -134,25 +134,26 @@ func (n Name) String() string {
 	var b strings.Builder
 	for _, l := range n {
 		b.WriteString(l.String())
-		b.WriteRune('.')
+		b.WriteByte('.')
 	}
 	return b.String()
 }
 
-// Key returns a value sufficient for use as a key in a map. The returned string is not guaranteed to be printable.
+// Key returns a value sufficient for use as a key in a map. The returned string is not printable.
 func (n Name) Key() string {
-	var key string
+	var key strings.Builder
 	for _, l := range n {
-		key += l.key + string(0)
+		key.WriteString(l.key)
+		key.WriteByte(0)
 	}
-	return key
+	return key.String()
 }
 
 // Len returns the uncompressed wire length of the name
-func (n Name) Length() int {
+func (n Name) Len() int {
 	var length int
 	for _, l := range n {
-		length += l.Length()
+		length += l.Len()
 	}
 	return length
 }
@@ -199,7 +200,7 @@ func NameWithString(s string) (Name, error) {
 		if err != nil {
 			return n, err
 		}
-		length += label.Length()
+		length += label.Len()
 		if length > 255 {
 			return n, ErrName
 		}
